@@ -1,11 +1,12 @@
-ome
+# Hanzo Operator
+
 <h1 align="center">Self-Operating Computer Framework</h1>
 
 <p align="center">
   <strong>A framework to enable multimodal models to operate a computer.</strong>
 </p>
 <p align="center">
-  Using the same inputs and outputs as a human operator, the model views the screen and decides on a series of mouse and keyboard actions to reach an objective. Released Nov 2023, the Self-Operating Computer Framework was one of the first examples of using a multimodal model to view the screen and operate a computer.
+  Using the same inputs and outputs as a human operator, the model views the screen and decides on a series of mouse and keyboard actions to reach an objective. Hanzo Operator is a powerful framework for computer automation using multimodal AI models.
 </p>
 
 <div align="center">
@@ -27,16 +28,18 @@ ome
 https://github.com/OthersideAI/self-operating-computer/assets/42594239/9e8abc96-c76a-46fb-9b13-03678b3c67e0
 
 
-## Run `Self-Operating Computer`
+## Installation
 
 1. **Install the project**
 ```
-pip install self-operating-computer
+pip install hanzo-operator
 ```
+
 2. **Run the project**
 ```
 operate
 ```
+
 3. **Enter your OpenAI Key**: If you don't have one, you can obtain an OpenAI key [here](https://platform.openai.com/account/api-keys). If you need you change your key at a later point, run `vim .env` to open the `.env` and replace the old key. 
 
 <div align="center">
