@@ -34,6 +34,14 @@ type GatewayConfigReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 
+// resolveProvider returns the effective IngressProvider, defaulting to traefik.
+func resolveProvider(gwc *gatewayv1alpha1.GatewayConfig) gatewayv1alpha1.IngressProvider {
+	if gwc.Spec.IngressProvider == gatewayv1alpha1.IngressProviderCustom {
+		return gatewayv1alpha1.IngressProviderCustom
+	}
+	return gatewayv1alpha1.IngressProviderTraefik
+}
+
 func (r *GatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -46,53 +54,60 @@ func (r *GatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("reconciling GatewayConfig", "name", gwc.Name)
+	provider := resolveProvider(&gwc)
+	logger.Info("reconciling GatewayConfig", "name", gwc.Name, "provider", provider)
 
 	// List Ingress resources, optionally filtered by namespace.
+	// Both providers need this: custom for config generation, traefik for status reporting.
 	ingresses, err := r.listIngresses(ctx, &gwc)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing ingresses: %w", err)
 	}
 
-	// Render the gateway config.
+	// Render config in both modes (used for status reporting and conflict detection).
 	result, err := renderConfig(ingresses, gwc.Spec.Defaults, gwc.Spec.IngressSelector)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("rendering config: %w", err)
 	}
 
 	logger.Info("rendered config",
+		"provider", provider,
 		"routes", len(result.Config.Routes),
 		"conflicts", len(result.Conflicts),
 		"skipped", len(result.Skipped),
 		"hash", result.Hash[:12],
 	)
 
-	// Check if config has changed.
-	if result.Hash == gwc.Status.LastAppliedHash {
+	// Check if state has changed since last reconciliation.
+	if result.Hash == gwc.Status.LastObservedHash {
 		logger.Info("config unchanged, skipping update")
 		return ctrl.Result{}, nil
 	}
 
-	// Determine ConfigMap key.
-	cmKey := gwc.Spec.Output.Key
-	if cmKey == "" {
-		cmKey = "ingress.json"
+	// For "custom" provider: generate ConfigMap and trigger deployment reload.
+	// For "traefik" provider: Traefik watches Ingress resources natively, skip generation.
+	if provider == gatewayv1alpha1.IngressProviderCustom {
+		cmKey := gwc.Spec.Output.Key
+		if cmKey == "" {
+			cmKey = "ingress.json"
+		}
+
+		if err := r.ensureConfigMap(ctx, &gwc, cmKey, result); err != nil {
+			return ctrl.Result{}, fmt.Errorf("ensuring configmap: %w", err)
+		}
+
+		if err := r.triggerReload(ctx, &gwc, result.Hash); err != nil {
+			return ctrl.Result{}, fmt.Errorf("triggering reload: %w", err)
+		}
+
+		gwc.Status.LastAppliedHash = result.Hash
 	}
 
-	// Create or update the ConfigMap.
-	if err := r.ensureConfigMap(ctx, &gwc, cmKey, result); err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring configmap: %w", err)
-	}
-
-	// Trigger reload on the target deployment.
-	if err := r.triggerReload(ctx, &gwc, result.Hash); err != nil {
-		return ctrl.Result{}, fmt.Errorf("triggering reload: %w", err)
-	}
-
-	// Update status.
+	// Update status (both providers).
 	now := metav1.Now()
+	gwc.Status.IngressProvider = provider
 	gwc.Status.RouteCount = countRoutes(result)
-	gwc.Status.LastAppliedHash = result.Hash
+	gwc.Status.LastObservedHash = result.Hash
 	gwc.Status.Conflicts = result.Conflicts
 	gwc.Status.SkippedIngresses = result.Skipped
 	gwc.Status.LastReconcileTime = &now
@@ -101,15 +116,28 @@ func (r *GatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	readyCondition := metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
-		Reason:             "ConfigApplied",
-		Message:            fmt.Sprintf("Applied config with %d routes", gwc.Status.RouteCount),
 		LastTransitionTime: now,
 	}
-	if len(result.Conflicts) > 0 {
-		readyCondition.Reason = "ConfigAppliedWithConflicts"
-		readyCondition.Message = fmt.Sprintf("Applied config with %d routes, %d conflicts",
-			gwc.Status.RouteCount, len(result.Conflicts))
+
+	switch provider {
+	case gatewayv1alpha1.IngressProviderTraefik:
+		readyCondition.Reason = "IngressObserved"
+		readyCondition.Message = fmt.Sprintf("Observed %d routes (Traefik handles routing natively)", gwc.Status.RouteCount)
+		if len(result.Conflicts) > 0 {
+			readyCondition.Reason = "IngressObservedWithConflicts"
+			readyCondition.Message = fmt.Sprintf("Observed %d routes, %d conflicts (Traefik mode)",
+				gwc.Status.RouteCount, len(result.Conflicts))
+		}
+	case gatewayv1alpha1.IngressProviderCustom:
+		readyCondition.Reason = "ConfigApplied"
+		readyCondition.Message = fmt.Sprintf("Applied config with %d routes", gwc.Status.RouteCount)
+		if len(result.Conflicts) > 0 {
+			readyCondition.Reason = "ConfigAppliedWithConflicts"
+			readyCondition.Message = fmt.Sprintf("Applied config with %d routes, %d conflicts",
+				gwc.Status.RouteCount, len(result.Conflicts))
+		}
 	}
+
 	setCondition(&gwc.Status.Conditions, readyCondition)
 
 	if err := r.Status().Update(ctx, &gwc); err != nil {
@@ -117,6 +145,7 @@ func (r *GatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	logger.Info("reconciliation complete",
+		"provider", provider,
 		"routeCount", gwc.Status.RouteCount,
 		"hash", result.Hash[:12],
 	)
