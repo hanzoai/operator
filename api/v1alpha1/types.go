@@ -15,6 +15,18 @@ const (
 	ReloadStrategyHotReload ReloadStrategy = "HotReload"
 )
 
+// IngressProvider identifies the ingress implementation in use.
+type IngressProvider string
+
+const (
+	// IngressProviderTraefik means Traefik handles routing natively via K8s Ingress resources.
+	// The operator watches Ingress resources for status reporting only.
+	IngressProviderTraefik IngressProvider = "traefik"
+
+	// IngressProviderCustom means the operator generates ingress.json for the custom Go proxy.
+	IngressProviderCustom IngressProvider = "custom"
+)
+
 // IngressSelector defines how to filter Ingress resources.
 type IngressSelector struct {
 	// MatchLabels selects Ingress resources with these labels.
@@ -66,6 +78,13 @@ type DefaultsSpec struct {
 
 // GatewayConfigSpec defines the desired state of GatewayConfig.
 type GatewayConfigSpec struct {
+	// IngressProvider is the ingress implementation to use.
+	// "traefik" means Traefik handles routing natively via K8s Ingress resources.
+	// "custom" means the operator generates ingress.json for the custom proxy.
+	// +kubebuilder:default=traefik
+	// +optional
+	IngressProvider IngressProvider `json:"ingressProvider,omitempty"`
+
 	// IngressSelector filters which Ingress resources to process.
 	// +optional
 	IngressSelector *IngressSelector `json:"ingressSelector,omitempty"`
@@ -102,11 +121,22 @@ type RouteConflict struct {
 
 // GatewayConfigStatus defines the observed state of GatewayConfig.
 type GatewayConfigStatus struct {
+	// IngressProvider is the active ingress provider observed during the last reconciliation.
+	// +optional
+	IngressProvider IngressProvider `json:"ingressProvider,omitempty"`
+
 	// RouteCount is the number of routes in the current config.
 	// +optional
 	RouteCount int `json:"routeCount,omitempty"`
 
+	// LastObservedHash is the SHA256 hash of the rendered config from the last reconciliation.
+	// For "custom" mode this is the hash of the applied ConfigMap data.
+	// For "traefik" mode this is the hash of the observed Ingress state.
+	// +optional
+	LastObservedHash string `json:"lastObservedHash,omitempty"`
+
 	// LastAppliedHash is the SHA256 hash of the last applied config.
+	// Only set when ingressProvider is "custom".
 	// +optional
 	LastAppliedHash string `json:"lastAppliedHash,omitempty"`
 
@@ -130,8 +160,9 @@ type GatewayConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=gwc
+// +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=`.status.ingressProvider`
 // +kubebuilder:printcolumn:name="Routes",type=integer,JSONPath=`.status.routeCount`
-// +kubebuilder:printcolumn:name="Hash",type=string,JSONPath=`.status.lastAppliedHash`,priority=1
+// +kubebuilder:printcolumn:name="Hash",type=string,JSONPath=`.status.lastObservedHash`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // GatewayConfig is the Schema for the gatewayconfigs API.

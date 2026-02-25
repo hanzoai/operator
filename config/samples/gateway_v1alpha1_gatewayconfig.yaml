@@ -4,15 +4,21 @@ metadata:
   name: default
   namespace: hanzo
 spec:
+  # Ingress provider: "traefik" (default) or "custom".
+  # traefik: Traefik handles routing natively via K8s Ingress resources.
+  #          The operator watches Ingress resources for status reporting only.
+  # custom:  The operator generates ingress.json for the custom Go proxy.
+  ingressProvider: traefik
+
   # Watch all ingresses cluster-wide (no label filter = all ingresses)
   ingressSelector: {}
 
-  # Where to write the generated config.
+  # Where to write the generated config (used in "custom" mode).
   output:
-    configMapName: ingress-config
-    key: ingress.json
+    configMapName: gateway-config
+    key: gateway.json
 
-  # The ingress Deployment to reload when config changes.
+  # The ingress Deployment to reload when config changes (used in "custom" mode).
   target:
     deploymentName: hanzo-ingress
     reloadStrategy: Rollout
@@ -21,5 +27,3 @@ spec:
   defaults:
     backendScheme: http
     timeout: "30s"
-    addHeaders:
-      X-Forwarded-By: hanzo-gateway
