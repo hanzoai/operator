@@ -1,0 +1,171 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gatewayconfigs.gateway.hanzo.ai
+  annotations:
+    controller-gen.kubebuilder.io/version: (devel)
+spec:
+  group: gateway.hanzo.ai
+  names:
+    kind: GatewayConfig
+    listKind: GatewayConfigList
+    plural: gatewayconfigs
+    singular: gatewayconfig
+    shortNames:
+      - gwc
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Routes
+          type: integer
+          jsonPath: .status.routeCount
+        - name: Hash
+          type: string
+          jsonPath: .status.lastAppliedHash
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: GatewayConfig is the Schema for the gatewayconfigs API.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - output
+                - target
+              properties:
+                ingressSelector:
+                  type: object
+                  description: IngressSelector filters which Ingress resources to process.
+                  properties:
+                    matchLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                namespaces:
+                  type: object
+                  description: Namespaces restricts which namespaces are watched.
+                  properties:
+                    include:
+                      type: array
+                      items:
+                        type: string
+                output:
+                  type: object
+                  required:
+                    - configMapName
+                  description: Output defines where the generated config is stored.
+                  properties:
+                    configMapName:
+                      type: string
+                      description: ConfigMapName is the name of the ConfigMap to create/update.
+                    key:
+                      type: string
+                      description: Key is the data key within the ConfigMap. Defaults to "ingress.json".
+                target:
+                  type: object
+                  required:
+                    - deploymentName
+                  description: Target identifies the gateway Deployment to reload.
+                  properties:
+                    deploymentName:
+                      type: string
+                      description: DeploymentName is the name of the gateway Deployment.
+                    reloadStrategy:
+                      type: string
+                      description: ReloadStrategy controls how config changes are applied.
+                      enum:
+                        - Rollout
+                        - HotReload
+                defaults:
+                  type: object
+                  description: Defaults provides fallback values for route generation.
+                  properties:
+                    backendScheme:
+                      type: string
+                      description: BackendScheme is the default scheme for backend URLs.
+                    addHeaders:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: AddHeaders are headers added to every proxied request.
+                    timeout:
+                      type: string
+                      description: Timeout is the default backend timeout.
+            status:
+              type: object
+              properties:
+                routeCount:
+                  type: integer
+                  description: RouteCount is the number of routes in the current config.
+                lastAppliedHash:
+                  type: string
+                  description: LastAppliedHash is the SHA256 hash of the last applied config.
+                conflicts:
+                  type: array
+                  description: Conflicts lists detected routing conflicts.
+                  items:
+                    type: object
+                    properties:
+                      host:
+                        type: string
+                      path:
+                        type: string
+                      backends:
+                        type: array
+                        items:
+                          type: string
+                      winner:
+                        type: string
+                skippedIngresses:
+                  type: array
+                  description: SkippedIngresses lists Ingress resources that were skipped.
+                  items:
+                    type: string
+                lastReconcileTime:
+                  type: string
+                  format: date-time
+                  description: LastReconcileTime is when the last reconciliation completed.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                      - reason
+                      - message
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64

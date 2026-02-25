@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hanzo-system
+  labels:
+    app.kubernetes.io/part-of: hanzo-operator
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hanzo-operator
+  namespace: hanzo-system
+  labels:
+    app.kubernetes.io/name: hanzo-operator
+    app.kubernetes.io/part-of: hanzo-operator
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hanzo-operator
+  namespace: hanzo-system
+  labels:
+    app.kubernetes.io/name: hanzo-operator
+    app.kubernetes.io/part-of: hanzo-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hanzo-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hanzo-operator
+        app.kubernetes.io/part-of: hanzo-operator
+    spec:
+      serviceAccountName: hanzo-operator
+      imagePullSecrets:
+        - name: ghcr-hanzoai
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: ghcr.io/hanzoai/hanzo-operator:latest
+          args:
+            - --leader-elect
+            - --health-probe-bind-address=:8082
+            - --metrics-bind-address=:8081
+          ports:
+            - name: metrics
+              containerPort: 8081
+              protocol: TCP
+            - name: health
+              containerPort: 8082
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
