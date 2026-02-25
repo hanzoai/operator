@@ -1,0 +1,25 @@
+apiVersion: gateway.hanzo.ai/v1alpha1
+kind: GatewayConfig
+metadata:
+  name: default
+  namespace: hanzo
+spec:
+  # Watch all ingresses cluster-wide (no label filter = all ingresses)
+  ingressSelector: {}
+
+  # Where to write the generated config.
+  output:
+    configMapName: ingress-config
+    key: ingress.json
+
+  # The ingress Deployment to reload when config changes.
+  target:
+    deploymentName: hanzo-ingress
+    reloadStrategy: Rollout
+
+  # Default values applied to all routes.
+  defaults:
+    backendScheme: http
+    timeout: "30s"
+    addHeaders:
+      X-Forwarded-By: hanzo-gateway

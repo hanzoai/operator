@@ -1,0 +1,113 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hanzo-operator
+rules:
+  # GatewayConfig CRD
+  - apiGroups:
+      - gateway.hanzo.ai
+    resources:
+      - gatewayconfigs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - gateway.hanzo.ai
+    resources:
+      - gatewayconfigs/status
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - gateway.hanzo.ai
+    resources:
+      - gatewayconfigs/finalizers
+    verbs:
+      - update
+
+  # Ingress (read-only)
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+
+  # Services (read-only, for validation)
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+
+  # ConfigMaps (managed output)
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+
+  # Deployments (for rollout restart)
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
+
+  # Events (for recording events)
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+
+  # Leader election
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hanzo-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hanzo-operator
+subjects:
+  - kind: ServiceAccount
+    name: hanzo-operator
+    namespace: hanzo-system
