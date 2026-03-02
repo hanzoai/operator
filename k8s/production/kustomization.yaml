@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: hanzo
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: hanzo-operator
+      environment: production
+
+resources:
+  # Top-level platform CR (manages all child resources)
+  - hanzo-platform.yaml
+
+  # Individual service CRs (for standalone apply or granular GitOps)
+  - services/iam.yaml
+  - services/kms.yaml
+  - services/console.yaml
+  - services/gateway.yaml
+  - services/hanzo-app.yaml
+  - services/hanzo-login.yaml
+  - services/cloud.yaml
+  - services/cloud-api.yaml
+  - services/chat.yaml
+  - services/commerce.yaml
+  - services/commerce-admin.yaml
+  - services/billing.yaml
+  - services/bot-gateway.yaml
+  - services/rag-api.yaml
+  - services/paas.yaml
+  - services/flow.yaml
+  - services/flow-site.yaml
+  - services/status.yaml
+  - services/models.yaml
+  - services/pricing.yaml
+  - services/bot-docs.yaml
+
+  # Datastore CRs
+  - datastores/sql.yaml
+  - datastores/kv.yaml
+  - datastores/datastore.yaml
+  - datastores/nats.yaml

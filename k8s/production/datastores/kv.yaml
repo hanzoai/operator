@@ -1,0 +1,29 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDatastore
+metadata:
+  name: kv
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: valkey
+spec:
+  type: valkey
+  image:
+    repository: ghcr.io/hanzoai/kv
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  partOf: hanzo-platform
+  storage:
+    storageClassName: do-block-storage
+    size: 10Gi
+    retentionPolicy: Retain
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  serviceAliases:
+    - redis-master

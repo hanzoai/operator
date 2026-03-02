@@ -1,0 +1,32 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDatastore
+metadata:
+  name: nats
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: nats
+spec:
+  type: nats
+  image:
+    repository: nats
+    tag: 2-alpine
+    pullPolicy: IfNotPresent
+  replicas: 1
+  partOf: hanzo-platform
+  storage:
+    storageClassName: do-block-storage
+    size: 5Gi
+    retentionPolicy: Retain
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  ports:
+    - name: client
+      containerPort: 4222
+    - name: monitor
+      containerPort: 8222

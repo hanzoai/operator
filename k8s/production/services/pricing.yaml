@@ -1,0 +1,47 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoService
+metadata:
+  name: pricing
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: pricing
+spec:
+  image:
+    repository: ghcr.io/hanzoai/pricing
+    tag: latest
+    pullPolicy: Always
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 3000
+  strategy: RollingUpdate
+  partOf: hanzo-platform
+  component: pricing
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  livenessProbe:
+    path: /
+    port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    path: /
+    port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  pdb:
+    enabled: true
+    minAvailable: 1
+  ingress:
+    enabled: true
+    hosts:
+      - pricing.hanzo.ai
+    ingressClassName: ingress
+    tls: true
+    clusterIssuer: letsencrypt-prod

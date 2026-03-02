@@ -1,0 +1,34 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDatastore
+metadata:
+  name: datastore
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: datastore
+spec:
+  type: datastore
+  image:
+    repository: ghcr.io/hanzoai/datastore
+    tag: latest
+    pullPolicy: Always
+  replicas: 1
+  partOf: hanzo-platform
+  storage:
+    storageClassName: do-block-storage
+    size: 100Gi
+    retentionPolicy: Retain
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  ports:
+    - name: http
+      containerPort: 8123
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"
+    retentionDays: 30

@@ -1,0 +1,44 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDatastore
+metadata:
+  name: sql
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: postgresql
+spec:
+  type: postgresql
+  image:
+    repository: ghcr.io/hanzoai/sql
+    tag: 18-alpine
+    pullPolicy: IfNotPresent
+  replicas: 1
+  partOf: hanzo-platform
+  storage:
+    storageClassName: do-block-storage
+    size: 50Gi
+    retentionPolicy: Retain
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  credentialsSecret: sql-credentials
+  kmsSecrets:
+    - hostAPI: https://kms.hanzo.ai/api
+      projectSlug: hanzo
+      envSlug: production
+      secretsPath: /sql
+      credentialsRef:
+        name: kms-credentials
+        namespace: hanzo
+      resyncInterval: 60
+      managedSecretName: sql-credentials
+  serviceAliases:
+    - postgres
+  backup:
+    enabled: true
+    schedule: "0 2 * * *"
+    retentionDays: 30
