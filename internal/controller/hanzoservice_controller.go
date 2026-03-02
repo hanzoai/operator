@@ -418,13 +418,19 @@ func (r *HanzoServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}, builder.WithPredicates(updateOrDeletePred())).
 		Owns(&networkingv1.NetworkPolicy{}, builder.WithPredicates(updateOrDeletePred()))
 
-	// Watch KMSSecret CRs owned by this controller (if mapper is available).
+	// Watch KMSSecret CRs owned by this controller (only if CRD is installed).
 	if restMapper != nil {
-		kmsObj := &unstructured.Unstructured{}
-		kmsObj.SetGroupVersionKind(kmsSecretGVK())
-		b = b.Watches(kmsObj, handler.EnqueueRequestForOwner(
-			mgr.GetScheme(), restMapper, &v1alpha1.HanzoService{}, handler.OnlyControllerOwner(),
-		))
+		gvk := kmsSecretGVK()
+		_, err := restMapper.RESTMapping(schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}, gvk.Version)
+		if err == nil {
+			kmsObj := &unstructured.Unstructured{}
+			kmsObj.SetGroupVersionKind(gvk)
+			b = b.Watches(kmsObj, handler.EnqueueRequestForOwner(
+				mgr.GetScheme(), restMapper, &v1alpha1.HanzoService{}, handler.OnlyControllerOwner(),
+			))
+		} else {
+			r.Log.Info("KMSSecret CRD not installed, skipping watch (kms.hanzo.ai/v1alpha1)")
+		}
 	}
 
 	return b.Named("hanzoservice").Complete(r)
