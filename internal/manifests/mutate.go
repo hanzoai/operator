@@ -52,6 +52,15 @@ func MutateFuncFor(existing, desired client.Object) controllerutil.MutateFn {
 			if e.Spec.Selector == nil {
 				e.Spec.Selector = d.Spec.Selector
 			}
+			// Ensure template labels are a superset of selector matchLabels.
+			if e.Spec.Selector != nil && e.Spec.Selector.MatchLabels != nil {
+				if e.Spec.Template.Labels == nil {
+					e.Spec.Template.Labels = make(map[string]string)
+				}
+				for k, v := range e.Spec.Selector.MatchLabels {
+					e.Spec.Template.Labels[k] = v
+				}
+			}
 
 		case *appsv1.StatefulSet:
 			d, ok := desired.(*appsv1.StatefulSet)
@@ -66,6 +75,33 @@ func MutateFuncFor(existing, desired client.Object) controllerutil.MutateFn {
 			}
 			if len(e.Spec.VolumeClaimTemplates) == 0 {
 				e.Spec.VolumeClaimTemplates = d.Spec.VolumeClaimTemplates
+			} else if len(d.Spec.VolumeClaimTemplates) > 0 && len(e.Spec.VolumeClaimTemplates) > 0 {
+				// VCTs are immutable; remap desired volume mount names to match existing VCT names.
+				nameMap := make(map[string]string) // desired name -> existing name
+				for i := 0; i < len(d.Spec.VolumeClaimTemplates) && i < len(e.Spec.VolumeClaimTemplates); i++ {
+					dName := d.Spec.VolumeClaimTemplates[i].Name
+					eName := e.Spec.VolumeClaimTemplates[i].Name
+					if dName != eName {
+						nameMap[dName] = eName
+					}
+				}
+				for i := range e.Spec.Template.Spec.Containers {
+					for j := range e.Spec.Template.Spec.Containers[i].VolumeMounts {
+						vm := &e.Spec.Template.Spec.Containers[i].VolumeMounts[j]
+						if mapped, ok := nameMap[vm.Name]; ok {
+							vm.Name = mapped
+						}
+					}
+				}
+			}
+			// Ensure template labels are a superset of selector matchLabels.
+			if e.Spec.Selector != nil && e.Spec.Selector.MatchLabels != nil {
+				if e.Spec.Template.Labels == nil {
+					e.Spec.Template.Labels = make(map[string]string)
+				}
+				for k, v := range e.Spec.Selector.MatchLabels {
+					e.Spec.Template.Labels[k] = v
+				}
 			}
 
 		case *corev1.Service:
