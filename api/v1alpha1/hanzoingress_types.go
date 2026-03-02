@@ -85,7 +85,7 @@ type HanzoIngressSpec struct {
 	Domains []DomainConfig `json:"domains"`
 
 	// IngressClassName specifies the Ingress class to use.
-	// +kubebuilder:default="nginx"
+	// +kubebuilder:default="hanzo"
 	// +optional
 	IngressClassName string `json:"ingressClassName,omitempty"`
 
