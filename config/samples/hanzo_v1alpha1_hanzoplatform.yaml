@@ -1,0 +1,51 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoPlatform
+metadata:
+  name: hanzo-platform
+  namespace: hanzo
+spec:
+  services:
+    - name: cloud
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/cloud
+          tag: latest
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 8080
+            servicePort: 80
+            protocol: TCP
+        ingress:
+          enabled: true
+          hosts:
+            - api.hanzo.ai
+          ingressClassName: nginx
+          tls: true
+          clusterIssuer: letsencrypt-prod
+  datastores:
+    - name: main-db
+      spec:
+        type: postgresql
+        replicas: 1
+        image:
+          repository: ghcr.io/hanzoai/sql
+          tag: "17"
+        storage:
+          storageClassName: do-block-storage
+          size: 50Gi
+  ingress:
+    name: hanzo-domains
+    spec:
+      ingressClassName: nginx
+      clusterIssuer: letsencrypt-prod
+      domains:
+        - domain: api.hanzo.ai
+          tls: true
+          routes:
+            - path: /
+              serviceName: cloud
+              servicePort: 8080
+  defaultNetworkPolicy:
+    enabled: true
+    allowIntraNamespace: true

@@ -1,0 +1,36 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoNetwork
+metadata:
+  name: lux-testnet
+  namespace: hanzo
+spec:
+  networkID: "12345"
+  validators:
+    replicas: 3
+    image:
+      repository: ghcr.io/luxfi/node
+      tag: latest
+    stakingPort: 9651
+    httpPort: 9650
+    bootstrapNodes: []
+    storage:
+      storageClassName: do-block-storage
+      size: 100Gi
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+  chains:
+    - name: default
+      vmID: avm
+      subnetID: primary
+      genesis: "{}"
+  bootnode:
+    enabled: true
+  indexer:
+    enabled: true
+  explorer:
+    enabled: true
