@@ -11,7 +11,7 @@ type DeploymentStrategy string
 
 const (
 	DeploymentStrategyRollingUpdate DeploymentStrategy = "RollingUpdate"
-	DeploymentStrategyRecreate     DeploymentStrategy = "Recreate"
+	DeploymentStrategyRecreate      DeploymentStrategy = "Recreate"
 )
 
 // ServicePort defines a port exposed by a HanzoService.

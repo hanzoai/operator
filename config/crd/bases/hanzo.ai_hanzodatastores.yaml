@@ -37,7 +37,7 @@ spec:
       openAPIV3Schema:
         description: |-
           HanzoDatastore is the Schema for the hanzodatastores API.
-          It models stateful data services such as PostgreSQL, Valkey, DocDB, MinIO, NATS, and ClickHouse.
+          It models stateful data services such as PostgreSQL, Valkey, DocDB, MinIO, NATS, and Datastore.
         properties:
           apiVersion:
             description: |-
@@ -2183,7 +2183,7 @@ spec:
                 - docdb
                 - minio
                 - nats
-                - clickhouse
+                - datastore
                 type: string
               volumeMounts:
                 description: VolumeMounts defines additional volume mounts for the

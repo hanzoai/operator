@@ -38,7 +38,7 @@ var defaultsByType = map[v1alpha1.DatastoreType]datastoreDefaults{
 	v1alpha1.DatastoreTypeDocDB:      {image: "ghcr.io/hanzoai/docdb:latest", port: 27017},
 	v1alpha1.DatastoreTypeMinio:      {image: "ghcr.io/hanzoai/storage:latest", port: 9000},
 	v1alpha1.DatastoreTypeNATS:       {image: "nats:2-alpine", port: 4222},
-	v1alpha1.DatastoreTypeClickhouse: {image: "clickhouse/clickhouse-server:latest", port: 8123},
+	v1alpha1.DatastoreTypeDatastore:  {image: "clickhouse/clickhouse-server:latest", port: 8123},
 }
 
 // +kubebuilder:rbac:groups=hanzo.ai,resources=hanzodatastores,verbs=get;list;watch;create;update;patch;delete
@@ -347,7 +347,7 @@ func dataMountPath(t v1alpha1.DatastoreType) string {
 		return "/data"
 	case v1alpha1.DatastoreTypeNATS:
 		return "/data/nats"
-	case v1alpha1.DatastoreTypeClickhouse:
+	case v1alpha1.DatastoreTypeDatastore:
 		return "/var/lib/clickhouse"
 	default:
 		return "/data"
@@ -368,7 +368,7 @@ func buildConnectionString(t v1alpha1.DatastoreType, name, namespace string, por
 		return fmt.Sprintf("http://%s:%d", host, port)
 	case v1alpha1.DatastoreTypeNATS:
 		return fmt.Sprintf("nats://%s:%d", host, port)
-	case v1alpha1.DatastoreTypeClickhouse:
+	case v1alpha1.DatastoreTypeDatastore:
 		return fmt.Sprintf("http://%s:%d", host, port)
 	default:
 		return fmt.Sprintf("%s:%d", host, port)
@@ -467,7 +467,7 @@ func backupCommand(ds *v1alpha1.HanzoDatastore) string {
 		return fmt.Sprintf("redis-cli -h %s -p %d --rdb /tmp/dump.rdb && backup-upload /tmp/dump.rdb", host, defaults.port)
 	case v1alpha1.DatastoreTypeDocDB:
 		return fmt.Sprintf("mongodump --host=%s --port=%d --archive=/tmp/backup.archive && backup-upload /tmp/backup.archive", host, defaults.port)
-	case v1alpha1.DatastoreTypeClickhouse:
+	case v1alpha1.DatastoreTypeDatastore:
 		return fmt.Sprintf("clickhouse-client --host=%s --port=%d -q 'SELECT 1' && clickhouse-backup create && backup-upload /tmp/backup", host, defaults.port)
 	default:
 		return "echo 'backup not supported for this datastore type'"

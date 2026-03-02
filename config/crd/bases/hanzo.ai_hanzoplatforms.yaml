@@ -2234,7 +2234,7 @@ spec:
                           - docdb
                           - minio
                           - nats
-                          - clickhouse
+                          - datastore
                           type: string
                         volumeMounts:
                           description: VolumeMounts defines additional volume mounts
