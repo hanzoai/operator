@@ -90,6 +90,7 @@ func (r *HanzoServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		svc.Spec.ServiceAccountName,
 	)
 	deploy.Spec.Template.Annotations = svc.Spec.Annotations
+	deploy.Spec.Template.Spec.InitContainers = svc.Spec.InitContainers
 	if err := r.createOrUpdate(ctx, svc, deploy); err != nil {
 		return ctrl.Result{}, fmt.Errorf("reconciling Deployment: %w", err)
 	}
@@ -215,6 +216,8 @@ func (r *HanzoServiceReconciler) buildContainers(svc *v1alpha1.HanzoService) []c
 		Name:            svc.Name,
 		Image:           image,
 		ImagePullPolicy: svc.Spec.Image.PullPolicy,
+		Command:         svc.Spec.Command,
+		Args:            svc.Spec.Args,
 		Env:             svc.Spec.Env,
 		EnvFrom:         svc.Spec.EnvFrom,
 		VolumeMounts:    svc.Spec.VolumeMounts,

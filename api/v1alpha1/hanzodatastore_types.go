@@ -80,6 +80,26 @@ type HanzoDatastoreSpec struct {
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 
+	// EnvFrom is a list of sources to populate environment variables.
+	// +optional
+	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
+
+	// Volumes defines additional volumes to attach to the pod.
+	// +optional
+	Volumes []corev1.Volume `json:"volumes,omitempty"`
+
+	// VolumeMounts defines additional volume mounts for the main container.
+	// +optional
+	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+
+	// Command overrides the container entrypoint.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// Args overrides the container arguments.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
 	// CredentialsSecret is the name of a Secret containing datastore credentials.
 	// +optional
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`

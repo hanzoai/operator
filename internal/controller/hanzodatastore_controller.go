@@ -117,6 +117,8 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		Name:            name,
 		Image:           containerImage,
 		ImagePullPolicy: pullPolicy,
+		Command:         ds.Spec.Command,
+		Args:            ds.Spec.Args,
 		Ports: []corev1.ContainerPort{
 			{
 				Name:          "data",
@@ -124,7 +126,8 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				Protocol:      corev1.ProtocolTCP,
 			},
 		},
-		Env: ds.Spec.Env,
+		Env:     ds.Spec.Env,
+		EnvFrom: ds.Spec.EnvFrom,
 	}
 
 	// Volume mount for data.
@@ -132,6 +135,8 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		Name:      "data",
 		MountPath: dataMountPath(ds.Spec.Type),
 	})
+	// Additional volume mounts from spec.
+	mainContainer.VolumeMounts = append(mainContainer.VolumeMounts, ds.Spec.VolumeMounts...)
 
 	if ds.Spec.Resources != nil {
 		mainContainer.Resources = corev1.ResourceRequirements{
@@ -185,7 +190,7 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		stdLabels, selectorLabels,
 		ds.Spec.Replicas,
 		containers,
-		nil, // extra volumes
+		ds.Spec.Volumes,
 		pvcTemplates,
 		ds.Spec.ImagePullSecrets,
 		headlessSvcName,
