@@ -1,0 +1,47 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoService
+metadata:
+  name: chat
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: chat
+spec:
+  image:
+    repository: ghcr.io/hanzoai/chat
+    tag: latest
+    pullPolicy: Always
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 3000
+  strategy: RollingUpdate
+  partOf: hanzo-platform
+  component: chat
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  livenessProbe:
+    path: /
+    port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    path: /
+    port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  pdb:
+    enabled: true
+    minAvailable: 1
+  ingress:
+    enabled: true
+    hosts:
+      - chat.hanzo.ai
+    ingressClassName: ingress
+    tls: true
+    clusterIssuer: letsencrypt-prod

@@ -4862,7 +4862,7 @@ spec:
                           minItems: 1
                           type: array
                         ingressClassName:
-                          default: nginx
+                          default: ingress
                           description: IngressClassName specifies the Ingress class
                             to use.
                           type: string

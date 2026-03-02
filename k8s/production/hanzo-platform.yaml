@@ -1,0 +1,1039 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoPlatform
+metadata:
+  name: hanzo-production
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/name: hanzo-platform
+    app.kubernetes.io/instance: production
+    app.kubernetes.io/managed-by: hanzo-operator
+spec:
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    environment: production
+
+  networkPolicies:
+    defaultDeny: true
+
+  # ---------------------------------------------------------------------------
+  # Datastores (StatefulSets)
+  # ---------------------------------------------------------------------------
+  datastores:
+    # -- PostgreSQL with pgvector --
+    - name: sql
+      spec:
+        type: postgresql
+        image:
+          repository: ghcr.io/hanzoai/sql
+          tag: 18-alpine
+          pullPolicy: IfNotPresent
+        replicas: 1
+        storage:
+          storageClassName: do-block-storage
+          size: 50Gi
+          retentionPolicy: Retain
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        credentialsSecret: sql-credentials
+        kmsSecrets:
+          - hostAPI: https://kms.hanzo.ai/api
+            projectSlug: hanzo
+            envSlug: production
+            secretsPath: /sql
+            credentialsRef:
+              name: kms-credentials
+              namespace: hanzo
+            resyncInterval: 60
+            managedSecretName: sql-credentials
+        serviceAliases:
+          - postgres
+        backup:
+          enabled: true
+          schedule: "0 2 * * *"
+          retentionDays: 30
+        partOf: hanzo-platform
+
+    # -- Valkey (Redis-compatible) --
+    - name: kv
+      spec:
+        type: valkey
+        image:
+          repository: ghcr.io/hanzoai/kv
+          tag: latest
+          pullPolicy: Always
+        replicas: 1
+        storage:
+          storageClassName: do-block-storage
+          size: 10Gi
+          retentionPolicy: Retain
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        serviceAliases:
+          - redis-master
+        partOf: hanzo-platform
+
+    # -- Datastore (ClickHouse-compatible analytics) --
+    - name: datastore
+      spec:
+        type: datastore
+        image:
+          repository: ghcr.io/hanzoai/datastore
+          tag: latest
+          pullPolicy: Always
+        replicas: 1
+        storage:
+          storageClassName: do-block-storage
+          size: 100Gi
+          retentionPolicy: Retain
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        ports:
+          - name: http
+            containerPort: 8123
+        backup:
+          enabled: true
+          schedule: "0 3 * * *"
+          retentionDays: 30
+        partOf: hanzo-platform
+
+    # -- NATS messaging --
+    - name: nats
+      spec:
+        type: nats
+        image:
+          repository: nats
+          tag: 2-alpine
+          pullPolicy: IfNotPresent
+        replicas: 1
+        storage:
+          storageClassName: do-block-storage
+          size: 5Gi
+          retentionPolicy: Retain
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        ports:
+          - name: client
+            containerPort: 4222
+          - name: monitor
+            containerPort: 8222
+        partOf: hanzo-platform
+
+  # ---------------------------------------------------------------------------
+  # Services (Deployments) -- all 2 replicas, RollingUpdate, PDB minAvailable=1
+  # ---------------------------------------------------------------------------
+  services:
+    # ===== Core Infrastructure =====
+
+    # -- IAM (Identity) --
+    - name: iam
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/iam
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 8000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: identity
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        envFrom:
+          - secretRef:
+              name: iam-secrets
+        kmsSecrets:
+          - hostAPI: https://kms.hanzo.ai/api
+            projectSlug: hanzo
+            envSlug: production
+            secretsPath: /iam
+            credentialsRef:
+              name: kms-credentials
+              namespace: hanzo
+            resyncInterval: 60
+            managedSecretName: iam-secrets
+        ingress:
+          enabled: true
+          hosts:
+            - hanzo.id
+            - lux.id
+            - zoo.id
+            - pars.id
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- KMS (Secrets Management) --
+    - name: kms
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/kms
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 8080
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: secrets
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        envFrom:
+          - secretRef:
+              name: kms-secrets
+        ingress:
+          enabled: true
+          hosts:
+            - kms.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- API Gateway --
+    - name: gateway
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/gateway
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 8080
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: gateway
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /__health
+          port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          path: /__health
+          port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - api.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== Console & Cloud =====
+
+    # -- Console --
+    - name: console
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/console-web
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: console
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - console.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Cloud UI --
+    - name: cloud
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/cloud
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: cloud
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - cloud.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Cloud API --
+    - name: cloud-api
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/cloud-api
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: cloud-api
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - cloud-api.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== User-Facing Applications =====
+
+    # -- Hanzo App --
+    - name: hanzo-app
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/hanzo-app
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: app
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - hanzo.app
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Hanzo Login --
+    - name: hanzo-login
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/hanzo-login
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: login
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+
+    # -- Chat --
+    - name: chat
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/chat
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: chat
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - chat.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== Commerce =====
+
+    # -- Commerce API --
+    - name: commerce
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/commerce
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: commerce
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        envFrom:
+          - secretRef:
+              name: commerce-secrets
+        ingress:
+          enabled: true
+          hosts:
+            - commerce.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Commerce Admin --
+    - name: commerce-admin
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/commerce-admin
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: commerce-admin
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+
+    # -- Billing --
+    - name: billing
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/billing
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: billing
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        envFrom:
+          - secretRef:
+              name: billing-secrets
+        ingress:
+          enabled: true
+          hosts:
+            - billing.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== AI & Bot =====
+
+    # -- Bot Gateway --
+    - name: bot-gateway
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/bot
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: bot-gateway
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        envFrom:
+          - secretRef:
+              name: bot-secrets
+        ingress:
+          enabled: true
+          hosts:
+            - bot.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- RAG API --
+    - name: rag-api
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/rag-api
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 8000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: rag-api
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+        livenessProbe:
+          path: /health
+          port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - rag.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== Platform & DevOps =====
+
+    # -- PaaS --
+    - name: paas
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/paas
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: paas
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - platform.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Flow (Workflow Builder) --
+    - name: flow
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/flow
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: flow
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        livenessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /health
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - flow.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Status Page --
+    - name: status
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/status
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: status
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - status.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # ===== Marketing & Docs =====
+
+    # -- Models Page --
+    - name: models
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/models
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: models
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - models.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Pricing Page --
+    - name: pricing
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/pricing
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: pricing
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+        ingress:
+          enabled: true
+          hosts:
+            - pricing.hanzo.ai
+          ingressClassName: ingress
+          tls: true
+          clusterIssuer: letsencrypt-prod
+
+    # -- Flow Site (Marketing) --
+    - name: flow-site
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/flow-site
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: flow-site
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1
+
+    # -- Bot Docs --
+    - name: bot-docs
+      spec:
+        image:
+          repository: ghcr.io/hanzoai/bot-docs
+          tag: latest
+          pullPolicy: Always
+        replicas: 2
+        ports:
+          - name: http
+            containerPort: 3000
+        strategy: RollingUpdate
+        partOf: hanzo-platform
+        component: bot-docs
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          path: /
+          port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        pdb:
+          enabled: true
+          minAvailable: 1

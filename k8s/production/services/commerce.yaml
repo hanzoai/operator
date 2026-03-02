@@ -1,0 +1,50 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoService
+metadata:
+  name: commerce
+  namespace: hanzo
+  labels:
+    app.kubernetes.io/part-of: hanzo-platform
+    app.kubernetes.io/component: commerce
+spec:
+  image:
+    repository: ghcr.io/hanzoai/commerce
+    tag: latest
+    pullPolicy: Always
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 3000
+  strategy: RollingUpdate
+  partOf: hanzo-platform
+  component: commerce
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  livenessProbe:
+    path: /health
+    port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 15
+  readinessProbe:
+    path: /health
+    port: 3000
+    initialDelaySeconds: 5
+    periodSeconds: 10
+  pdb:
+    enabled: true
+    minAvailable: 1
+  envFrom:
+    - secretRef:
+        name: commerce-secrets
+  ingress:
+    enabled: true
+    hosts:
+      - commerce.hanzo.ai
+    ingressClassName: ingress
+    tls: true
+    clusterIssuer: letsencrypt-prod
