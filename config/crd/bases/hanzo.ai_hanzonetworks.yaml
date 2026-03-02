@@ -1,0 +1,481 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: hanzonetworks.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    kind: HanzoNetwork
+    listKind: HanzoNetworkList
+    plural: hanzonetworks
+    shortNames:
+    - hnet
+    singular: hanzonetwork
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.activeValidators
+      name: Validators
+      type: integer
+    - jsonPath: .status.chainCount
+      name: Chains
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HanzoNetwork is the Schema for the hanzonetworks API.
+          It manages a blockchain network with validators, chains, and supporting services.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HanzoNetworkSpec defines the desired state of HanzoNetwork.
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                description: Annotations are additional annotations applied to all
+                  managed resources.
+                type: object
+              bootnode:
+                description: Bootnode configures the optional network bootnode.
+                properties:
+                  enabled:
+                    description: Enabled controls whether the bootnode is deployed.
+                    type: boolean
+                  image:
+                    default: ghcr.io/hanzoai/bootnode:latest
+                    description: Image is the bootnode container image.
+                    type: string
+                  resources:
+                    description: Resources configures CPU and memory for the bootnode.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                type: object
+              bridge:
+                description: Bridge configures the optional cross-chain bridge.
+                properties:
+                  enabled:
+                    description: Enabled controls whether the bridge is deployed.
+                    type: boolean
+                  image:
+                    default: ghcr.io/hanzoai/bridge:latest
+                    description: Image is the bridge container image.
+                    type: string
+                  resources:
+                    description: Resources configures CPU and memory for the bridge.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                type: object
+              chains:
+                description: Chains defines the chains in the network.
+                items:
+                  description: ChainSpec defines a blockchain chain configuration.
+                  properties:
+                    genesis:
+                      description: Genesis is the raw genesis configuration JSON.
+                      type: string
+                    name:
+                      description: Name is the chain identifier.
+                      type: string
+                    subnetID:
+                      description: SubnetID is the subnet this chain belongs to.
+                      type: string
+                    vmID:
+                      description: VMID is the virtual machine identifier for the
+                        chain.
+                      type: string
+                  required:
+                  - genesis
+                  - name
+                  - vmID
+                  type: object
+                type: array
+              explorer:
+                description: Explorer configures the optional blockchain explorer.
+                properties:
+                  backendImage:
+                    default: ghcr.io/hanzoai/explorer-api:latest
+                    description: BackendImage is the explorer backend container image.
+                    type: string
+                  enabled:
+                    description: Enabled controls whether the explorer is deployed.
+                    type: boolean
+                  frontendImage:
+                    default: ghcr.io/hanzoai/explorer-ui:latest
+                    description: FrontendImage is the explorer frontend container
+                      image.
+                    type: string
+                  postgresStorage:
+                    description: PostgresStorage configures storage for the explorer
+                      database.
+                    properties:
+                      retentionPolicy:
+                        allOf:
+                        - enum:
+                          - Retain
+                          - Delete
+                        - enum:
+                          - Retain
+                          - Delete
+                        default: Retain
+                        description: |-
+                          RetentionPolicy determines whether the PVC is retained or deleted
+                          when the datastore is removed.
+                        type: string
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Size is the requested storage capacity.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClassName:
+                        default: do-block-storage
+                        description: StorageClassName specifies the Kubernetes StorageClass
+                          to use.
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  resources:
+                    description: Resources configures CPU and memory for the explorer.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                type: object
+              imagePullSecrets:
+                description: ImagePullSecrets lists references to secrets for pulling
+                  container images.
+                items:
+                  type: string
+                type: array
+              indexer:
+                description: Indexer configures the optional blockchain indexer.
+                properties:
+                  enabled:
+                    description: Enabled controls whether the indexer is deployed.
+                    type: boolean
+                  image:
+                    default: ghcr.io/hanzoai/indexer:latest
+                    description: Image is the indexer container image.
+                    type: string
+                  resources:
+                    description: Resources configures CPU and memory for the indexer.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                type: object
+              labels:
+                additionalProperties:
+                  type: string
+                description: Labels are additional labels applied to all managed resources.
+                type: object
+              networkID:
+                description: NetworkID is the unique network identifier.
+                type: string
+              validators:
+                description: Validators configures the validator node set.
+                properties:
+                  bootstrapNodes:
+                    description: BootstrapNodes lists initial peer addresses for network
+                      bootstrapping.
+                    items:
+                      type: string
+                    type: array
+                  httpPort:
+                    default: 9650
+                    description: HTTPPort is the port used for HTTP API.
+                    format: int32
+                    type: integer
+                  image:
+                    description: Image defines the validator container image.
+                    properties:
+                      pullPolicy:
+                        default: IfNotPresent
+                        description: PullPolicy defines when to pull the image.
+                        enum:
+                        - Always
+                        - IfNotPresent
+                        - Never
+                        type: string
+                      repository:
+                        description: Repository is the container image repository.
+                        type: string
+                      tag:
+                        default: latest
+                        description: Tag is the container image tag.
+                        type: string
+                    required:
+                    - repository
+                    type: object
+                  replicas:
+                    default: 3
+                    description: Replicas is the number of validator nodes.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources configures CPU and memory for validators.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                  stakingPort:
+                    default: 9651
+                    description: StakingPort is the port used for staking connections.
+                    format: int32
+                    type: integer
+                  storage:
+                    description: Storage configures persistent storage for validator
+                      data.
+                    properties:
+                      retentionPolicy:
+                        allOf:
+                        - enum:
+                          - Retain
+                          - Delete
+                        - enum:
+                          - Retain
+                          - Delete
+                        default: Retain
+                        description: |-
+                          RetentionPolicy determines whether the PVC is retained or deleted
+                          when the datastore is removed.
+                        type: string
+                      size:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Size is the requested storage capacity.
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      storageClassName:
+                        default: do-block-storage
+                        description: StorageClassName specifies the Kubernetes StorageClass
+                          to use.
+                        type: string
+                    required:
+                    - size
+                    type: object
+                required:
+                - image
+                type: object
+            required:
+            - networkID
+            - validators
+            type: object
+          status:
+            description: HanzoNetworkStatus defines the observed state of HanzoNetwork.
+            properties:
+              activeValidators:
+                description: ActiveValidators is the number of running validator nodes.
+                format: int32
+                type: integer
+              bootstrapComplete:
+                description: BootstrapComplete indicates whether the network bootstrap
+                  has finished.
+                type: boolean
+              chainCount:
+                description: ChainCount is the number of configured chains.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions represent the latest observations of the network's
+                  state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,0 +1,35 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoGateway
+metadata:
+  name: api-gateway
+  namespace: hanzo
+spec:
+  image:
+    repository: ghcr.io/hanzoai/gateway
+    tag: latest
+  replicas: 2
+  endpoints:
+    - path: /v1
+      method: "*"
+      backends:
+        - host: cloud
+          port: 8080
+    - path: /auth
+      method: "*"
+      backends:
+        - host: iam
+          port: 8000
+  ingress:
+    enabled: true
+    hosts:
+      - gateway.hanzo.ai
+    ingressClassName: nginx
+    tls: true
+    clusterIssuer: letsencrypt-prod
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

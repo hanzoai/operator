@@ -1,0 +1,27 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoIngress
+metadata:
+  name: hanzo-domains
+  namespace: hanzo
+spec:
+  ingressClassName: nginx
+  clusterIssuer: letsencrypt-prod
+  domains:
+    - domain: api.hanzo.ai
+      tls: true
+      routes:
+        - path: /
+          serviceName: cloud
+          servicePort: 8080
+    - domain: chat.hanzo.ai
+      tls: true
+      routes:
+        - path: /
+          serviceName: chat
+          servicePort: 3080
+    - domain: platform.hanzo.ai
+      tls: true
+      routes:
+        - path: /
+          serviceName: paas
+          servicePort: 3000

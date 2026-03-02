@@ -1,0 +1,33 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoMPC
+metadata:
+  name: mpc-cluster
+  namespace: hanzo
+spec:
+  replicas: 3
+  threshold: 2
+  image:
+    repository: ghcr.io/hanzoai/mpc
+    tag: latest
+  p2pPort: 4000
+  apiPort: 8080
+  dashboard:
+    enabled: true
+    image: ghcr.io/hanzoai/mpc-dashboard:latest
+  cache:
+    enabled: true
+    image: ghcr.io/hanzoai/kv:8
+  ingress:
+    enabled: true
+    hosts:
+      - mpc.hanzo.ai
+    ingressClassName: nginx
+    tls: true
+    clusterIssuer: letsencrypt-prod
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi

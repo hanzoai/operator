@@ -1,0 +1,47 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoService
+metadata:
+  name: api
+  namespace: hanzo
+spec:
+  image:
+    repository: ghcr.io/hanzoai/cloud
+    tag: latest
+  replicas: 2
+  ports:
+    - name: http
+      containerPort: 8080
+      servicePort: 80
+      protocol: TCP
+  ingress:
+    enabled: true
+    hosts:
+      - api.hanzo.ai
+    ingressClassName: nginx
+    tls: true
+    clusterIssuer: letsencrypt-prod
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  probes:
+    readiness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 15
+      periodSeconds: 20

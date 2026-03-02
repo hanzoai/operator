@@ -1,0 +1,21 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDatastore
+metadata:
+  name: main-db
+  namespace: hanzo
+spec:
+  type: postgresql
+  replicas: 1
+  image:
+    repository: ghcr.io/hanzoai/sql
+    tag: "17"
+  storage:
+    storageClassName: do-block-storage
+    size: 50Gi
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
