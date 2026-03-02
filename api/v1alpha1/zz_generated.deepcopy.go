@@ -508,6 +508,13 @@ func (in *HanzoDatastoreSpec) DeepCopyInto(out *HanzoDatastoreSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.Sidecars != nil {
+		in, out := &in.Sidecars, &out.Sidecars
+		*out = make([]v1.Container, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 	if in.KMSSecrets != nil {
 		in, out := &in.KMSSecrets, &out.KMSSecrets
 		*out = make([]KMSSecretRef, len(*in))
@@ -2133,6 +2140,13 @@ func (in *ZAPSidecar) DeepCopyInto(out *ZAPSidecar) {
 		in, out := &in.Resources, &out.Resources
 		*out = new(ResourceRequirements)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.Env != nil {
+		in, out := &in.Env, &out.Env
+		*out = make([]v1.EnvVar, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 

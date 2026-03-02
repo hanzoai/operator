@@ -230,6 +230,10 @@ type ZAPSidecar struct {
 	// Resources configures CPU and memory for the ZAP sidecar.
 	// +optional
 	Resources *ResourceRequirements `json:"resources,omitempty"`
+
+	// Env is a list of additional environment variables for the ZAP sidecar.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
 }
 
 // NetworkPolicySpec configures network-level access control.

@@ -158,6 +158,9 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	containers := []corev1.Container{mainContainer}
 
+	// User-defined sidecars.
+	containers = append(containers, ds.Spec.Sidecars...)
+
 	// ZAP sidecar injection.
 	if ds.Spec.ZAP != nil && ds.Spec.ZAP.Enabled {
 		zapContainer := buildZAPSidecar(ds.Spec.ZAP)
@@ -317,6 +320,9 @@ func buildZAPSidecar(zap *v1alpha1.ZAPSidecar) corev1.Container {
 			Value: zap.Mode,
 		})
 	}
+
+	// Additional env vars from spec.
+	c.Env = append(c.Env, zap.Env...)
 
 	if zap.Resources != nil {
 		c.Resources = corev1.ResourceRequirements{

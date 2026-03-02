@@ -100,6 +100,10 @@ type HanzoDatastoreSpec struct {
 	// +optional
 	Args []string `json:"args,omitempty"`
 
+	// Sidecars are additional containers to run alongside the main datastore container.
+	// +optional
+	Sidecars []corev1.Container `json:"sidecars,omitempty"`
+
 	// CredentialsSecret is the name of a Secret containing datastore credentials.
 	// +optional
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
