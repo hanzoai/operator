@@ -6,7 +6,7 @@ import (
 )
 
 // DatastoreType identifies the kind of data service.
-// +kubebuilder:validation:Enum=postgresql;valkey;docdb;minio;nats;clickhouse
+// +kubebuilder:validation:Enum=postgresql;valkey;docdb;minio;nats;datastore
 type DatastoreType string
 
 const (
@@ -15,7 +15,7 @@ const (
 	DatastoreTypeDocDB      DatastoreType = "docdb"
 	DatastoreTypeMinio      DatastoreType = "minio"
 	DatastoreTypeNATS       DatastoreType = "nats"
-	DatastoreTypeClickhouse DatastoreType = "clickhouse"
+	DatastoreTypeDatastore  DatastoreType = "datastore"
 )
 
 // BackupSpec configures automated backups for a datastore.
@@ -179,7 +179,7 @@ type HanzoDatastoreStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // HanzoDatastore is the Schema for the hanzodatastores API.
-// It models stateful data services such as PostgreSQL, Valkey, DocDB, MinIO, NATS, and ClickHouse.
+// It models stateful data services such as PostgreSQL, Valkey, DocDB, MinIO, NATS, and Datastore.
 type HanzoDatastore struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
