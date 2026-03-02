@@ -140,6 +140,18 @@ type HanzoServiceSpec struct {
 	// VolumeMounts defines additional volume mounts for the main container.
 	// +optional
 	VolumeMounts []corev1.VolumeMount `json:"volumeMounts,omitempty"`
+
+	// InitContainers are containers that run before the main container starts.
+	// +optional
+	InitContainers []corev1.Container `json:"initContainers,omitempty"`
+
+	// Command overrides the container entrypoint.
+	// +optional
+	Command []string `json:"command,omitempty"`
+
+	// Args overrides the container arguments.
+	// +optional
+	Args []string `json:"args,omitempty"`
 }
 
 // HanzoServiceStatus defines the observed state of HanzoService.

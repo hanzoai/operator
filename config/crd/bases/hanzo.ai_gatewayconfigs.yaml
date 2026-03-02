@@ -1,0 +1,250 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: gatewayconfigs.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    kind: GatewayConfig
+    listKind: GatewayConfigList
+    plural: gatewayconfigs
+    shortNames:
+    - gwc
+    singular: gatewayconfig
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.ingressProvider
+      name: Provider
+      type: string
+    - jsonPath: .status.routeCount
+      name: Routes
+      type: integer
+    - jsonPath: .status.lastObservedHash
+      name: Hash
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: GatewayConfig is the Schema for the gatewayconfigs API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: GatewayConfigSpec defines the desired state of GatewayConfig.
+            properties:
+              defaults:
+                description: Defaults provides fallback values for route generation.
+                properties:
+                  addHeaders:
+                    additionalProperties:
+                      type: string
+                    description: AddHeaders are headers added to every proxied request.
+                    type: object
+                  backendScheme:
+                    description: BackendScheme is the default scheme for backend URLs.
+                      Defaults to "http".
+                    type: string
+                  timeout:
+                    description: Timeout is the default backend timeout. Defaults
+                      to "30s".
+                    type: string
+                type: object
+              ingressProvider:
+                default: traefik
+                description: |-
+                  IngressProvider is the ingress implementation to use.
+                  "traefik" means Traefik handles routing natively via K8s Ingress resources.
+                  "custom" means the operator generates ingress.json for the custom proxy.
+                type: string
+              ingressSelector:
+                description: IngressSelector filters which Ingress resources to process.
+                properties:
+                  matchLabels:
+                    additionalProperties:
+                      type: string
+                    description: MatchLabels selects Ingress resources with these
+                      labels.
+                    type: object
+                type: object
+              namespaces:
+                description: Namespaces restricts which namespaces are watched.
+                properties:
+                  include:
+                    description: Include lists namespaces to watch. Empty means all
+                      namespaces.
+                    items:
+                      type: string
+                    type: array
+                type: object
+              output:
+                description: Output defines where the generated config is stored.
+                properties:
+                  configMapName:
+                    description: ConfigMapName is the name of the ConfigMap to create/update.
+                    type: string
+                  key:
+                    description: Key is the data key within the ConfigMap. Defaults
+                      to "ingress.json".
+                    type: string
+                required:
+                - configMapName
+                type: object
+              target:
+                description: Target identifies the gateway Deployment to reload.
+                properties:
+                  deploymentName:
+                    description: DeploymentName is the name of the gateway Deployment.
+                    type: string
+                  reloadStrategy:
+                    description: ReloadStrategy controls how config changes are applied.
+                    type: string
+                required:
+                - deploymentName
+                type: object
+            required:
+            - output
+            - target
+            type: object
+          status:
+            description: GatewayConfigStatus defines the observed state of GatewayConfig.
+            properties:
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              conflicts:
+                description: Conflicts lists detected routing conflicts.
+                items:
+                  description: RouteConflict records a detected routing conflict.
+                  properties:
+                    backends:
+                      description: Backends lists the competing backend URLs.
+                      items:
+                        type: string
+                      type: array
+                    host:
+                      description: Host is the conflicting hostname.
+                      type: string
+                    path:
+                      description: Path is the conflicting path.
+                      type: string
+                    winner:
+                      description: Winner is the backend that was selected.
+                      type: string
+                  required:
+                  - backends
+                  - host
+                  - path
+                  - winner
+                  type: object
+                type: array
+              ingressProvider:
+                description: IngressProvider is the active ingress provider observed
+                  during the last reconciliation.
+                type: string
+              lastAppliedHash:
+                description: |-
+                  LastAppliedHash is the SHA256 hash of the last applied config.
+                  Only set when ingressProvider is "custom".
+                type: string
+              lastObservedHash:
+                description: |-
+                  LastObservedHash is the SHA256 hash of the rendered config from the last reconciliation.
+                  For "custom" mode this is the hash of the applied ConfigMap data.
+                  For "traefik" mode this is the hash of the observed Ingress state.
+                type: string
+              lastReconcileTime:
+                description: LastReconcileTime is when the last reconciliation completed.
+                format: date-time
+                type: string
+              routeCount:
+                description: RouteCount is the number of routes in the current config.
+                type: integer
+              skippedIngresses:
+                description: SkippedIngresses lists Ingress resources that were skipped
+                  (e.g., disabled).
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
