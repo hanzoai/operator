@@ -46,6 +46,7 @@ func MutateFuncFor(existing, desired client.Object) controllerutil.MutateFn {
 				return fmt.Errorf("desired is %T, want *appsv1.Deployment", desired)
 			}
 			e.Spec.Replicas = d.Spec.Replicas
+			e.Spec.MinReadySeconds = d.Spec.MinReadySeconds
 			e.Spec.Strategy = d.Spec.Strategy
 			e.Spec.Template = d.Spec.Template
 			// Selector is immutable after creation; only set if empty.
@@ -68,6 +69,8 @@ func MutateFuncFor(existing, desired client.Object) controllerutil.MutateFn {
 				return fmt.Errorf("desired is %T, want *appsv1.StatefulSet", desired)
 			}
 			e.Spec.Replicas = d.Spec.Replicas
+			e.Spec.MinReadySeconds = d.Spec.MinReadySeconds
+			e.Spec.UpdateStrategy = d.Spec.UpdateStrategy
 			e.Spec.Template = d.Spec.Template
 			// Selector and VolumeClaimTemplates are immutable after creation.
 			if e.Spec.Selector == nil {
