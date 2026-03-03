@@ -23,10 +23,23 @@ func BuildDeployment(
 	imagePullSecrets []corev1.LocalObjectReference,
 	serviceAccountName string,
 ) *appsv1.Deployment {
-	s := appsv1.RollingUpdateDeploymentStrategyType
-	if strategy == v1alpha1.DeploymentStrategyRecreate {
-		s = appsv1.RecreateDeploymentStrategyType
+	s := appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       intStrPtr(1),
+			MaxUnavailable: intStrPtr(0),
+		},
 	}
+	if strategy == v1alpha1.DeploymentStrategyRecreate {
+		s = appsv1.DeploymentStrategy{
+			Type: appsv1.RecreateDeploymentStrategyType,
+		}
+	}
+
+	terminationGrace := int64(30)
+
+	// Inject preStop lifecycle hook for graceful shutdown.
+	containers = injectPreStopHook(containers)
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -35,22 +48,22 @@ func BuildDeployment(
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: replicas,
+			Replicas:        replicas,
+			MinReadySeconds: 10,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selectorLabels,
 			},
-			Strategy: appsv1.DeploymentStrategy{
-				Type: s,
-			},
+			Strategy: s,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers:         containers,
-					Volumes:            volumes,
-					ImagePullSecrets:   imagePullSecrets,
-					ServiceAccountName: serviceAccountName,
+					Containers:                    containers,
+					Volumes:                       volumes,
+					ImagePullSecrets:              imagePullSecrets,
+					ServiceAccountName:            serviceAccountName,
+					TerminationGracePeriodSeconds: &terminationGrace,
 				},
 			},
 		},
@@ -68,6 +81,11 @@ func BuildStatefulSet(
 	imagePullSecrets []corev1.LocalObjectReference,
 	serviceName string,
 ) *appsv1.StatefulSet {
+	terminationGrace := int64(30)
+
+	// Inject preStop lifecycle hook for graceful shutdown.
+	containers = injectPreStopHook(containers)
+
 	return &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -75,8 +93,12 @@ func BuildStatefulSet(
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas:    replicas,
-			ServiceName: serviceName,
+			Replicas:        replicas,
+			MinReadySeconds: 10,
+			ServiceName:     serviceName,
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.RollingUpdateStatefulSetStrategyType,
+			},
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selectorLabels,
 			},
@@ -86,9 +108,10 @@ func BuildStatefulSet(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
-					Containers:       containers,
-					Volumes:          volumes,
-					ImagePullSecrets: imagePullSecrets,
+					Containers:                    containers,
+					Volumes:                       volumes,
+					ImagePullSecrets:              imagePullSecrets,
+					TerminationGracePeriodSeconds: &terminationGrace,
 				},
 			},
 		},
@@ -376,4 +399,31 @@ func derefInt32(p *int32, def int32) int32 {
 		return *p
 	}
 	return def
+}
+
+// intStrPtr returns a pointer to an IntOrString from an int value.
+func intStrPtr(val int32) *intstr.IntOrString {
+	v := intstr.FromInt32(val)
+	return &v
+}
+
+// injectPreStopHook adds a preStop lifecycle hook to each container that
+// does not already have one. The hook sleeps for 5 seconds to allow
+// in-flight requests to drain before the container receives SIGTERM.
+func injectPreStopHook(containers []corev1.Container) []corev1.Container {
+	out := make([]corev1.Container, len(containers))
+	for i, c := range containers {
+		if c.Lifecycle == nil {
+			c.Lifecycle = &corev1.Lifecycle{}
+		}
+		if c.Lifecycle.PreStop == nil {
+			c.Lifecycle.PreStop = &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "-c", "sleep 5"},
+				},
+			}
+		}
+		out[i] = c
+	}
+	return out
 }
