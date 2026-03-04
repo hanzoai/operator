@@ -190,12 +190,16 @@ func BuildIngress(
 		// Add custom path rules.
 		for _, pr := range spec.PathRules {
 			pt := pathTypeFromString(pr.PathType)
+			backendSvc := serviceName
+			if pr.ServiceName != "" {
+				backendSvc = pr.ServiceName
+			}
 			paths = append(paths, networkingv1.HTTPIngressPath{
 				Path:     pr.Path,
 				PathType: &pt,
 				Backend: networkingv1.IngressBackend{
 					Service: &networkingv1.IngressServiceBackend{
-						Name: serviceName,
+						Name: backendSvc,
 						Port: networkingv1.ServiceBackendPort{
 							Number: pr.Port,
 						},

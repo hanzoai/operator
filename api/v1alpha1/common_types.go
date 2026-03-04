@@ -169,6 +169,11 @@ type PathRule struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
+
+	// ServiceName overrides the default backend service for this path.
+	// If empty, the parent HanzoService name is used.
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
 }
 
 // ZeroTrustPolicySpec configures identity-aware access control.
