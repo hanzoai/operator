@@ -4579,6 +4579,11 @@ spec:
                                     maximum: 65535
                                     minimum: 1
                                     type: integer
+                                  serviceName:
+                                    description: |-
+                                      ServiceName overrides the default backend service for this path.
+                                      If empty, the parent HanzoService name is used.
+                                    type: string
                                 required:
                                 - path
                                 - pathType
@@ -5118,6 +5123,11 @@ spec:
                                     maximum: 65535
                                     minimum: 1
                                     type: integer
+                                  serviceName:
+                                    description: |-
+                                      ServiceName overrides the default backend service for this path.
+                                      If empty, the parent HanzoService name is used.
+                                    type: string
                                 required:
                                 - path
                                 - pathType
@@ -5967,6 +5977,11 @@ spec:
                                     maximum: 65535
                                     minimum: 1
                                     type: integer
+                                  serviceName:
+                                    description: |-
+                                      ServiceName overrides the default backend service for this path.
+                                      If empty, the parent HanzoService name is used.
+                                    type: string
                                 required:
                                 - path
                                 - pathType
