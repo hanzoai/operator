@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	v1alpha1 "github.com/hanzoai/operator/api/v1alpha1"
+	rolloutcli "github.com/hanzoai/operator/cmd/rollout/cli"
 	"github.com/hanzoai/operator/internal/controller"
 	_ "github.com/hanzoai/operator/internal/metrics" // Register custom Prometheus metrics.
 	// +kubebuilder:scaffold:imports
@@ -55,6 +56,13 @@ func init() {
 
 // nolint:gocyclo
 func main() {
+	// Subcommand dispatch: `hanzo-operator rollout [flags]` runs the
+	// progressive rollout engine. With no subcommand, fall through to the
+	// controller-manager (the default mode).
+	if len(os.Args) > 1 && os.Args[1] == "rollout" {
+		os.Exit(rolloutcli.Run(os.Args[2:]))
+	}
+
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
