@@ -20,7 +20,7 @@ spec:
           enabled: true
           hosts:
             - api.hanzo.ai
-          ingressClassName: nginx
+          ingressClassName: hanzo
           tls: true
           clusterIssuer: letsencrypt-prod
   datastores:
@@ -37,7 +37,7 @@ spec:
   ingress:
     name: hanzo-domains
     spec:
-      ingressClassName: nginx
+      ingressClassName: hanzo
       clusterIssuer: letsencrypt-prod
       domains:
         - domain: api.hanzo.ai

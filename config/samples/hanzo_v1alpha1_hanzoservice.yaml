@@ -17,7 +17,7 @@ spec:
     enabled: true
     hosts:
       - api.hanzo.ai
-    ingressClassName: nginx
+    ingressClassName: hanzo
     tls: true
     clusterIssuer: letsencrypt-prod
   autoscaling:

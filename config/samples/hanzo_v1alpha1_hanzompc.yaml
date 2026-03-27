@@ -21,7 +21,7 @@ spec:
     enabled: true
     hosts:
       - mpc.hanzo.ai
-    ingressClassName: nginx
+    ingressClassName: hanzo
     tls: true
     clusterIssuer: letsencrypt-prod
   resources:

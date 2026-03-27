@@ -235,6 +235,14 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "HanzoPlatform")
 		os.Exit(1)
 	}
+	if err := (&controller.HanzoDNSReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("HanzoDNS"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "HanzoDNS")
+		os.Exit(1)
+	}
 
 	// +kubebuilder:scaffold:builder
 
