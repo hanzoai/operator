@@ -23,7 +23,7 @@ spec:
     enabled: true
     hosts:
       - gateway.hanzo.ai
-    ingressClassName: nginx
+    ingressClassName: hanzo
     tls: true
     clusterIssuer: letsencrypt-prod
   resources:

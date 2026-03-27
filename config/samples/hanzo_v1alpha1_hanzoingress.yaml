@@ -4,7 +4,7 @@ metadata:
   name: hanzo-domains
   namespace: hanzo
 spec:
-  ingressClassName: nginx
+  ingressClassName: hanzo
   clusterIssuer: letsencrypt-prod
   domains:
     - domain: api.hanzo.ai

@@ -1,0 +1,46 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: HanzoDNS
+metadata:
+  name: hanzodns-sample
+  namespace: hanzo-dns
+spec:
+  zones:
+    - name: hanzo.ai
+      cloudflareZoneId: ""
+    - name: lux.network
+      cloudflareZoneId: ""
+    - name: zoo.ngo
+      cloudflareZoneId: ""
+  coredns:
+    image: ghcr.io/hanzoai/dns:latest
+    replicas: 2
+    apiPort: 8443
+    dnsPort: 53
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "256Mi"
+  cloudflare:
+    enabled: true
+    credentialsRef:
+      name: cloudflare-api-token
+      namespace: hanzo-dns
+  database:
+    enabled: true
+    credentialsRef:
+      name: dns-database-credentials
+      namespace: hanzo-dns
+    syncInterval: "30s"
+  oidc:
+    enabled: true
+    issuer: "https://hanzo.id"
+    audience: "dns.hanzo.ai"
+  ingress:
+    enabled: true
+    hosts:
+      - dns-api.hanzo.ai
+    tls: true
+    clusterIssuer: letsencrypt-prod
