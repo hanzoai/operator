@@ -13,7 +13,7 @@ One binary, two modes:
 - Image: `ghcr.io/hanzoai/operator:latest`
 - Runs in `hanzo-operator-system` namespace
 
-## 7 CRDs
+## 8 CRDs
 
 | CRD | Short | Creates |
 |-----|-------|---------|
@@ -24,6 +24,7 @@ One binary, two modes:
 | **HanzoNetwork** | `hnet` | StatefulSet (validators), Deployments (bootnode/indexer/explorer/bridge), Services, ConfigMaps |
 | **HanzoIngress** | `hing` | Multiple Ingress resources with cert-manager TLS |
 | **HanzoPlatform** | `hplat` | Child CRDs (all of the above) |
+| **BaseApp** | `bapp` | StatefulSet (base-ha pods, BASE_* env wired from ordinals), headless Service `<name>-hs` (pod DNS), ClusterIP Service `<name>` (gateway round-robin target), NetworkPolicy (pod-to-pod on HTTP port), optional KMSSecret CRs, optional gateway.json ConfigMap patch injecting a `base_ha` upstream for `.spec.gateway.route`. Status reports `.currentWriter` + `.term` via `GET /_ha/leader`. Sample: `config/samples/hanzo_v1alpha1_baseapp.yaml`. |
 
 ## Layout
 ```
