@@ -57,3 +57,8 @@ func SetServicePhase(s *v1alpha1.HanzoServiceStatus, phase v1alpha1.Phase) {
 func SetDatastorePhase(s *v1alpha1.HanzoDatastoreStatus, phase v1alpha1.Phase) {
 	s.Phase = phase
 }
+
+// SetBaseAppPhase sets the Phase field on a BaseAppStatus.
+func SetBaseAppPhase(s *v1alpha1.BaseAppStatus, phase v1alpha1.Phase) {
+	s.Phase = phase
+}
