@@ -1,0 +1,48 @@
+apiVersion: hanzo.ai/v1alpha1
+kind: BaseApp
+metadata:
+  name: foo
+  namespace: hanzo
+spec:
+  replicas: 3
+  image:
+    repository: us-docker.pkg.dev/hanzo-registry/hanzoai/base-ha
+    tag: v1.0.0
+    pullPolicy: IfNotPresent
+  port: 8090
+  consensus: quasar
+  schema: foo-schema
+  storage:
+    size: 10Gi
+    storageClassName: premium-rwo
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+  gateway:
+    route: /v1/app/foo
+    gatewayName: gateway
+    gatewayNamespace: hanzo
+    leaderPollInterval: "1s"
+    readYourWritesTTL: "5s"
+  iamApp: hanzo-foo
+  kmsSecrets:
+    - hostAPI: https://kms.hanzo.ai/api
+      projectSlug: hanzo
+      envSlug: production
+      secretsPath: apps/foo
+      managedSecretName: foo-secrets
+      credentialsRef:
+        name: kms-credentials
+        namespace: hanzo
+  networkPolicy:
+    enabled: true
+  serviceMonitor:
+    enabled: true
+    metricsPort: http
+    metricsPath: /metrics
+    interval: 30s
+  partOf: hanzo

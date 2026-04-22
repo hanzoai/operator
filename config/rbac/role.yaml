@@ -65,7 +65,9 @@ rules:
 - apiGroups:
   - hanzo.ai
   resources:
+  - baseapps
   - hanzodatastores
+  - hanzodns
   - hanzogateways
   - hanzoingresses
   - hanzompcs
@@ -83,7 +85,9 @@ rules:
 - apiGroups:
   - hanzo.ai
   resources:
+  - baseapps/finalizers
   - hanzodatastores/finalizers
+  - hanzodns/finalizers
   - hanzogateways/finalizers
   - hanzoingresses/finalizers
   - hanzompcs/finalizers
@@ -95,7 +99,9 @@ rules:
 - apiGroups:
   - hanzo.ai
   resources:
+  - baseapps/status
   - hanzodatastores/status
+  - hanzodns/status
   - hanzogateways/status
   - hanzoingresses/status
   - hanzompcs/status

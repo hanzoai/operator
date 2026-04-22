@@ -1,0 +1,418 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: hanzodnses.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    kind: HanzoDNS
+    listKind: HanzoDNSList
+    plural: hanzodnses
+    shortNames:
+    - hdns
+    singular: hanzodns
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.managedZones
+      name: Zones
+      type: integer
+    - jsonPath: .status.corednsReady
+      name: CoreDNS
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HanzoDNS is the Schema for the hanzodns API.
+          It manages multi-tenant DNS zones with CoreDNS and Cloudflare edge sync.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: HanzoDNSSpec defines the desired state of HanzoDNS.
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                description: Annotations are additional annotations applied to managed
+                  resources.
+                type: object
+              cloudflare:
+                description: Cloudflare configures Cloudflare edge synchronization.
+                properties:
+                  credentialsRef:
+                    description: |-
+                      CredentialsRef references a Secret containing the Cloudflare API token.
+                      The secret must have a key named "api-token".
+                    properties:
+                      name:
+                        description: name is unique within a namespace to reference
+                          a secret resource.
+                        type: string
+                      namespace:
+                        description: namespace defines the space within which the
+                          secret name must be unique.
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  enabled:
+                    description: Enabled controls whether Cloudflare sync is active.
+                    type: boolean
+                type: object
+              coredns:
+                description: CoreDNS configures the CoreDNS deployment.
+                properties:
+                  apiPort:
+                    default: 8443
+                    description: APIPort is the REST API port for the hanzodns plugin.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  dnsPort:
+                    default: 53
+                    description: DNSPort is the DNS listener port.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  image:
+                    default: ghcr.io/hanzoai/dns:latest
+                    description: Image is the CoreDNS container image.
+                    type: string
+                  replicas:
+                    default: 2
+                    description: Replicas is the number of CoreDNS replicas.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources configures CPU and memory for CoreDNS pods.
+                    properties:
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Limits describes the maximum amount of compute
+                          resources allowed.
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: Requests describes the minimum amount of compute
+                          resources required.
+                        type: object
+                    type: object
+                type: object
+              database:
+                description: Database configures the PostgreSQL sync watcher.
+                properties:
+                  credentialsRef:
+                    description: |-
+                      CredentialsRef references a Secret containing "database-url" key
+                      with the PostgreSQL connection string.
+                    properties:
+                      name:
+                        description: name is unique within a namespace to reference
+                          a secret resource.
+                        type: string
+                      namespace:
+                        description: namespace defines the space within which the
+                          secret name must be unique.
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  enabled:
+                    description: Enabled controls whether the PG sync watcher is active.
+                    type: boolean
+                  syncInterval:
+                    default: 30s
+                    description: SyncInterval is the polling interval for database
+                      changes.
+                    type: string
+                type: object
+              ingress:
+                description: Ingress configures external access to the DNS API.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations are additional annotations applied to
+                      the Ingress resource.
+                    type: object
+                  clusterIssuer:
+                    default: letsencrypt-prod
+                    description: ClusterIssuer is the cert-manager ClusterIssuer to
+                      use for TLS certificates.
+                    type: string
+                  enabled:
+                    description: Enabled controls whether an Ingress resource is created.
+                    type: boolean
+                  hosts:
+                    description: Hosts lists the hostnames for the Ingress.
+                    items:
+                      type: string
+                    type: array
+                  ingressClassName:
+                    default: ingress
+                    description: IngressClassName specifies the Ingress class to use.
+                    type: string
+                  pathRules:
+                    description: PathRules defines per-path routing rules.
+                    items:
+                      description: PathRule defines a single path-based routing rule
+                        within an Ingress.
+                      properties:
+                        path:
+                          description: Path is the URL path to match.
+                          type: string
+                        pathType:
+                          description: PathType specifies how the path is matched.
+                          enum:
+                          - Exact
+                          - Prefix
+                          - ImplementationSpecific
+                          type: string
+                        port:
+                          description: Port is the backend service port for this path.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        serviceName:
+                          description: |-
+                            ServiceName overrides the default backend service for this path.
+                            If empty, the parent HanzoService name is used.
+                          type: string
+                      required:
+                      - path
+                      - pathType
+                      - port
+                      type: object
+                    type: array
+                  tls:
+                    default: true
+                    description: TLS enables TLS termination on the Ingress.
+                    type: boolean
+                  zeroTrustPolicy:
+                    description: ZeroTrustPolicy configures zero-trust access control
+                      on the Ingress.
+                    properties:
+                      allowedDomains:
+                        description: AllowedDomains lists email domains permitted
+                          access.
+                        items:
+                          type: string
+                        type: array
+                      allowedEmails:
+                        description: AllowedEmails lists email addresses permitted
+                          access.
+                        items:
+                          type: string
+                        type: array
+                      allowedGroups:
+                        description: AllowedGroups lists IAM groups permitted access.
+                        items:
+                          type: string
+                        type: array
+                      enabled:
+                        description: Enabled controls whether zero-trust policy is
+                          enforced.
+                        type: boolean
+                      iamEndpoint:
+                        description: IAMEndpoint is the identity provider endpoint
+                          used for verification.
+                        type: string
+                      sessionDuration:
+                        default: 24h
+                        description: SessionDuration controls how long a session remains
+                          valid.
+                        type: string
+                    type: object
+                type: object
+              labels:
+                additionalProperties:
+                  type: string
+                description: Labels are additional labels applied to all managed resources.
+                type: object
+              oidc:
+                description: OIDC configures JWT authentication for the REST API.
+                properties:
+                  audience:
+                    description: Audience is the expected JWT audience claim.
+                    type: string
+                  enabled:
+                    description: Enabled controls whether OIDC authentication is enforced.
+                    type: boolean
+                  issuer:
+                    description: Issuer is the OIDC issuer URL (e.g. "https://hanzo.id").
+                    type: string
+                type: object
+              zones:
+                description: Zones defines the DNS zones to manage.
+                items:
+                  description: DNSZoneSpec defines a DNS zone managed by the operator.
+                  properties:
+                    cloudflareZoneId:
+                      description: CloudflareZoneID is the Cloudflare zone ID for
+                        edge sync.
+                      type: string
+                    name:
+                      description: Name is the fully qualified domain name (e.g. "example.com").
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+            type: object
+          status:
+            description: HanzoDNSStatus defines the observed state of HanzoDNS.
+            properties:
+              conditions:
+                description: Conditions represent the latest observations of the DNS
+                  state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              corednsReady:
+                description: CoreDNSReady indicates whether the CoreDNS deployment
+                  is available.
+                type: boolean
+              managedZones:
+                description: ManagedZones is the total number of zones managed.
+                format: int32
+                type: integer
+              observedGeneration:
+                description: ObservedGeneration is the most recent generation observed
+                  by the controller.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the current lifecycle phase.
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                type: string
+              zoneStatuses:
+                description: ZoneStatuses tracks per-zone sync state.
+                items:
+                  description: ZoneSyncStatus tracks the sync state of a DNS zone.
+                  properties:
+                    cloudflareSynced:
+                      description: CloudflareSynced indicates whether the zone is
+                        synced to Cloudflare.
+                      type: boolean
+                    corednsSynced:
+                      description: CoreDNSSynced indicates whether the zone is synced
+                        to CoreDNS.
+                      type: boolean
+                    lastSyncTime:
+                      description: LastSyncTime is the last successful sync timestamp.
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name is the zone domain name.
+                      type: string
+                    recordCount:
+                      description: RecordCount is the number of records in this zone.
+                      format: int32
+                      type: integer
+                  required:
+                  - cloudflareSynced
+                  - corednsSynced
+                  - name
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
