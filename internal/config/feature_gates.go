@@ -6,7 +6,6 @@ type FeatureGates struct {
 	ServiceMonitors   bool
 	NetworkPolicies   bool
 	Webhooks          bool
-	ZAPSidecar        bool
 	BlockchainNetwork bool
 	MPCCluster        bool
 }
@@ -17,7 +16,6 @@ var DefaultFeatureGates = FeatureGates{
 	ServiceMonitors:   false,
 	NetworkPolicies:   true,
 	Webhooks:          false,
-	ZAPSidecar:        true,
 	BlockchainNetwork: true,
 	MPCCluster:        true,
 }

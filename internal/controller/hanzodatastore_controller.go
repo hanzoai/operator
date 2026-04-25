@@ -161,12 +161,6 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// User-defined sidecars.
 	containers = append(containers, ds.Spec.Sidecars...)
 
-	// ZAP sidecar injection.
-	if ds.Spec.ZAP != nil && ds.Spec.ZAP.Enabled {
-		zapContainer := buildZAPSidecar(ds.Spec.ZAP)
-		containers = append(containers, zapContainer)
-	}
-
 	// PVC template.
 	storageClassName := ds.Spec.Storage.StorageClassName
 	pvcTemplates := []corev1.PersistentVolumeClaim{
@@ -288,50 +282,6 @@ func (r *HanzoDatastoreReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	log.Info("Reconciliation complete", "phase", ds.Status.Phase)
 	return ctrl.Result{}, nil
-}
-
-// buildZAPSidecar constructs a ZAP sidecar container from the spec.
-func buildZAPSidecar(zap *v1alpha1.ZAPSidecar) corev1.Container {
-	image := zap.Image
-	if image == "" {
-		image = "ghcr.io/hanzoai/zap:latest"
-	}
-
-	port := zap.Port
-	if port == 0 {
-		port = 9999
-	}
-
-	c := corev1.Container{
-		Name:  "zap",
-		Image: image,
-		Ports: []corev1.ContainerPort{
-			{
-				Name:          "zap",
-				ContainerPort: port,
-				Protocol:      corev1.ProtocolTCP,
-			},
-		},
-	}
-
-	if zap.Mode != "" {
-		c.Env = append(c.Env, corev1.EnvVar{
-			Name:  "ZAP_MODE",
-			Value: zap.Mode,
-		})
-	}
-
-	// Additional env vars from spec.
-	c.Env = append(c.Env, zap.Env...)
-
-	if zap.Resources != nil {
-		c.Resources = corev1.ResourceRequirements{
-			Requests: zap.Resources.Requests,
-			Limits:   zap.Resources.Limits,
-		}
-	}
-
-	return c
 }
 
 // dataMountPath returns the data directory for each datastore type.

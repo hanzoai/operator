@@ -72,10 +72,6 @@ type HanzoDatastoreSpec struct {
 	// +optional
 	Resources *ResourceRequirements `json:"resources,omitempty"`
 
-	// ZAP configures the ZAP sidecar proxy.
-	// +optional
-	ZAP *ZAPSidecar `json:"zap,omitempty"`
-
 	// Env is a list of environment variables to set in the container.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
