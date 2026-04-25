@@ -221,7 +221,7 @@ type ZAPSidecar struct {
 	Mode string `json:"mode,omitempty"`
 
 	// Port is the port the ZAP sidecar listens on.
-	// +kubebuilder:default=9651
+	// +kubebuilder:default=9999
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
 	// +optional
