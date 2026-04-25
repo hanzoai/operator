@@ -204,43 +204,6 @@ type ZeroTrustPolicySpec struct {
 	IAMEndpoint string `json:"iamEndpoint,omitempty"`
 }
 
-// ZAPSidecar configures the ZAP (Zero-latency Access Proxy) sidecar container.
-type ZAPSidecar struct {
-	// Enabled controls whether the ZAP sidecar is injected.
-	// +optional
-	Enabled bool `json:"enabled,omitempty"`
-
-	// Image is the ZAP sidecar container image.
-	// +kubebuilder:default="ghcr.io/hanzoai/zap:latest"
-	// +optional
-	Image string `json:"image,omitempty"`
-
-	// Mode selects the ZAP proxy backend type.
-	// +kubebuilder:validation:Enum=sql;kv;s3;nats
-	// +optional
-	Mode string `json:"mode,omitempty"`
-
-	// Port is the port the ZAP sidecar listens on.
-	// +kubebuilder:default=9999
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	// +optional
-	Port int32 `json:"port,omitempty"`
-
-	// BackendEnvVar is the environment variable name injected into the main
-	// container with the ZAP backend connection string.
-	// +optional
-	BackendEnvVar string `json:"backendEnvVar,omitempty"`
-
-	// Resources configures CPU and memory for the ZAP sidecar.
-	// +optional
-	Resources *ResourceRequirements `json:"resources,omitempty"`
-
-	// Env is a list of additional environment variables for the ZAP sidecar.
-	// +optional
-	Env []corev1.EnvVar `json:"env,omitempty"`
-}
-
 // NetworkPolicySpec configures network-level access control.
 type NetworkPolicySpec struct {
 	// Enabled controls whether a NetworkPolicy is created.
