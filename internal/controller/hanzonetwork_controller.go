@@ -73,11 +73,11 @@ func (r *HanzoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	stakingPort := net.Spec.Validators.StakingPort
 	if stakingPort == 0 {
-		stakingPort = 9651
+		stakingPort = 9631
 	}
 	httpPort := net.Spec.Validators.HTTPPort
 	if httpPort == 0 {
-		httpPort = 9650
+		httpPort = 9630
 	}
 
 	bootstrapNodes := strings.Join(net.Spec.Validators.BootstrapNodes, ",")
@@ -186,7 +186,7 @@ func (r *HanzoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			net.Spec.Bootnode.Image, "ghcr.io/hanzoai/bootnode:latest",
 			net.Spec.Bootnode.Resources, allLabels, imagePullSecrets,
 			[]corev1.EnvVar{{Name: "NETWORK_ID", Value: net.Spec.NetworkID}},
-			9651, "staking"); err != nil {
+			9631, "staking"); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
