@@ -29,12 +29,12 @@ type ValidatorSpec struct {
 	BootstrapNodes []string `json:"bootstrapNodes,omitempty"`
 
 	// StakingPort is the port used for staking connections.
-	// +kubebuilder:default=9651
+	// +kubebuilder:default=9631
 	// +optional
 	StakingPort int32 `json:"stakingPort,omitempty"`
 
 	// HTTPPort is the port used for HTTP API.
-	// +kubebuilder:default=9650
+	// +kubebuilder:default=9630
 	// +optional
 	HTTPPort int32 `json:"httpPort,omitempty"`
 }
