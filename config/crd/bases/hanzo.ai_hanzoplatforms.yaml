@@ -4420,7 +4420,7 @@ spec:
                               - nats
                               type: string
                             port:
-                              default: 9651
+                              default: 9999
                               description: Port is the port the ZAP sidecar listens
                                 on.
                               format: int32
@@ -5501,7 +5501,7 @@ spec:
                                 type: string
                               type: array
                             httpPort:
-                              default: 9650
+                              default: 9630
                               description: HTTPPort is the port used for HTTP API.
                               format: int32
                               type: integer
@@ -5559,7 +5559,7 @@ spec:
                                   type: object
                               type: object
                             stakingPort:
-                              default: 9651
+                              default: 9631
                               description: StakingPort is the port used for staking
                                 connections.
                               format: int32

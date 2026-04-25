@@ -299,7 +299,7 @@ func buildZAPSidecar(zap *v1alpha1.ZAPSidecar) corev1.Container {
 
 	port := zap.Port
 	if port == 0 {
-		port = 9651
+		port = 9999
 	}
 
 	c := corev1.Container{

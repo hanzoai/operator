@@ -10,8 +10,8 @@ spec:
     image:
       repository: ghcr.io/luxfi/node
       tag: latest
-    stakingPort: 9651
-    httpPort: 9650
+    stakingPort: 9631  # mainnet (devnet uses 9651)
+    httpPort: 9630      # mainnet (devnet uses 9650)
     bootstrapNodes: []
     storage:
       storageClassName: do-block-storage
