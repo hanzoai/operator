@@ -4,7 +4,6 @@ go 1.26.1
 
 require (
 	github.com/go-logr/logr v1.4.3
-	github.com/hanzoai/rollout v0.0.0-00010101000000-000000000000
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.0
 	github.com/prometheus/client_golang v1.23.2
@@ -13,8 +12,6 @@ require (
 	k8s.io/client-go v0.35.3
 	sigs.k8s.io/controller-runtime v0.23.3
 )
-
-replace github.com/hanzoai/rollout => ../../hanzo/rollout
 
 require (
 	cel.dev/expr v0.25.1 // indirect
@@ -54,6 +51,7 @@ require (
 	github.com/google/pprof v0.0.0-20260302011040-a15ffb7f9dcc // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
+	github.com/hanzoai/rollout v0.1.0
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
