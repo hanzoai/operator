@@ -102,7 +102,7 @@ spec:
                     minimum: 1
                     type: integer
                   image:
-                    default: ghcr.io/hanzoai/dns:latest
+                    default: ghcr.io/hanzoai/dns:0.10.0
                     description: Image is the CoreDNS container image.
                     type: string
                   replicas:

@@ -146,7 +146,7 @@ spec:
                       deployed.
                     type: boolean
                   image:
-                    default: ghcr.io/hanzoai/ingress:latest
+                    default: ghcr.io/hanzoai/ingress:1.7.41
                     description: Image is the ingress controller container image.
                     type: string
                   resources:
