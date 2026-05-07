@@ -12,7 +12,7 @@ spec:
     - name: zoo.ngo
       cloudflareZoneId: ""
   coredns:
-    image: ghcr.io/hanzoai/dns:latest
+    image: ghcr.io/hanzoai/dns:0.10.0
     replicas: 2
     apiPort: 8443
     dnsPort: 53
