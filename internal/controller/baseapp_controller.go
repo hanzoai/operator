@@ -385,8 +385,8 @@ func (r *BaseAppReconciler) reconcileGatewayRoute(ctx context.Context, app *v1al
 	}
 
 	endpoint := map[string]any{
-		"endpoint":       g.Route,
-		"method":         "GET",
+		"endpoint":        g.Route,
+		"method":          "GET",
 		"output_encoding": "no-op",
 		"backend": []map[string]any{
 			{

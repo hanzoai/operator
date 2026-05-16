@@ -239,20 +239,42 @@ func (r *HanzoNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		desiredReplicas = *net.Spec.Validators.Replicas
 	}
 
-	if currentSTS.Status.ReadyReplicas >= desiredReplicas && desiredReplicas > 0 {
-		net.Status.Phase = v1alpha1.PhaseRunning
-		net.Status.BootstrapComplete = true
-		status.SetCondition(&net.Status.Conditions, v1alpha1.ConditionTypeReady,
-			metav1.ConditionTrue, "Available", "All validators are ready")
-	} else if currentSTS.Status.ReadyReplicas > 0 {
-		net.Status.Phase = v1alpha1.PhaseDegraded
-		status.SetCondition(&net.Status.Conditions, v1alpha1.ConditionTypeReady,
-			metav1.ConditionFalse, "Degraded",
-			fmt.Sprintf("%d/%d validators ready", currentSTS.Status.ReadyReplicas, desiredReplicas))
-	} else {
+	if currentSTS.Status.ReadyReplicas == 0 {
+		// No validators yet — distinct phase from Degraded so the
+		// controller doesn't trip alerting before the first pod comes up.
 		net.Status.Phase = v1alpha1.PhaseCreating
 		status.SetCondition(&net.Status.Conditions, v1alpha1.ConditionTypeReady,
 			metav1.ConditionFalse, "NotReady", "No validators are ready yet")
+	} else {
+		// Phase selection delegates to the shared convergence helper —
+		// same shape as lux/liquidity/zoo Rust operators. Hanzo networks
+		// use closed-set bootstrapping (StatefulSet headless DNS); we
+		// have no fine-grained chain-fault probing yet, so treat the
+		// missing-pod count as infra-blind unless we have stronger
+		// signal in the future.
+		in := status.DegradationInputs{
+			HealthyValidators:     currentSTS.Status.ReadyReplicas,
+			TotalValidators:       desiredReplicas,
+			UnreachableValidators: desiredReplicas - currentSTS.Status.ReadyReplicas,
+			ClosedValidatorSet:    true,
+			ChainFaultObserved:    false,
+		}
+		switch status.PhaseFor(in) {
+		case "Running":
+			net.Status.Phase = v1alpha1.PhaseRunning
+			net.Status.BootstrapComplete = true
+			status.SetCondition(&net.Status.Conditions, v1alpha1.ConditionTypeReady,
+				metav1.ConditionTrue, "Available", "All validators are ready")
+		default:
+			net.Status.Phase = v1alpha1.PhaseDegraded
+			reason := "Degraded"
+			if !status.IsGenuinelyDegraded(in) {
+				reason = "ClosedValidatorSet"
+			}
+			status.SetCondition(&net.Status.Conditions, v1alpha1.ConditionTypeReady,
+				metav1.ConditionFalse, reason,
+				fmt.Sprintf("%d/%d validators ready", currentSTS.Status.ReadyReplicas, desiredReplicas))
+		}
 	}
 
 	if err := r.Status().Update(ctx, net); err != nil {
