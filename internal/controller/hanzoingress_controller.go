@@ -120,7 +120,13 @@ func (r *HanzoIngressReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			},
 		}
 		if hi.Spec.IngressClassName != "" {
-			ing.Spec.IngressClassName = &hi.Spec.IngressClassName
+			// hanzoai/ingress (Traefik fork) silently drops spec.tls when the
+			// caller sets spec.ingressClassName. Emit the legacy annotation
+			// form so TLS continues to resolve to the cert-manager Secret.
+			if ing.Annotations == nil {
+				ing.Annotations = map[string]string{}
+			}
+			ing.Annotations["kubernetes.io/ingress.class"] = hi.Spec.IngressClassName
 		}
 
 		if err := r.ingressCreateOrUpdate(ctx, hi, ing); err != nil {
