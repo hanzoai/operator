@@ -240,7 +240,16 @@ func BuildIngress(
 	}
 
 	if spec.IngressClassName != "" {
-		ing.Spec.IngressClassName = &spec.IngressClassName
+		// hanzoai/ingress (Traefik fork) silently drops spec.tls when the
+		// caller sets spec.ingressClassName instead of the legacy
+		// kubernetes.io/ingress.class annotation. Falling through to the
+		// "INGRESS DEFAULT CERT" (the cf-origin-* secret mounted in the
+		// hanzo-ingress DaemonSet) and serving it to public clients is the
+		// observed symptom. Emit the annotation form to keep TLS hooked up.
+		if ing.Annotations == nil {
+			ing.Annotations = map[string]string{}
+		}
+		ing.Annotations["kubernetes.io/ingress.class"] = spec.IngressClassName
 	}
 
 	return ing
