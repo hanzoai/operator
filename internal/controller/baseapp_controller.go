@@ -150,7 +150,7 @@ func (r *BaseAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/api/health",
+					Path: "/v1/health",
 					Port: intstr.FromInt32(port),
 				},
 			},
@@ -160,7 +160,7 @@ func (r *BaseAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/api/health",
+					Path: "/v1/health",
 					Port: intstr.FromInt32(port),
 				},
 			},
