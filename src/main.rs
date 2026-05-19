@@ -219,5 +219,30 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
+        controllers::queue::run_queue_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::observability::run_observability_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::function::run_function_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::spa::run_spa_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::static_site::run_static_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
     );
 }
