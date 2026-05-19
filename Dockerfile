@@ -1,34 +1,33 @@
-# syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+# Builder
+FROM rust:1.79-bookworm AS builder
 
-ARG TARGETOS TARGETARCH
+WORKDIR /build
 
-RUN apk add --no-cache git
+# Copy Cargo manifest and lock first for layer caching.
+COPY Cargo.toml Cargo.lock ./
 
-WORKDIR /workspace
+# Pre-build a dummy binary so dependencies cache between builds.
+RUN mkdir -p src src/bin && \
+    echo 'fn main(){}' > src/main.rs && \
+    echo 'fn main(){}' > src/bin/generate_crd_yaml.rs && \
+    echo '' > src/lib.rs && \
+    cargo build --release 2>/dev/null || true
 
-# Cache dependencies.
-COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+# Now copy real source and build.
+COPY src/ src/
+RUN touch src/main.rs src/lib.rs src/bin/generate_crd_yaml.rs && cargo build --release
 
-# Build.
-COPY . .
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-w -s" \
-    -o /hanzo-operator \
-    cmd/main.go
+# Runtime
+FROM debian:bookworm-slim
 
-# Runtime image.
-FROM alpine:3.23
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN apk add --no-cache ca-certificates tzdata && \
-    adduser -u 65532 -S -D -H operator
+RUN useradd -r -g nogroup -s /sbin/nologin operator
 
-COPY --from=builder /hanzo-operator /hanzo-operator
+COPY --from=builder /build/target/release/operator /usr/local/bin/operator
+COPY --from=builder /build/target/release/generate-crd-yaml /usr/local/bin/generate-crd-yaml
 
-USER 65532
-
-ENTRYPOINT ["/hanzo-operator"]
+USER operator
+ENTRYPOINT ["/usr/local/bin/operator"]
