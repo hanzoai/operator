@@ -2,7 +2,7 @@ name: Docker
 on:
   workflow_dispatch:
   push:
-    branches: [main, dev, test]
+    branches: [main, dev]
     tags: ['v*']
 permissions:
   contents: read
@@ -13,5 +13,8 @@ jobs:
     uses: hanzoai/.github/.github/workflows/docker-build.yml@main
     with:
       image: ghcr.io/hanzoai/operator
-      platforms: linux/amd64
+      # arm64 enabled per user request. If hanzo-build-linux-arm64 ARC
+      # scale set is paused on DOKS (per LLM.md 2026-04-27), the shared
+      # workflow falls back to QEMU emulation on the amd64 runner.
+      platforms: linux/amd64,linux/arm64
     secrets: inherit
