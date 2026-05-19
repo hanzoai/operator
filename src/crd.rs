@@ -1154,3 +1154,121 @@ pub struct IndexerKindSpec(pub ServiceSpec);
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ExplorerKindSpec(pub ServiceSpec);
+
+// ============================================================================
+// SPA Kind — standalone hanzoai/spa runtime, per-site pod
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SPASpecInner {
+    pub runtime: ImageSpec,
+    pub content: ImageSpec,
+    #[serde(default)]
+    pub config: BTreeMap<String, String>,
+    #[serde(default = "default_replicas")]
+    pub replicas: i32,
+    #[serde(default)]
+    pub multi_app: bool,
+    #[serde(default)]
+    pub ingress: Option<IngressSpec>,
+    #[serde(default)]
+    pub pdb: Option<PodDisruptionBudgetSpec>,
+    #[serde(default)]
+    pub resources: Option<ResourceRequirements>,
+}
+
+fn default_replicas() -> i32 { 1 }
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "SPA",
+    plural = "spas",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "spa"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct SPAKindSpec(pub SPASpecInner);
+
+// ============================================================================
+// Static Kind — hanzoai/static ingress plugin, NO separate pod
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticSpecInner {
+    /// ConfigMap name containing site files
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub config_map: String,
+    /// OR OCI image + path to extract content from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageSpec>,
+    pub ingress: IngressSpec,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "Static",
+    plural = "statics",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "static"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticKindSpec(pub StaticSpecInner);
+
+// ============================================================================
+// Queue Kind — message broker (NATS, Kafka, JetStream)
+// ============================================================================
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "Queue",
+    plural = "queues",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "q"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueKindSpec(pub ServiceSpec);
+
+// ============================================================================
+// Observability Kind — Grafana / OTEL Collector / VictoriaMetrics
+// ============================================================================
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "Observability",
+    plural = "observabilities",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "obs"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservabilityKindSpec(pub ServiceSpec);
+
+// ============================================================================
+// Function Kind — OpenFaaS / Knative serverless function
+// ============================================================================
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "Function",
+    plural = "functions",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "fn"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct FunctionKindSpec(pub ServiceSpec);
