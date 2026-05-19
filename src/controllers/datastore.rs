@@ -19,9 +19,7 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{
-    Datastore as DatastoreCR, DatastoreSpec, DatastoreStatus, ImageSpec, Phase,
-};
+use crate::crd::{Datastore as DatastoreCR, DatastoreSpec, DatastoreStatus, ImageSpec, Phase};
 use crate::crd_types;
 use crate::manifests;
 
@@ -90,7 +88,6 @@ pub async fn reconcile_datastore(cr: Arc<DatastoreCR>, ctx: Arc<Ctx>) -> Result<
     write_datastore_status(&ctx.client, &name, &namespace, &cr).await;
     Ok(Action::requeue(Duration::from_secs(60)))
 }
-
 
 /// Public alias for use by compat facades.
 pub async fn reconcile_datastore_inner_pub(
@@ -291,7 +288,6 @@ pub fn on_error(_obj: Arc<DatastoreCR>, err: &OperatorError, _ctx: Arc<Ctx>) -> 
     Action::requeue(Duration::from_secs(30))
 }
 
-
 /// Run the canonical Datastore controller.
 pub async fn run_datastore_controller(client: Client, namespace: String, api_group: String) {
     let api: Api<DatastoreCR> = if namespace.is_empty() {
@@ -310,4 +306,3 @@ pub async fn run_datastore_controller(client: Client, namespace: String, api_gro
         })
         .await;
 }
-

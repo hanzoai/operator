@@ -1178,7 +1178,9 @@ pub struct SPASpecInner {
     pub resources: Option<ResourceRequirements>,
 }
 
-fn default_replicas() -> i32 { 1 }
+fn default_replicas() -> i32 {
+    1
+}
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
