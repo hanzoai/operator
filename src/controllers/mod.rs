@@ -28,3 +28,10 @@ where
         block_owner_deletion: Some(true),
     }
 }
+
+// v0.3.2: new Kinds
+pub mod function;
+pub mod observability;
+pub mod queue;
+pub mod spa;
+pub mod static_site;
