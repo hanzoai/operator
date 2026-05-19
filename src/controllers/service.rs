@@ -181,18 +181,33 @@ async fn reconcile_service_inner(
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
 
     // 2. Build and apply Deployment.
+    //
+    // When HPA is enabled, the operator MUST NOT own `spec.replicas` — server-
+    // side apply would otherwise fight the HPA on every reconcile cycle.
+    // Passing `None` here removes the field from the desired state, so the
+    // HPA becomes the sole field manager for replicas. The initial scale is
+    // then determined by `spec.autoscaling.minReplicas` (the HPA's floor).
     let volumes_k8s: Vec<_> = spec.volumes.iter().map(crd_types::Volume::to_k8s).collect();
     let ips_k8s: Vec<_> = spec
         .image_pull_secrets
         .iter()
         .map(crd_types::LocalObjectReference::to_k8s)
         .collect();
+    let replicas_for_deployment = if spec
+        .autoscaling
+        .as_ref()
+        .is_some_and(|a| a.enabled)
+    {
+        None
+    } else {
+        Some(spec.replicas.unwrap_or(1))
+    };
     let mut deploy = manifests::build_deployment(
         name,
         namespace,
         all_labels.clone(),
         sel_labels.clone(),
-        Some(spec.replicas.unwrap_or(1)),
+        replicas_for_deployment,
         containers,
         volumes_k8s,
         &spec.strategy,
@@ -379,7 +394,7 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crd::{ImageSpec, ServicePort as CrServicePort};
+    use crate::crd::{AutoscalingSpec, ImageSpec, ServicePort as CrServicePort};
 
     fn base_spec() -> ServiceSpec {
         ServiceSpec {
@@ -494,5 +509,69 @@ mod tests {
         let vols = pod_spec.volumes.expect("volumes must be on pod spec");
         assert_eq!(vols.len(), 1);
         assert_eq!(vols[0].name, "data");
+    }
+
+    // ---- Replicas / HPA interaction ----
+
+    /// Helper that mirrors the runtime logic in `reconcile_service_inner` for
+    /// deciding what to pass to `build_deployment` as `replicas`. Keep this
+    /// function in lockstep with the controller body.
+    fn replicas_for_deployment(spec: &ServiceSpec) -> Option<i32> {
+        if spec
+            .autoscaling
+            .as_ref()
+            .is_some_and(|a| a.enabled)
+        {
+            None
+        } else {
+            Some(spec.replicas.unwrap_or(1))
+        }
+    }
+
+    #[test]
+    fn deployment_omits_replicas_when_autoscaling_enabled() {
+        // When HPA is enabled the operator must NOT own spec.replicas.
+        // Server-side apply would otherwise fight the HPA every reconcile.
+        let mut spec = base_spec();
+        spec.replicas = Some(2);
+        spec.autoscaling = Some(AutoscalingSpec {
+            enabled: true,
+            min_replicas: Some(2),
+            max_replicas: Some(20),
+            target_cpu_utilization: Some(70),
+            target_memory_utilization: None,
+        });
+        assert_eq!(replicas_for_deployment(&spec), None,
+            "with HPA enabled, deployment.replicas must be None so HPA owns the field");
+    }
+
+    #[test]
+    fn deployment_keeps_replicas_when_autoscaling_disabled() {
+        let mut spec = base_spec();
+        spec.replicas = Some(3);
+        spec.autoscaling = Some(AutoscalingSpec {
+            enabled: false,
+            min_replicas: None,
+            max_replicas: None,
+            target_cpu_utilization: None,
+            target_memory_utilization: None,
+        });
+        assert_eq!(replicas_for_deployment(&spec), Some(3));
+    }
+
+    #[test]
+    fn deployment_keeps_replicas_when_autoscaling_unset() {
+        let mut spec = base_spec();
+        spec.replicas = Some(4);
+        spec.autoscaling = None;
+        assert_eq!(replicas_for_deployment(&spec), Some(4));
+    }
+
+    #[test]
+    fn deployment_defaults_to_one_replica_when_unset_and_no_hpa() {
+        let mut spec = base_spec();
+        spec.replicas = None;
+        spec.autoscaling = None;
+        assert_eq!(replicas_for_deployment(&spec), Some(1));
     }
 }
