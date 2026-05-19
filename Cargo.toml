@@ -1,0 +1,51 @@
+[workspace]
+# Standalone crate — not a member of the parent ~/work/hanzo workspace.
+
+[package]
+name = "operator"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+repository = "https://github.com/hanzoai/operator"
+description = "Kubernetes operator for Hanzo platform (canonical, all universes)"
+
+[[bin]]
+name = "operator"
+path = "src/main.rs"
+
+[[bin]]
+name = "generate-crd-yaml"
+path = "src/bin/generate_crd_yaml.rs"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+kube = { version = "0.87", features = ["runtime", "derive", "ws"] }
+k8s-openapi = { version = "0.20", features = ["v1_28"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+clap = { version = "4.4", features = ["derive", "env"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+thiserror = "1.0"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+schemars = "0.8"
+
+byteorder = "1"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
+
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full", "test-util"] }
