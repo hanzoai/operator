@@ -16,7 +16,7 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{DNSSpec, HanzoDNS, ServicePort as CrServicePort, DNS as DNSCR};
+use crate::crd::{DNSSpec, ServicePort as CrServicePort, DNS as DNSCR};
 use crate::manifests;
 
 use super::owner_ref_for;
@@ -38,16 +38,6 @@ pub async fn reconcile(cr: Arc<DNSCR>, ctx: Arc<Ctx>) -> Result<Action> {
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-pub async fn reconcile_compat(cr: Arc<HanzoDNS>, ctx: Arc<Ctx>) -> Result<Action> {
-    let name = cr.name_any();
-    let namespace = cr
-        .namespace()
-        .ok_or_else(|| OperatorError::Config("HanzoDNS has no namespace".into()))?;
-    let api_version = format!("{}/v1alpha1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "HanzoDNS");
-    reconcile_inner(&ctx.client, &name, &namespace, &cr.spec.0, owner).await?;
-    Ok(Action::requeue(Duration::from_secs(60)))
-}
 
 async fn reconcile_inner(
     client: &Client,
@@ -144,10 +134,6 @@ pub fn on_error(_obj: Arc<DNSCR>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action
     Action::requeue(Duration::from_secs(30))
 }
 
-pub fn on_error_compat(_obj: Arc<HanzoDNS>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
-    error!(error = %err, "HanzoDNS reconcile failed");
-    Action::requeue(Duration::from_secs(30))
-}
 
 pub async fn run_dns_controller(client: Client, namespace: String, api_group: String) {
     let api: Api<DNSCR> = if namespace.is_empty() {
@@ -167,20 +153,3 @@ pub async fn run_dns_controller(client: Client, namespace: String, api_group: St
         .await;
 }
 
-pub async fn run_hanzodns_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<HanzoDNS> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), &namespace)
-    };
-    info!(group = %api_group, "Starting HanzoDNS (compat) controller");
-    let ctx = Arc::new(Ctx { client, api_group });
-    Controller::new(api, Config::default())
-        .run(reconcile_compat, on_error_compat, ctx)
-        .for_each(|res| async move {
-            if let Err(e) = res {
-                warn!(error = %e, "HanzoDNS reconcile error");
-            }
-        })
-        .await;
-}

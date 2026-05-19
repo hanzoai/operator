@@ -1,6 +1,6 @@
 //! Service reconciler — the load-bearing controller.
 //!
-//! Watches `Service` (canonical) and `HanzoService` (legacy compat). For
+//! Watches `Service`. For
 //! each CR, materializes: Deployment, Service, Ingress (when enabled), HPA,
 //! PDB, NetworkPolicy, and KMSSecret children.
 //!
@@ -30,7 +30,7 @@ use tracing::{error, info, warn};
 use crate::apply;
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    HanzoService, KMSSecretRef, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
+    KMSSecretRef, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
 };
 use crate::crd_types;
 use crate::manifests;
@@ -123,18 +123,6 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-/// Reconcile a legacy `HanzoService` CR — delegates to the canonical path.
-pub async fn reconcile_hanzoservice(cr: Arc<HanzoService>, ctx: Arc<Ctx>) -> Result<Action> {
-    let name = cr.name_any();
-    let namespace = cr
-        .namespace()
-        .ok_or_else(|| OperatorError::Config("HanzoService has no namespace".into()))?;
-    let api_version = format!("{}/v1alpha1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "HanzoService");
-    let inner = &cr.spec.0;
-    reconcile_service_inner(&ctx.client, &name, &namespace, inner, owner).await?;
-    Ok(Action::requeue(Duration::from_secs(60)))
-}
 
 /// Public alias for use by compat facades.
 pub async fn reconcile_service_inner_pub(
@@ -372,14 +360,6 @@ pub fn on_error_service(_obj: Arc<ServiceCR>, err: &OperatorError, _ctx: Arc<Ctx
     Action::requeue(Duration::from_secs(30))
 }
 
-pub fn on_error_hanzoservice(
-    _obj: Arc<HanzoService>,
-    err: &OperatorError,
-    _ctx: Arc<Ctx>,
-) -> Action {
-    error!(error = %err, "HanzoService reconcile failed");
-    Action::requeue(Duration::from_secs(30))
-}
 
 /// Run the canonical Service controller.
 pub async fn run_service_controller(client: Client, namespace: String, api_group: String) {
@@ -400,24 +380,6 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
         .await;
 }
 
-/// Run the legacy HanzoService controller (compat alias).
-pub async fn run_hanzoservice_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<HanzoService> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), &namespace)
-    };
-    info!(group = %api_group, "Starting HanzoService (compat) controller");
-    let ctx = Arc::new(Ctx { client, api_group });
-    Controller::new(api, Config::default())
-        .run(reconcile_hanzoservice, on_error_hanzoservice, ctx)
-        .for_each(|res| async move {
-            if let Err(e) = res {
-                warn!(error = %e, "HanzoService reconcile error");
-            }
-        })
-        .await;
-}
 
 #[cfg(test)]
 mod tests {
