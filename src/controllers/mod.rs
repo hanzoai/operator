@@ -3,8 +3,7 @@
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::Resource;
 
-pub mod baseapp;
-pub mod compat;
+pub mod base;
 pub mod datastore;
 pub mod dns;
 pub mod gateway;
@@ -14,8 +13,6 @@ pub mod network;
 pub mod service;
 
 // Re-export shared inner functions for compat facades.
-pub use datastore::reconcile_datastore_inner_pub as datastore_inner_for_compat;
-pub use service::reconcile_service_inner_pub as service_inner_for_compat;
 
 /// Build an OwnerReference pointing at a CR. The CR must have a UID set.
 pub fn owner_ref_for<K>(cr: &K, api_version: &str, kind: &str) -> OwnerReference
