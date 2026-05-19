@@ -1,4 +1,4 @@
-//! BaseApp reconciler — hanzoai/base-ha cluster with deterministic writer
+//! Base reconciler — hanzoai/base-ha cluster with deterministic writer
 //! election (Quasar) and gateway integration.
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{BaseApp, BaseAppSpec, ServicePort as CrServicePort};
+use crate::crd::{Base, BaseSpec, ServicePort as CrServicePort};
 use crate::crd_types;
 use crate::manifests;
 
@@ -29,13 +29,13 @@ pub struct Ctx {
     pub api_group: String,
 }
 
-pub async fn reconcile(cr: Arc<BaseApp>, ctx: Arc<Ctx>) -> Result<Action> {
+pub async fn reconcile(cr: Arc<Base>, ctx: Arc<Ctx>) -> Result<Action> {
     let name = cr.name_any();
     let namespace = cr
         .namespace()
-        .ok_or_else(|| OperatorError::Config("BaseApp has no namespace".into()))?;
+        .ok_or_else(|| OperatorError::Config("Base has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "BaseApp");
+    let owner = owner_ref_for(cr.as_ref(), &api_version, "Base");
     reconcile_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
     Ok(Action::requeue(Duration::from_secs(60)))
 }
@@ -44,7 +44,7 @@ async fn reconcile_inner(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &BaseAppSpec,
+    spec: &BaseSpec,
     owner: OwnerReference,
 ) -> Result<()> {
     let port = if spec.port > 0 { spec.port } else { 8090 };
@@ -177,28 +177,28 @@ async fn reconcile_inner(
     clip.metadata.owner_references = Some(vec![owner.clone()]);
     apply::apply(&svcs, &clip).await?;
 
-    info!(name, namespace, replicas, "BaseApp reconciled");
+    info!(name, namespace, replicas, "Base reconciled");
     Ok(())
 }
 
-pub fn on_error(_obj: Arc<BaseApp>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
-    error!(error = %err, "BaseApp reconcile failed");
+pub fn on_error(_obj: Arc<Base>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "Base reconcile failed");
     Action::requeue(Duration::from_secs(30))
 }
 
-pub async fn run_baseapp_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<BaseApp> = if namespace.is_empty() {
+pub async fn run_base_controller(client: Client, namespace: String, api_group: String) {
+    let api: Api<Base> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), &namespace)
     };
-    info!(group = %api_group, "Starting BaseApp controller");
+    info!(group = %api_group, "Starting Base controller");
     let ctx = Arc::new(Ctx { client, api_group });
     Controller::new(api, Config::default())
         .run(reconcile, on_error, ctx)
         .for_each(|res| async move {
             if let Err(e) = res {
-                warn!(error = %e, "BaseApp reconcile error");
+                warn!(error = %e, "Base reconcile error");
             }
         })
         .await;

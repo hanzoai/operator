@@ -1,15 +1,15 @@
 //! Custom Resource Definitions for the Hanzo operator.
 //!
-//! All 20 Kinds at `hanzo.ai/v1` (the compile-time default). For other
+//! All 24 Kinds at `hanzo.ai/v1` (the compile-time default). For other
 //! universes (lux.cloud, zoo.cloud, osage.cloud), generate CRD YAMLs with
 //! the `generate-crd-yaml` binary, which rewrites the group at install time.
 //!
-//! ## Wire compatibility
+//! ## v0.3.0 schema
 //!
-//! Field shapes are byte-identical with the legacy Go types
-//! (`api/v1alpha1/*_types.go` on the `legacy/go-impl-before-rust-port`
-//! branch). The legacy `HanzoService`/`HanzoDatastore`/`HanzoDNS` Kinds are
-//! registered as compat aliases that delegate to the new reconcilers.
+//! - Legacy `HanzoService`/`HanzoDatastore`/`HanzoDNS` removed (one way only).
+//! - `BaseApp` renamed to `Base`.
+//! - 4 new Kinds: `SPA`, `Queue`, `Observability`, `Function`.
+//! - Run `scripts/migrate-v0.2-to-v0.3.sh` before rolling v0.3.0 to cluster.
 //!
 //! ## Schemars + k8s-openapi
 //!
@@ -899,12 +899,12 @@ pub struct DNSStatus {
 }
 
 // ============================================================================
-// BaseApp Kind
+// Base Kind (renamed from BaseApp in v0.3.0)
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BaseAppGatewaySpec {
+pub struct BaseGatewaySpec {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub route: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -925,14 +925,14 @@ pub struct BaseAppGatewaySpec {
 #[kube(
     group = "hanzo.ai",
     version = "v1",
-    kind = "BaseApp",
-    plural = "baseapps",
+    kind = "Base",
+    plural = "bases",
     namespaced,
-    status = "BaseAppStatus",
-    shortname = "bapp"
+    status = "BaseStatus",
+    shortname = "base"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct BaseAppSpec {
+pub struct BaseSpec {
     pub image: ImageSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i32>,
@@ -954,7 +954,7 @@ pub struct BaseAppSpec {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub service_account_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<BaseAppGatewaySpec>,
+    pub gateway: Option<BaseGatewaySpec>,
     #[serde(default, skip_serializing_if = "String::is_empty", rename = "iamApp")]
     pub iam_app: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -969,7 +969,7 @@ pub struct BaseAppSpec {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BaseAppStatus {
+pub struct BaseStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
     #[serde(default)]
@@ -983,46 +983,6 @@ pub struct BaseAppStatus {
     #[serde(default)]
     pub observed_generation: i64,
 }
-
-// ============================================================================
-// Legacy compat aliases — group="hanzo.ai", kind="HanzoService" etc.
-// ============================================================================
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1alpha1",
-    kind = "HanzoService",
-    plural = "hanzoservices",
-    namespaced,
-    status = "ServiceStatus"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoServiceSpec(pub ServiceSpec);
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1alpha1",
-    kind = "HanzoDatastore",
-    plural = "hanzodatastores",
-    namespaced,
-    status = "DatastoreStatus"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoDatastoreSpec(pub DatastoreSpec);
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1alpha1",
-    kind = "HanzoDNS",
-    plural = "hanzodns",
-    namespaced,
-    status = "DNSStatus"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoDNSSpec(pub DNSSpec);
 
 // ============================================================================
 // New unbranded facades.
