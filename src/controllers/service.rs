@@ -29,9 +29,7 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{
-    KMSSecretRef, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
-};
+use crate::crd::{KMSSecretRef, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus};
 use crate::crd_types;
 use crate::manifests;
 
@@ -122,7 +120,6 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
 
     Ok(Action::requeue(Duration::from_secs(60)))
 }
-
 
 /// Public alias for use by compat facades.
 pub async fn reconcile_service_inner_pub(
@@ -360,7 +357,6 @@ pub fn on_error_service(_obj: Arc<ServiceCR>, err: &OperatorError, _ctx: Arc<Ctx
     Action::requeue(Duration::from_secs(30))
 }
 
-
 /// Run the canonical Service controller.
 pub async fn run_service_controller(client: Client, namespace: String, api_group: String) {
     let api: Api<ServiceCR> = if namespace.is_empty() {
@@ -379,7 +375,6 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
         })
         .await;
 }
-
 
 #[cfg(test)]
 mod tests {

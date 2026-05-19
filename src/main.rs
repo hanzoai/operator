@@ -234,12 +234,30 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::spa::run_spa_controller(
+        controllers::spa::run_spa_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::static_site::run_static_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::static_site::run_static_controller(
+        // v0.3.3: facade Kinds.
+        controllers::sql::run_sql_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::kv::run_kv_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::docdb::run_docdb_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::s3::run_s3_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::iam::run_iam_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::kms::run_kms_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::llm::run_llm_controller(client.clone(), namespace.clone(), api_group.clone()),
+        controllers::indexer::run_indexer_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::explorer::run_explorer_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()

@@ -38,7 +38,6 @@ pub async fn reconcile(cr: Arc<DNSCR>, ctx: Arc<Ctx>) -> Result<Action> {
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-
 async fn reconcile_inner(
     client: &Client,
     name: &str,
@@ -134,7 +133,6 @@ pub fn on_error(_obj: Arc<DNSCR>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action
     Action::requeue(Duration::from_secs(30))
 }
 
-
 pub async fn run_dns_controller(client: Client, namespace: String, api_group: String) {
     let api: Api<DNSCR> = if namespace.is_empty() {
         Api::all(client.clone())
@@ -152,4 +150,3 @@ pub async fn run_dns_controller(client: Client, namespace: String, api_group: St
         })
         .await;
 }
-
