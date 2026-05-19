@@ -1,13 +1,13 @@
 //! SPA reconciler — hanzoai/spa standalone Go runtime, per-site pod.
 //!
 //! Materializes:
-//!   Deployment with the runtime image
-//!   + initContainer COPYing from spec.content image into shared /public emptyDir
-//!   + SPA_* env vars from spec.config map (runtime templates /public/config.json
-//!     from these at startup)
-//!   Service exposing :3000
-//!   Ingress (if spec.ingress.enabled)
-//!   PDB (if spec.pdb)
+//! - Deployment with the runtime image
+//! - initContainer COPYing from spec.content image into shared /public emptyDir
+//! - SPA_* env vars from spec.config map (runtime templates /public/config.json
+//!   from these at startup)
+//! - Service exposing :3000
+//! - Ingress (if spec.ingress.enabled)
+//! - PDB (if spec.pdb)
 
 use std::sync::Arc;
 use std::time::Duration;
