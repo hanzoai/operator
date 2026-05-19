@@ -139,3 +139,28 @@ follow-up Cargo.toml update to depend on `hanzoai/operator` directly.
 - Honor `spec.env/volumes/volumeMounts` — the load-bearing assertion.
 - Out of scope this session: rolling out to the cluster. The legacy
   Go operator stays in production until coordinated cutover.
+
+## v0.3.3 — facade controllers (2026-05-19)
+The 9 facade Kinds (SQL, KV, DocDB, S3, IAM, KMS, LLM, Indexer, Explorer)
+were defined in `src/crd.rs` but orphaned with no controllers between
+v0.3.0 and v0.3.2 — creating a CR was a no-op. v0.3.3 ships one
+controller per Kind under `src/controllers/`:
+
+- Service-backed facades (`iam.rs`, `kms.rs`, `llm.rs`, `indexer.rs`,
+  `explorer.rs`) follow the `queue.rs` template byte-for-byte: unwrap
+  `cr.spec.0` (newtype over `ServiceSpec`) and call
+  `service::reconcile_service_inner_pub`.
+- Datastore-backed facades (`sql.rs`, `kv.rs`, `docdb.rs`, `s3.rs`)
+  unwrap the inner `DatastoreSpec` and **force** `spec.type` to the
+  canonical value (`postgresql` / `valkey` / `docdb` / `minio`) before
+  delegating to `datastore::reconcile_datastore_inner_pub`. This makes
+  the facade kind authoritative — a `SQL` CR cannot accidentally
+  materialize as a Valkey or MinIO datastore even if the user sets
+  `spec.type` to something else.
+
+Each controller is ~75 LoC with one smoke test asserting newtype
+unwrap (service facades) or type override (datastore facades).
+All 9 are wired into `main.rs`'s `tokio::join!` so they spin up
+alongside the canonical Kinds when the leader is elected.
+
+Test count: 35 → 44 (9 new smoke tests, 0 regressions).
