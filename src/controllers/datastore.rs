@@ -20,7 +20,7 @@ use tracing::{error, info, warn};
 use crate::apply;
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    Datastore as DatastoreCR, DatastoreSpec, DatastoreStatus, HanzoDatastore, ImageSpec, Phase,
+    Datastore as DatastoreCR, DatastoreSpec, DatastoreStatus, ImageSpec, Phase,
 };
 use crate::crd_types;
 use crate::manifests;
@@ -91,17 +91,6 @@ pub async fn reconcile_datastore(cr: Arc<DatastoreCR>, ctx: Arc<Ctx>) -> Result<
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-/// Reconcile a legacy `HanzoDatastore` CR — delegates to canonical path.
-pub async fn reconcile_hanzodatastore(cr: Arc<HanzoDatastore>, ctx: Arc<Ctx>) -> Result<Action> {
-    let name = cr.name_any();
-    let namespace = cr
-        .namespace()
-        .ok_or_else(|| OperatorError::Config("HanzoDatastore has no namespace".into()))?;
-    let api_version = format!("{}/v1alpha1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "HanzoDatastore");
-    reconcile_datastore_inner(&ctx.client, &name, &namespace, &cr.spec.0, owner).await?;
-    Ok(Action::requeue(Duration::from_secs(60)))
-}
 
 /// Public alias for use by compat facades.
 pub async fn reconcile_datastore_inner_pub(
@@ -302,10 +291,6 @@ pub fn on_error(_obj: Arc<DatastoreCR>, err: &OperatorError, _ctx: Arc<Ctx>) -> 
     Action::requeue(Duration::from_secs(30))
 }
 
-pub fn on_error_compat(_obj: Arc<HanzoDatastore>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
-    error!(error = %err, "HanzoDatastore reconcile failed");
-    Action::requeue(Duration::from_secs(30))
-}
 
 /// Run the canonical Datastore controller.
 pub async fn run_datastore_controller(client: Client, namespace: String, api_group: String) {
@@ -326,21 +311,3 @@ pub async fn run_datastore_controller(client: Client, namespace: String, api_gro
         .await;
 }
 
-/// Run the legacy HanzoDatastore controller (compat alias).
-pub async fn run_hanzodatastore_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<HanzoDatastore> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), &namespace)
-    };
-    info!(group = %api_group, "Starting HanzoDatastore (compat) controller");
-    let ctx = Arc::new(Ctx { client, api_group });
-    Controller::new(api, Config::default())
-        .run(reconcile_hanzodatastore, on_error_compat, ctx)
-        .for_each(|res| async move {
-            if let Err(e) = res {
-                warn!(error = %e, "HanzoDatastore reconcile error");
-            }
-        })
-        .await;
-}
