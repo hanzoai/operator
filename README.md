@@ -1,135 +1,132 @@
-# hanzo-operator
-// TODO(user): Add simple overview of use/purpose
+# operator
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+Canonical Kubernetes operator for the Hanzo platform — Rust port, used by Hanzo, Lux, Zoo, Osage, and Liquidity universes.
 
-## Getting Started
+One binary. 20 CRD Kinds. Configurable API group at install time. See [`LLM.md`](./LLM.md) for the agent-friendly overview.
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+## What it manages
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+Twenty Kinds at `<api-group>/v1`, with three legacy `v1alpha1` compat aliases for existing CRs in cluster.
 
-```sh
-make docker-build docker-push IMG=<some-registry>/hanzo-operator:tag
+| Kind        | Purpose                                                   | Materializes |
+|-------------|-----------------------------------------------------------|--------------|
+| Service     | Stateless service (most common)                           | Deployment, Service, Ingress, HPA, PDB, NetworkPolicy, KMSSecret |
+| Datastore   | Generic stateful service (dispatches on `spec.type`)      | StatefulSet, ClusterIP + headless Service, PVC, KMSSecret |
+| SQL / KV / DocDB / S3 | Thin facades over Datastore for each engine     | Same as Datastore |
+| Gateway     | KrakenD-based API gateway                                 | Deployment, Service, ConfigMap (krakend.json), Ingress |
+| MPC         | Multi-party computation threshold cluster                 | StatefulSet, ClusterIP + headless Service |
+| Network     | Blockchain validator network                              | StatefulSet (validators), Services, PVC |
+| Ingress     | Multi-domain routing with cert-manager TLS                | Multiple Ingress resources |
+| DNS         | Multi-tenant CoreDNS deployment                           | Deployment, Service |
+| BaseApp     | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
+| IAM / KMS / LLM / Indexer / Explorer | Thin facades over Service          | Same as Service |
+| Chain / Subnet / Validator | Sub-resources of Network (NoOp stubs)        | — |
+| HanzoService / HanzoDatastore / HanzoDNS | v1alpha1 legacy aliases (compat) | Delegate to canonical reconcilers |
+
+## Critical invariant
+
+`spec.env`, `spec.volumes`, `spec.volumeMounts` MUST be honored on the generated Deployment. The gateway 503 root cause (May 2026) was the legacy Go operator silently dropping these. The Rust port carries tests that fail if any of these fields stop being carried.
+
+```bash
+$ cargo test --lib controllers::service::tests
+test controllers::service::tests::env_is_carried_to_main_container ... ok
+test controllers::service::tests::volume_mounts_are_carried_to_main_container ... ok
+test controllers::service::tests::deployment_carries_volumes ... ok
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+## Install
 
-**Install the CRDs into the cluster:**
+### CRDs
 
-```sh
-make install
+CRD YAMLs are pre-generated for each universe under `k8s/crds/`:
+
+```bash
+kubectl apply -f k8s/crds/all-hanzo.ai.yaml      # Hanzo universe
+kubectl apply -f k8s/crds/all-lux.cloud.yaml     # Lux universe
+kubectl apply -f k8s/crds/all-zoo.cloud.yaml     # Zoo universe
+kubectl apply -f k8s/crds/all-osage.cloud.yaml   # Osage universe
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+To generate for another universe:
 
-```sh
-make deploy IMG=<some-registry>/hanzo-operator:tag
+```bash
+cargo run --release --bin generate-crd-yaml -- --api-group your.cloud --out k8s/crds/all-your.cloud.yaml
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
+### Operator
 
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+```bash
+# Defaults to API group `hanzo.ai`.
+operator
 
-```sh
-kubectl apply -k config/samples/
+# Other universes override with --api-group or OPERATOR_API_GROUP:
+operator --api-group lux.cloud
+OPERATOR_API_GROUP=zoo.cloud operator
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+Container image: `ghcr.io/hanzoai/operator:vX.Y.Z` (amd64 + arm64).
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+## Build
 
-```sh
-kubectl delete -k config/samples/
+```bash
+cargo build --release
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+CI: `.github/workflows/publish.yml` uses the shared
+`hanzoai/.github/.github/workflows/docker-build.yml@main` workflow. Tags
+`v*` publish to `ghcr.io/hanzoai/operator`.
 
-```sh
-make uninstall
+## Architecture
+
+```
+src/
+  main.rs             Entrypoint — clap args, leader election, controller spawn.
+  lib.rs              Library facade (used by generate-crd-yaml + tests).
+  crd.rs              All 20 CRD type definitions.
+  crd_types.rs        JsonSchema-friendly wrappers for k8s-openapi types
+                      (EnvVar, Volume, Condition, etc.) since those don't
+                      derive JsonSchema. Wire-compatible round-trip.
+  manifests.rs        Pure builders for Deployment, Service, Ingress, PDB,
+                      NetworkPolicy, StatefulSet, PVC template.
+  apply.rs            Server-side apply (typed + DynamicObject variants).
+  api_group.rs        Runtime API-group resolution.
+  controllers/
+    service.rs        Service + HanzoService (compat) reconcilers.
+    datastore.rs      Datastore + HanzoDatastore (compat) reconcilers.
+    gateway.rs        Gateway reconciler.
+    mpc.rs            MPC reconciler.
+    network.rs        Network reconciler.
+    ingress.rs        Ingress reconciler.
+    dns.rs            DNS + HanzoDNS (compat) reconcilers.
+    baseapp.rs        BaseApp reconciler (Quasar writer election + gateway wiring).
+    compat.rs         Unbranded facades (SQL/KV/DocDB/IAM/KMS/LLM/S3/...) and
+                      stubs for Chain/Subnet/Validator.
+  core/               Absorbed from former hanzoai/operator-core repo.
+    error.rs          OperatorError + Result.
+    leader.rs         Lease-based leader election.
+    iam_admin.rs      IAM admin API client (POST /v1/iam/admin/applications/upsert).
+    secret.rs         KMSSecret hijack guard + NUL-byte rejection.
+    status.rs         Standard status.conditions helpers.
+    reconciler.rs     Retry cadence (clamp_resync etc.).
+  bin/
+    generate_crd_yaml.rs    CRD YAML generator with --api-group rewriter.
 ```
 
-**UnDeploy the controller from the cluster:**
+## Predecessor
 
-```sh
-make undeploy
-```
+The Go implementation is preserved on the `legacy/go-impl-before-rust-port`
+branch. It will not be brought back; the Rust port is canonical going
+forward. See the legacy branch for the original kubebuilder scaffold,
+controller code, and CRD YAML.
 
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/hanzo-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/hanzo-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+The standalone `hanzoai/operator-core` repo is a tombstone — its code is
+absorbed under `src/core/` here. Downstream consumers (`luxfi/operator`,
+`zoo/operator`, `liquidity/operator`) will update their `Cargo.toml` to
+depend on `hanzoai/operator` directly.
 
 ## License
 
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+BSD-3-Clause.
