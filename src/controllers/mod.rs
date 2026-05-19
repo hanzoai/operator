@@ -35,3 +35,14 @@ pub mod observability;
 pub mod queue;
 pub mod spa;
 pub mod static_site;
+
+// v0.3.3: facade Kinds (orphaned in v0.3.0 — controllers added here).
+pub mod docdb;
+pub mod explorer;
+pub mod iam;
+pub mod indexer;
+pub mod kms;
+pub mod kv;
+pub mod llm;
+pub mod s3;
+pub mod sql;
