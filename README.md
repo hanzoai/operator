@@ -1,5 +1,21 @@
 # operator
 
+> **⚠️ MIGRATED — see [`MIGRATED.md`](./MIGRATED.md)**
+>
+> As of 2026-05-29, the canonical Rust implementation lives at
+> [`luxfi/operator/rust/`](https://github.com/luxfi/operator/tree/main/rust),
+> in the polyglot `luxfi/operator` repo alongside the Go implementation under `go/`.
+>
+> `main` here is **frozen** — existing image tags (`ghcr.io/hanzoai/operator:<sha>`),
+> Go pseudo-versions consumed by `hanzoai/superbase` + `hanzoai/agents/control-plane`,
+> and the historical commit graph stay reachable. **No new feature work lands here.**
+>
+> `liquidity/operator`'s dependency on standalone `hanzoai/operator-core` is intentionally
+> unchanged — that crate remains brand-separated. See `MIGRATED.md` for the full migration
+> table per downstream consumer.
+
+---
+
 Canonical Kubernetes operator for the Hanzo platform — Rust port, used by Hanzo, Lux, Zoo, Osage, and Liquidity universes.
 
 One binary. 20 CRD Kinds. Configurable API group at install time. See [`LLM.md`](./LLM.md) for the agent-friendly overview.
