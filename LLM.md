@@ -2,7 +2,7 @@
 
 ## What
 Canonical Kubernetes operator for the Hanzo platform. Rust implementation,
-shared by Hanzo, Lux, Zoo, Osage, and Liquidity universes.
+shared by Hanzo, Lux, Zoo, and Osage universes.
 
 One binary. 20 CRD Kinds (8 canonical + 9 unbranded facades + 3 legacy
 compat). API group configurable at install time via `--api-group` /
@@ -127,8 +127,8 @@ branch. It is preserved for archaeology but no longer maintained.
 
 The standalone `hanzoai/operator-core` repo is a tombstone — its code is
 absorbed under `src/core/` here. Downstream consumers
-(`luxfi/operator`, `zoo/operator`, `liquidity/operator`) will need a
-follow-up Cargo.toml update to depend on `hanzoai/operator` directly.
+(`luxfi/operator`, `zoo/operator`) will need a follow-up Cargo.toml
+update to depend on `hanzoai/operator` directly.
 
 ## Rules
 - ALWAYS use `cargo` not `make` for Rust workflows.
