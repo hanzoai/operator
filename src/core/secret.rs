@@ -114,13 +114,13 @@ mod tests {
             metadata: ObjectMeta::default(),
             ..Default::default()
         };
-        assert!(!is_operator_managed(&s, "liquid-operator", "cr-uid"));
+        assert!(!is_operator_managed(&s, "hanzo-operator", "cr-uid"));
     }
 
     #[test]
     fn label_match_is_managed() {
         let mut labels = BTreeMap::new();
-        labels.insert(MANAGED_BY_LABEL.to_string(), "liquid-operator".to_string());
+        labels.insert(MANAGED_BY_LABEL.to_string(), "hanzo-operator".to_string());
         let s = Secret {
             metadata: ObjectMeta {
                 labels: Some(labels),
@@ -128,7 +128,7 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(is_operator_managed(&s, "liquid-operator", "cr-uid"));
+        assert!(is_operator_managed(&s, "hanzo-operator", "cr-uid"));
     }
 
     #[test]
@@ -142,13 +142,13 @@ mod tests {
             },
             ..Default::default()
         };
-        assert!(!is_operator_managed(&s, "liquid-operator", "cr-uid"));
+        assert!(!is_operator_managed(&s, "hanzo-operator", "cr-uid"));
     }
 
     #[test]
     fn matching_owner_ref_is_managed() {
         let owner = OwnerReference {
-            api_version: "secrets.liquid.network/v1alpha1".to_string(),
+            api_version: "secrets.hanzo.ai/v1alpha1".to_string(),
             kind: "KMSSecret".to_string(),
             name: "my-cr".to_string(),
             uid: "cr-uid-123".to_string(),
