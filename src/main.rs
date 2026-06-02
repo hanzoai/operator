@@ -1,7 +1,7 @@
 //! Hanzo Operator — Rust port (canonical for all universes).
 //!
 //! Manages 20 CRD Kinds at a configurable API group (default `hanzo.ai`).
-//! One binary serves Hanzo, Lux, Zoo, Osage, and Liquidity universes via
+//! One binary serves Hanzo, Lux, Zoo, and Osage universes via
 //! `--api-group` / `OPERATOR_API_GROUP`.
 //!
 //! See `~/work/hanzo/operator/README.md` for install + CRD reference.
@@ -41,8 +41,7 @@ struct Args {
     namespace: String,
 
     /// API group for CRDs. Overrides compile-time default `hanzo.ai`.
-    /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`,
-    /// `liquid.network`.
+    /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`.
     #[arg(long, env = "OPERATOR_API_GROUP")]
     api_group: Option<String>,
 

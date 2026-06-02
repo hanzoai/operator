@@ -41,7 +41,7 @@ No new feature work happens here. PRs land at
 | `hanzoai/universe/infra/k8s/operator/deployment.yaml` | `ghcr.io/hanzoai/operator:<sha>` | `ghcr.io/luxfi/operator-rust:vX.Y.Z` (when ready) or `ghcr.io/luxfi/operator:vX.Y.Z` for the Go impl |
 | `hanzoai/superbase` go.mod | `github.com/hanzoai/operator v0.2.3-0...` | Repointed to `github.com/luxfi/operator/go` v1alpha1 types (api package extracted) |
 | `hanzoai/agents/control-plane` go.mod | same | same |
-| `liquidity/operator` Cargo.toml (operator-core dep) | `hanzo-operator-core` git tag | unaffected — operator-core lives separately (see below) |
+| Downstream operator forks (Cargo.toml operator-core dep) | `hanzo-operator-core` git tag | unaffected — operator-core lives separately (see below) |
 
 ## operator-core relationship
 
@@ -52,8 +52,8 @@ moves with the Rust source to luxfi/operator/rust/src/core/.
 
 The standalone `github.com/hanzoai/operator-core` repo at
 `~/work/hanzo/operator-core` still exists and is still consumed by
-`liquidity/operator` Rust code. Until liquidity migrates off, the
-standalone crate stays alive. No change required for this migration.
+downstream operator forks. Until they migrate off, the standalone crate
+stays alive. No change required for this migration.
 
 ## Branches
 

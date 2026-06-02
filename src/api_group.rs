@@ -16,7 +16,6 @@
 //! | lux        | `lux.cloud`       |
 //! | zoo        | `zoo.cloud`       |
 //! | osage      | `osage.cloud`     |
-//! | liquidity  | `liquid.network`  |
 
 use std::env;
 
