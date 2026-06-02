@@ -41,8 +41,7 @@ struct Args {
     namespace: String,
 
     /// API group for CRDs. Overrides compile-time default `hanzo.ai`.
-    /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`,
-    /// `hanzo.ai`.
+    /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`.
     #[arg(long, env = "OPERATOR_API_GROUP")]
     api_group: Option<String>,
 

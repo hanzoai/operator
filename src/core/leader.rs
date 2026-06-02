@@ -5,8 +5,8 @@
 //! 15 seconds.
 //!
 //! Generalized from the byte-identical implementations that previously lived
-//! in `each downstream operator's src/leader.rs`. Each operator
-//! configures a unique `lease_name` and `identity_prefix` via `LeaderConfig`.
+//! in `~/work/{lux,zoo}/operator/src/leader.rs`. Each operator configures
+//! a unique `lease_name` and `identity_prefix` via `LeaderConfig`.
 
 use k8s_openapi::api::coordination::v1::{Lease, LeaseSpec};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;

@@ -127,8 +127,8 @@ branch. It is preserved for archaeology but no longer maintained.
 
 The standalone `hanzoai/operator-core` repo is a tombstone — its code is
 absorbed under `src/core/` here. Downstream consumers
-(`luxfi/operator`, `zoo/operator`, `a downstream operator`) will need a
-follow-up Cargo.toml update to depend on `hanzoai/operator` directly.
+(`luxfi/operator`, `zoo/operator`) will need a follow-up Cargo.toml
+update to depend on `hanzoai/operator` directly.
 
 ## Rules
 - ALWAYS use `cargo` not `make` for Rust workflows.

@@ -10,9 +10,9 @@
 > Go pseudo-versions consumed by `hanzoai/superbase` + `hanzoai/agents/control-plane`,
 > and the historical commit graph stay reachable. **No new feature work lands here.**
 >
-> `a downstream operator`'s dependency on standalone `hanzoai/operator-core` is intentionally
-> unchanged — that crate remains brand-separated. See `MIGRATED.md` for the full migration
-> table per downstream consumer.
+> Downstream operator forks depending on standalone `hanzoai/operator-core` are
+> intentionally unchanged — that crate remains brand-separated. See `MIGRATED.md`
+> for the full migration table per downstream consumer.
 
 ---
 
@@ -140,8 +140,8 @@ controller code, and CRD YAML.
 
 The standalone `hanzoai/operator-core` repo is a tombstone — its code is
 absorbed under `src/core/` here. Downstream consumers (`luxfi/operator`,
-`zoo/operator`, `a downstream operator`) will update their `Cargo.toml` to
-depend on `hanzoai/operator` directly.
+`zoo/operator`) will update their `Cargo.toml` to depend on
+`hanzoai/operator` directly.
 
 ## License
 
