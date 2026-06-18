@@ -193,11 +193,7 @@ async fn reconcile_service_inner(
         .iter()
         .map(crd_types::LocalObjectReference::to_k8s)
         .collect();
-    let replicas_for_deployment = if spec
-        .autoscaling
-        .as_ref()
-        .is_some_and(|a| a.enabled)
-    {
+    let replicas_for_deployment = if spec.autoscaling.as_ref().is_some_and(|a| a.enabled) {
         None
     } else {
         Some(spec.replicas.unwrap_or(1))
@@ -517,11 +513,7 @@ mod tests {
     /// deciding what to pass to `build_deployment` as `replicas`. Keep this
     /// function in lockstep with the controller body.
     fn replicas_for_deployment(spec: &ServiceSpec) -> Option<i32> {
-        if spec
-            .autoscaling
-            .as_ref()
-            .is_some_and(|a| a.enabled)
-        {
+        if spec.autoscaling.as_ref().is_some_and(|a| a.enabled) {
             None
         } else {
             Some(spec.replicas.unwrap_or(1))
@@ -541,8 +533,11 @@ mod tests {
             target_cpu_utilization: Some(70),
             target_memory_utilization: None,
         });
-        assert_eq!(replicas_for_deployment(&spec), None,
-            "with HPA enabled, deployment.replicas must be None so HPA owns the field");
+        assert_eq!(
+            replicas_for_deployment(&spec),
+            None,
+            "with HPA enabled, deployment.replicas must be None so HPA owns the field"
+        );
     }
 
     #[test]
