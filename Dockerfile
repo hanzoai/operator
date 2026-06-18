@@ -1,10 +1,16 @@
+# Rust implementation of the Lux operator.
+#
+# Build from the repo root with: `docker build -f rust/Dockerfile .`
+# Image: ghcr.io/luxfi/operator-rust:vX.Y.Z (sibling of ghcr.io/luxfi/operator
+# which is built from go/Dockerfile).
+#
 # Builder
 FROM rust:1.79-bookworm AS builder
 
 WORKDIR /build
 
 # Copy Cargo manifest and lock first for layer caching.
-COPY Cargo.toml Cargo.lock ./
+COPY rust/Cargo.toml rust/Cargo.lock ./
 
 # Pre-build a dummy binary so dependencies cache between builds.
 RUN mkdir -p src src/bin && \
@@ -14,7 +20,7 @@ RUN mkdir -p src src/bin && \
     cargo build --release 2>/dev/null || true
 
 # Now copy real source and build.
-COPY src/ src/
+COPY rust/src/ src/
 RUN touch src/main.rs src/lib.rs src/bin/generate_crd_yaml.rs && cargo build --release
 
 # Runtime

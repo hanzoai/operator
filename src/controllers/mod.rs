@@ -46,3 +46,11 @@ pub mod kv;
 pub mod llm;
 pub mod s3;
 pub mod sql;
+
+// v0.3.4: union with go/ — backcompat Hanzo aliases (delegate to the base
+// Service/Datastore/DNS controllers) + LuxNetwork + NodeFleet blockchain Kinds.
+pub mod hanzo_datastore;
+pub mod hanzo_dns;
+pub mod hanzo_service;
+pub mod luxnetwork;
+pub mod nodefleet;
