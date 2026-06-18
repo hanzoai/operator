@@ -1,7 +1,8 @@
 //! Hanzo Operator — Rust port (canonical for all universes).
 //!
-//! Manages 20 CRD Kinds at a configurable API group (default `hanzo.ai`).
-//! One binary serves Hanzo, Lux, Zoo, and Osage universes via
+//! Manages 29 CRD Kinds at a configurable API group (default `hanzo.ai`).
+//! One binary serves Hanzo, Lux, Zoo, and Osage universes (and any
+//! white-label tenant) via
 //! `--api-group` / `OPERATOR_API_GROUP`.
 //!
 //! See `~/work/hanzo/operator/README.md` for install + CRD reference.
@@ -139,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
             info!("Leader election exited");
         }
 
-        // Controllers — wait for leadership then run all 20.
+        // Controllers — wait for leadership then run all of them.
         _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone()) => {
             warn!("Controllers exited");
         }
@@ -257,6 +258,32 @@ async fn run_all_controllers(
             api_group.clone()
         ),
         controllers::explorer::run_explorer_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        // v0.3.4: union with go/ — Hanzo backcompat aliases + blockchain Kinds.
+        controllers::hanzo_service::run_hanzo_service_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::hanzo_datastore::run_hanzo_datastore_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::hanzo_dns::run_hanzo_dns_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::luxnetwork::run_luxnetwork_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::nodefleet::run_nodefleet_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()

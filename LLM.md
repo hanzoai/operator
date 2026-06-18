@@ -123,12 +123,13 @@ publish `ghcr.io/hanzoai/operator:vX.Y.Z` for linux/amd64 + linux/arm64
 
 ## Predecessor
 The Go implementation lives on the `legacy/go-impl-before-rust-port`
-branch. It is preserved for archaeology but no longer maintained.
+branch here. The maintained Go operator is its own repo at
+`luxfi/operator` (web3 canonical); this Rust impl is web2 canonical.
+Both target full feature parity over a shared CRD wire contract.
 
-The standalone `hanzoai/operator-core` repo is a tombstone — its code is
-absorbed under `src/core/` here. Downstream consumers
-(`luxfi/operator`, `zoo/operator`) will need a follow-up Cargo.toml
-update to depend on `hanzoai/operator` directly.
+The shared reconciler primitives in `src/core/` are also published as
+the standalone `hanzoai/operator-core` crate, which `zooai/operator`
+consumes at git tag `v0.1.0`. Keep `src/core/` and that crate in sync.
 
 ## Rules
 - ALWAYS use `cargo` not `make` for Rust workflows.
