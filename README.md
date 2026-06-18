@@ -1,28 +1,26 @@
 # operator
 
-> **⚠️ MIGRATED — see [`MIGRATED.md`](./MIGRATED.md)**
->
-> As of 2026-05-29, the canonical Rust implementation lives at
-> [`luxfi/operator/rust/`](https://github.com/luxfi/operator/tree/main/rust),
-> in the polyglot `luxfi/operator` repo alongside the Go implementation under `go/`.
->
-> `main` here is **frozen** — existing image tags (`ghcr.io/hanzoai/operator:<sha>`),
-> Go pseudo-versions consumed by `hanzoai/superbase` + `hanzoai/agents/control-plane`,
-> and the historical commit graph stay reachable. **No new feature work lands here.**
->
-> Downstream operator forks depending on standalone `hanzoai/operator-core` are
-> intentionally unchanged — that crate remains brand-separated. See `MIGRATED.md`
-> for the full migration table per downstream consumer.
+Canonical **Rust** Kubernetes operator for the Hanzo platform — and, per
+the cross-impl parity goal, eventually all of Lux too. One binary, N CRD
+Kinds, configurable API group at install time. See [`LLM.md`](./LLM.md)
+for the agent-friendly overview.
 
----
+## Canonical homes
 
-Canonical Kubernetes operator for the Hanzo platform — Rust port, used by Hanzo, Lux, Zoo, and Osage universes.
+| Impl  | Repo                              | Image                         |
+|-------|-----------------------------------|-------------------------------|
+| Rust  | `hanzoai/operator` (this repo)    | `ghcr.io/hanzoai/operator`    |
+| Go    | `luxfi/operator`                  | `ghcr.io/luxfi/operator`      |
 
-One binary. 20 CRD Kinds. Configurable API group at install time. See [`LLM.md`](./LLM.md) for the agent-friendly overview.
+Both implementations target **full feature parity** against a shared CRD
+wire contract: each k8s cluster deploys whichever language fits its
+operating context (Hanzo web2 ↔ Lux web3). Any change to the CRD wire
+shape must land in both impls.
 
 ## What it manages
 
-Twenty Kinds at `<api-group>/v1`, with three legacy `v1alpha1` compat aliases for existing CRs in cluster.
+Kinds at `<api-group>/v1`, with three legacy `v1alpha1` compat aliases
+for existing CRs in cluster.
 
 | Kind        | Purpose                                                   | Materializes |
 |-------------|-----------------------------------------------------------|--------------|
@@ -31,118 +29,92 @@ Twenty Kinds at `<api-group>/v1`, with three legacy `v1alpha1` compat aliases fo
 | SQL / KV / DocDB / S3 | Thin facades over Datastore for each engine     | Same as Datastore |
 | Gateway     | KrakenD-based API gateway                                 | Deployment, Service, ConfigMap (krakend.json), Ingress |
 | MPC         | Multi-party computation threshold cluster                 | StatefulSet, ClusterIP + headless Service |
-| Network     | Blockchain validator network                              | StatefulSet (validators), Services, PVC |
+| Network     | Blockchain validator network (mode derived from networkID + validators) | StatefulSet (validators), Services, PVC |
+| LuxNetwork  | Lux primary-network validators + tenant chain imports     | StatefulSet, Services, PVC, CronJob, Jobs |
+| NodeFleet   | Pinned node fleet                                         | StatefulSet, Services |
 | Ingress     | Multi-domain routing with cert-manager TLS                | Multiple Ingress resources |
 | DNS         | Multi-tenant CoreDNS deployment                           | Deployment, Service |
-| BaseApp     | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
+| Base        | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
 | IAM / KMS / LLM / Indexer / Explorer | Thin facades over Service          | Same as Service |
-| Chain / Subnet / Validator | Sub-resources of Network (NoOp stubs)        | — |
+| SPA / Static / Queue / Observability / Function | App-shaped facades            | Service / Datastore facades |
+| Chain / Validator | Sub-resources of Network (NoOp stubs)               | — |
 | HanzoService / HanzoDatastore / HanzoDNS | v1alpha1 legacy aliases (compat) | Delegate to canonical reconcilers |
 
 ## Critical invariant
 
-`spec.env`, `spec.volumes`, `spec.volumeMounts` MUST be honored on the generated Deployment. The gateway 503 root cause (May 2026) was the legacy Go operator silently dropping these. The Rust port carries tests that fail if any of these fields stop being carried.
+`spec.env`, `spec.volumes`, `spec.volumeMounts` MUST be honored on every
+generated Deployment.
 
 ```bash
-$ cargo test --lib controllers::service::tests
-test controllers::service::tests::env_is_carried_to_main_container ... ok
-test controllers::service::tests::volume_mounts_are_carried_to_main_container ... ok
-test controllers::service::tests::deployment_carries_volumes ... ok
+cargo test --lib controllers::service::tests
+# env_is_carried_to_main_container ... ok
+# volume_mounts_are_carried_to_main_container ... ok
+# deployment_carries_volumes ... ok
 ```
 
-## Install
+When a Service CR sets `autoscaling.enabled = true`, the operator emits
+the Deployment with **no** `spec.replicas` so the HPA is the sole field
+manager for that field (server-side apply would otherwise fight the HPA
+on every reconcile cycle).
 
-### CRDs
-
-CRD YAMLs are pre-generated for each universe under `k8s/crds/`:
-
-```bash
-kubectl apply -f k8s/crds/all-hanzo.ai.yaml      # Hanzo universe
-kubectl apply -f k8s/crds/all-lux.cloud.yaml     # Lux universe
-kubectl apply -f k8s/crds/all-zoo.cloud.yaml     # Zoo universe
-kubectl apply -f k8s/crds/all-osage.cloud.yaml   # Osage universe
-```
-
-To generate for another universe:
-
-```bash
-cargo run --release --bin generate-crd-yaml -- --api-group your.cloud --out k8s/crds/all-your.cloud.yaml
-```
-
-### Operator
-
-```bash
-# Defaults to API group `hanzo.ai`.
-operator
-
-# Other universes override with --api-group or OPERATOR_API_GROUP:
-operator --api-group lux.cloud
-OPERATOR_API_GROUP=zoo.cloud operator
-```
-
-Container image: `ghcr.io/hanzoai/operator:vX.Y.Z` (amd64 + arm64).
-
-## Build
+## Build / Test
 
 ```bash
 cargo build --release
-cargo test
+cargo test --lib                      # unit tests
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-CI: `.github/workflows/publish.yml` uses the shared
-`hanzoai/.github/.github/workflows/docker-build.yml@main` workflow. Tags
-`v*` publish to `ghcr.io/hanzoai/operator`.
+## API group rebinding
 
-## Architecture
+kube-rs's `CustomResource` derive bakes the API group at compile time —
+the default is `hanzo.ai`. To target another universe's API group,
+regenerate the CRD YAML via the `generate-crd-yaml` binary:
+
+```bash
+generate-crd-yaml --api-group lux.cloud   --out k8s/crds/all-lux.cloud.yaml
+generate-crd-yaml --api-group hanzo.ai    --out k8s/crds/all-hanzo.ai.yaml
+generate-crd-yaml --api-group zoo.cloud   --out k8s/crds/all-zoo.cloud.yaml
+generate-crd-yaml --api-group osage.cloud --out k8s/crds/all-osage.cloud.yaml
+```
+
+The running binary accepts `--api-group X.Y` / `OPERATOR_API_GROUP=X.Y`
+and uses the resolved group for owner references and dynamic KMSSecret
+references.
+
+## Layout
 
 ```
 src/
-  main.rs             Entrypoint — clap args, leader election, controller spawn.
-  lib.rs              Library facade (used by generate-crd-yaml + tests).
-  crd.rs              All 20 CRD type definitions.
-  crd_types.rs        JsonSchema-friendly wrappers for k8s-openapi types
-                      (EnvVar, Volume, Condition, etc.) since those don't
-                      derive JsonSchema. Wire-compatible round-trip.
-  manifests.rs        Pure builders for Deployment, Service, Ingress, PDB,
-                      NetworkPolicy, StatefulSet, PVC template.
-  apply.rs            Server-side apply (typed + DynamicObject variants).
-  api_group.rs        Runtime API-group resolution.
-  controllers/
-    service.rs        Service + HanzoService (compat) reconcilers.
-    datastore.rs      Datastore + HanzoDatastore (compat) reconcilers.
-    gateway.rs        Gateway reconciler.
-    mpc.rs            MPC reconciler.
-    network.rs        Network reconciler.
-    ingress.rs        Ingress reconciler.
-    dns.rs            DNS + HanzoDNS (compat) reconcilers.
-    baseapp.rs        BaseApp reconciler (Quasar writer election + gateway wiring).
-    compat.rs         Unbranded facades (SQL/KV/DocDB/IAM/KMS/LLM/S3/...) and
-                      stubs for Chain/Subnet/Validator.
-  core/               Absorbed from former hanzoai/operator-core repo.
-    error.rs          OperatorError + Result.
-    leader.rs         Lease-based leader election.
-    iam_admin.rs      IAM admin API client (POST /v1/iam/admin/applications/upsert).
-    secret.rs         KMSSecret hijack guard + NUL-byte rejection.
-    status.rs         Standard status.conditions helpers.
-    reconciler.rs     Retry cadence (clamp_resync etc.).
+  main.rs              clap args, leader election, controller spawn
+  lib.rs               library facade (re-exports)
+  crd.rs               CRD types
+  crd_types.rs         JsonSchema wrappers for k8s-openapi types
+  manifests.rs         pure K8s object builders
+  apply.rs             server-side apply (typed + DynamicObject)
+  api_group.rs         runtime API-group resolution
+  controllers/         one module per Kind
+  core/                shared reconciler primitives
+    error.rs           OperatorError + Result
+    leader.rs          coordination.k8s.io/v1 lease loop
+    iam_admin.rs       POST /v1/iam/admin/applications/upsert
+    secret.rs          KMSSecret hijack guard + NUL-byte rejection
+    status.rs          status.conditions helpers
+    reconciler.rs      Action requeue cadence + clamp_resync
   bin/
-    generate_crd_yaml.rs    CRD YAML generator with --api-group rewriter.
+    generate_crd_yaml.rs   CRD YAML generator with --api-group rewriter
+scripts/                migration scripts (v0.2.x → v0.3.0)
+k8s/crds/               generated CRD YAMLs per universe
 ```
 
-## Predecessor
+## Rules
 
-The Go implementation is preserved on the `legacy/go-impl-before-rust-port`
-branch. It will not be brought back; the Rust port is canonical going
-forward. See the legacy branch for the original kubebuilder scaffold,
-controller code, and CRD YAML.
-
-The standalone `hanzoai/operator-core` repo is a tombstone — its code is
-absorbed under `src/core/` here. Downstream consumers (`luxfi/operator`,
-`zoo/operator`) will update their `Cargo.toml` to depend on
-`hanzoai/operator` directly.
+- Never `:latest`, `:main`, `:dev` — semver tags only (`vX.Y.Z`).
+- amd64 only (arm64 paused per global LLM.md 2026-04-27).
+- Honor `spec.env/volumes/volumeMounts` — the load-bearing assertion.
+- Edition `2021`, Rust 1.79+, kube-rs 0.87, k8s-openapi 0.20 (v1_28).
 
 ## License
 
-BSD-3-Clause.
+BSD-3-Clause (see [`LICENSE`](./LICENSE) — header in source files).
