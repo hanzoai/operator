@@ -1,13 +1,18 @@
 [workspace]
-# Standalone crate — not a member of the parent ~/work/hanzo workspace.
+# Standalone crate — explicit empty workspace prevents inheritance from any
+# stray Cargo.toml above this directory in the parent ~/work/hanzo workspace.
 
 [package]
 name = "operator"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 license = "BSD-3-Clause"
 repository = "https://github.com/hanzoai/operator"
-description = "Kubernetes operator for Hanzo platform (canonical, all universes)"
+description = "Kubernetes operator for Hanzo platform (canonical Rust impl, all universes)"
+
+[lib]
+name = "operator"
+path = "src/lib.rs"
 
 [[bin]]
 name = "operator"

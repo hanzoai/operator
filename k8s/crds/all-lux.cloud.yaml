@@ -1827,6 +1827,10 @@ spec:
         description: Auto-generated derived type for NetworkSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              NetworkSpec — unified blockchain-network CRD.
+
+              Two data fields drive everything: network_id + validators. Mode is derived (see NetworkSpec::network_mode); there is no `sovereign` flag, no `parent` pointer, no `mode` enum field.
             properties:
               annotations:
                 additionalProperties:
@@ -1882,22 +1886,26 @@ spec:
                     type: object
                 type: object
               chains:
+                description: Blockchains hosted on this network. Opaque to the operator.
                 items:
+                  description: ChainRef is an opaque reference to one blockchain hosted by a Network.
                   properties:
-                    genesis:
+                    blockchainID:
                       type: string
                     name:
                       type: string
-                    subnetId:
-                      type: string
-                    vmId:
+                    vmID:
                       type: string
                   required:
-                  - genesis
-                  - name
-                  - vmId
+                  - blockchainID
                   type: object
                 type: array
+              evmChainID:
+                default: 0
+                description: EVM chain ID (EIP-155 replay-protection root). Unique per brand × env across the canonical map at luxfi/genesis/configs/lp182_chain_id_map.go.
+                format: uint64
+                minimum: 0.0
+                type: integer
               explorer:
                 nullable: true
                 properties:
@@ -1971,8 +1979,13 @@ spec:
                 nullable: true
                 type: object
               networkID:
-                type: string
-              validators:
+                description: What network this instance is on / part of. Matches luxd's LUX_NETWORK_ID env var. Reserved values {1,2,3,1337} denote Lux primaries; any other value denotes an independent primary's own ID.
+                format: uint32
+                minimum: 0.0
+                type: integer
+              validatorTemplate:
+                description: Per-validator pod-spec template applied when validators > 0. Ignored when validators == 0.
+                nullable: true
                 properties:
                   bootstrapNodes:
                     items:
@@ -2032,9 +2045,13 @@ spec:
                 required:
                 - image
                 type: object
+              validators:
+                default: 0
+                description: Validator-set size declaration. 0 → this CR emits no validator workloads. Listed chains are served by the existing validator set on the network identified by network_id (L2 mode). N → this CR emits N validator pods that participate in the network identified by network_id (Anchored or Independent mode depending on network_id).
+                format: int32
+                type: integer
             required:
             - networkID
-            - validators
             type: object
           status:
             nullable: true
@@ -2075,6 +2092,14 @@ spec:
                   - type
                   type: object
                 type: array
+              mode:
+                description: Mode derived from spec data — surfaced for kubectl describe.
+                enum:
+                - L2
+                - Anchored
+                - Independent
+                nullable: true
+                type: string
               observedGeneration:
                 default: 0
                 format: int64
@@ -7214,7 +7239,7 @@ spec:
                     type: string
                   name:
                     type: string
-                  subnetId:
+                  networkId:
                     type: string
                   vmId:
                     type: string
@@ -7268,6 +7293,14 @@ spec:
                   - type
                   type: object
                 type: array
+              mode:
+                description: Mode derived from spec data — surfaced for kubectl describe.
+                enum:
+                - L2
+                - Anchored
+                - Independent
+                nullable: true
+                type: string
               observedGeneration:
                 default: 0
                 format: int64
@@ -7438,117 +7471,6 @@ spec:
         required:
         - spec
         title: Validator
-        type: object
-    served: true
-    storage: true
-    subresources:
-      status: {}
-
----
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
-  name: subnets.lux.cloud
-spec:
-  group: lux.cloud
-  names:
-    categories: []
-    kind: Subnet
-    plural: subnets
-    shortNames:
-    - subnet
-    singular: subnet
-  scope: Namespaced
-  versions:
-  - additionalPrinterColumns: []
-    name: v1
-    schema:
-      openAPIV3Schema:
-        description: Auto-generated derived type for SubnetSpec via `CustomResource`
-        properties:
-          spec:
-            properties:
-              chains:
-                items:
-                  properties:
-                    genesis:
-                      type: string
-                    name:
-                      type: string
-                    subnetId:
-                      type: string
-                    vmId:
-                      type: string
-                  required:
-                  - genesis
-                  - name
-                  - vmId
-                  type: object
-                type: array
-              network:
-                type: string
-              subnetId:
-                type: string
-            required:
-            - network
-            - subnetId
-            type: object
-          status:
-            nullable: true
-            properties:
-              activeValidators:
-                default: 0
-                format: int32
-                type: integer
-              bootstrapComplete:
-                default: false
-                type: boolean
-              chainCount:
-                default: 0
-                format: int32
-                type: integer
-              conditions:
-                items:
-                  properties:
-                    lastTransitionTime:
-                      nullable: true
-                      type: string
-                    message:
-                      type: string
-                    observedGeneration:
-                      format: int64
-                      nullable: true
-                      type: integer
-                    reason:
-                      type: string
-                    status:
-                      type: string
-                    type:
-                      type: string
-                  required:
-                  - message
-                  - reason
-                  - status
-                  - type
-                  type: object
-                type: array
-              observedGeneration:
-                default: 0
-                format: int64
-                type: integer
-              phase:
-                enum:
-                - Pending
-                - Creating
-                - Running
-                - Degraded
-                - Deleting
-                nullable: true
-                type: string
-            type: object
-        required:
-        - spec
-        title: Subnet
         type: object
     served: true
     storage: true
@@ -11707,6 +11629,2251 @@ spec:
         required:
         - spec
         title: Function
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hanzoservices.lux.cloud
+spec:
+  group: lux.cloud
+  names:
+    categories: []
+    kind: HanzoService
+    plural: hanzoservices
+    shortNames:
+    - hzsvc
+    singular: hanzoservice
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for HanzoServiceSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              args:
+                items:
+                  type: string
+                type: array
+              autoscaling:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  maxReplicas:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  minReplicas:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  targetCpuUtilization:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  targetMemoryUtilization:
+                    format: int32
+                    nullable: true
+                    type: integer
+                type: object
+              command:
+                items:
+                  type: string
+                type: array
+              component:
+                type: string
+              env:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      nullable: true
+                      type: string
+                    valueFrom:
+                      nullable: true
+                      properties:
+                        configMapKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                        fieldRef:
+                          nullable: true
+                          properties:
+                            apiVersion:
+                              type: string
+                            fieldPath:
+                              type: string
+                          required:
+                          - fieldPath
+                          type: object
+                        secretKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              envFrom:
+                items:
+                  properties:
+                    configMapRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    prefix:
+                      type: string
+                    secretRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                  type: object
+                type: array
+              image:
+                properties:
+                  pullPolicy:
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              ingress:
+                nullable: true
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  clusterIssuer:
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  hosts:
+                    items:
+                      type: string
+                    type: array
+                  ingressClassName:
+                    type: string
+                  pathRules:
+                    items:
+                      properties:
+                        path:
+                          type: string
+                        pathType:
+                          type: string
+                        port:
+                          format: int32
+                          type: integer
+                        serviceName:
+                          type: string
+                      required:
+                      - path
+                      - pathType
+                      - port
+                      type: object
+                    type: array
+                  tls:
+                    default: true
+                    type: boolean
+                  zeroTrustPolicy:
+                    nullable: true
+                    properties:
+                      allowedDomains:
+                        items:
+                          type: string
+                        type: array
+                      allowedEmails:
+                        items:
+                          type: string
+                        type: array
+                      allowedGroups:
+                        items:
+                          type: string
+                        type: array
+                      enabled:
+                        default: false
+                        type: boolean
+                      iamEndpoint:
+                        type: string
+                      sessionDuration:
+                        type: string
+                    type: object
+                type: object
+              initContainers:
+                items:
+                  properties:
+                    args:
+                      items:
+                        type: string
+                      type: array
+                    command:
+                      items:
+                        type: string
+                      type: array
+                    env:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            nullable: true
+                            type: string
+                          valueFrom:
+                            nullable: true
+                            properties:
+                              configMapKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                              fieldRef:
+                                nullable: true
+                                properties:
+                                  apiVersion:
+                                    type: string
+                                  fieldPath:
+                                    type: string
+                                required:
+                                - fieldPath
+                                type: object
+                              secretKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    envFrom:
+                      items:
+                        properties:
+                          configMapRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                          prefix:
+                            type: string
+                          secretRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      type: array
+                    image:
+                      type: string
+                    imagePullPolicy:
+                      description: Image pull policy (Always / IfNotPresent / Never).
+                      type: string
+                    name:
+                      type: string
+                    volumeMounts:
+                      items:
+                        properties:
+                          mountPath:
+                            type: string
+                          name:
+                            type: string
+                          readOnly:
+                            nullable: true
+                            type: boolean
+                          subPath:
+                            type: string
+                        required:
+                        - mountPath
+                        - name
+                        type: object
+                      type: array
+                  required:
+                  - image
+                  - name
+                  type: object
+                type: array
+              kmsSecrets:
+                items:
+                  properties:
+                    credentialsRef:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    envSlug:
+                      type: string
+                    hostApi:
+                      type: string
+                    managedSecretName:
+                      type: string
+                    projectSlug:
+                      type: string
+                    resyncInterval:
+                      default: 0
+                      format: int32
+                      type: integer
+                    secretsPath:
+                      type: string
+                  required:
+                  - credentialsRef
+                  - envSlug
+                  - managedSecretName
+                  - projectSlug
+                  - secretsPath
+                  type: object
+                type: array
+              labels:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              livenessProbe:
+                nullable: true
+                properties:
+                  initialDelaySeconds:
+                    default: 0
+                    format: int32
+                    type: integer
+                  path:
+                    default: ''
+                    type: string
+                  periodSeconds:
+                    default: 0
+                    format: int32
+                    type: integer
+                  port:
+                    format: int32
+                    type: integer
+                required:
+                - port
+                type: object
+              networkPolicy:
+                nullable: true
+                properties:
+                  allowFrom:
+                    items:
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                        podSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                      type: object
+                    type: array
+                  allowIngress:
+                    default: false
+                    type: boolean
+                  allowIntraNamespace:
+                    nullable: true
+                    type: boolean
+                  enabled:
+                    nullable: true
+                    type: boolean
+                type: object
+              partOf:
+                type: string
+              pdb:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  maxUnavailable:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  minAvailable:
+                    format: int32
+                    nullable: true
+                    type: integer
+                type: object
+              ports:
+                items:
+                  properties:
+                    containerPort:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    protocol:
+                      type: string
+                    servicePort:
+                      format: int32
+                      nullable: true
+                      type: integer
+                  required:
+                  - containerPort
+                  - name
+                  type: object
+                type: array
+              readinessProbe:
+                nullable: true
+                properties:
+                  initialDelaySeconds:
+                    default: 0
+                    format: int32
+                    type: integer
+                  path:
+                    default: ''
+                    type: string
+                  periodSeconds:
+                    default: 0
+                    format: int32
+                    type: integer
+                  port:
+                    format: int32
+                    type: integer
+                required:
+                - port
+                type: object
+              replicas:
+                format: int32
+                nullable: true
+                type: integer
+              resources:
+                nullable: true
+                properties:
+                  limits:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  requests:
+                    additionalProperties:
+                      type: string
+                    description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                    nullable: true
+                    type: object
+                type: object
+              serviceAccountName:
+                type: string
+              serviceMonitor:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  interval:
+                    type: string
+                  metricsPath:
+                    type: string
+                  metricsPort:
+                    type: string
+                type: object
+              sidecars:
+                items:
+                  properties:
+                    args:
+                      items:
+                        type: string
+                      type: array
+                    command:
+                      items:
+                        type: string
+                      type: array
+                    env:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            nullable: true
+                            type: string
+                          valueFrom:
+                            nullable: true
+                            properties:
+                              configMapKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                              fieldRef:
+                                nullable: true
+                                properties:
+                                  apiVersion:
+                                    type: string
+                                  fieldPath:
+                                    type: string
+                                required:
+                                - fieldPath
+                                type: object
+                              secretKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    envFrom:
+                      items:
+                        properties:
+                          configMapRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                          prefix:
+                            type: string
+                          secretRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      type: array
+                    image:
+                      type: string
+                    imagePullPolicy:
+                      description: Image pull policy (Always / IfNotPresent / Never).
+                      type: string
+                    name:
+                      type: string
+                    volumeMounts:
+                      items:
+                        properties:
+                          mountPath:
+                            type: string
+                          name:
+                            type: string
+                          readOnly:
+                            nullable: true
+                            type: boolean
+                          subPath:
+                            type: string
+                        required:
+                        - mountPath
+                        - name
+                        type: object
+                      type: array
+                  required:
+                  - image
+                  - name
+                  type: object
+                type: array
+              strategy:
+                type: string
+              volumeMounts:
+                items:
+                  properties:
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    readOnly:
+                      nullable: true
+                      type: boolean
+                    subPath:
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              volumes:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+            required:
+            - image
+            type: object
+          status:
+            nullable: true
+            properties:
+              availableReplicas:
+                default: 0
+                format: int32
+                type: integer
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              endpoints:
+                items:
+                  type: string
+                type: array
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                nullable: true
+                type: string
+              readyReplicas:
+                default: 0
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: HanzoService
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hanzodatastores.lux.cloud
+spec:
+  group: lux.cloud
+  names:
+    categories: []
+    kind: HanzoDatastore
+    plural: hanzodatastores
+    shortNames:
+    - hzds
+    singular: hanzodatastore
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for HanzoDatastoreSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              args:
+                items:
+                  type: string
+                type: array
+              backup:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  retentionDays:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  s3Bucket:
+                    type: string
+                  s3CredentialsSecret:
+                    type: string
+                  s3Endpoint:
+                    type: string
+                  schedule:
+                    type: string
+                type: object
+              command:
+                items:
+                  type: string
+                type: array
+              credentialsSecret:
+                type: string
+              env:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      nullable: true
+                      type: string
+                    valueFrom:
+                      nullable: true
+                      properties:
+                        configMapKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                        fieldRef:
+                          nullable: true
+                          properties:
+                            apiVersion:
+                              type: string
+                            fieldPath:
+                              type: string
+                          required:
+                          - fieldPath
+                          type: object
+                        secretKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              envFrom:
+                items:
+                  properties:
+                    configMapRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    prefix:
+                      type: string
+                    secretRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                  type: object
+                type: array
+              image:
+                nullable: true
+                properties:
+                  pullPolicy:
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              kmsSecrets:
+                items:
+                  properties:
+                    credentialsRef:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    envSlug:
+                      type: string
+                    hostApi:
+                      type: string
+                    managedSecretName:
+                      type: string
+                    projectSlug:
+                      type: string
+                    resyncInterval:
+                      default: 0
+                      format: int32
+                      type: integer
+                    secretsPath:
+                      type: string
+                  required:
+                  - credentialsRef
+                  - envSlug
+                  - managedSecretName
+                  - projectSlug
+                  - secretsPath
+                  type: object
+                type: array
+              networkPolicy:
+                nullable: true
+                properties:
+                  allowFrom:
+                    items:
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                        podSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                      type: object
+                    type: array
+                  allowIngress:
+                    default: false
+                    type: boolean
+                  allowIntraNamespace:
+                    nullable: true
+                    type: boolean
+                  enabled:
+                    nullable: true
+                    type: boolean
+                type: object
+              partOf:
+                type: string
+              ports:
+                items:
+                  properties:
+                    containerPort:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    protocol:
+                      type: string
+                    servicePort:
+                      format: int32
+                      nullable: true
+                      type: integer
+                  required:
+                  - containerPort
+                  - name
+                  type: object
+                type: array
+              replicas:
+                format: int32
+                nullable: true
+                type: integer
+              resources:
+                nullable: true
+                properties:
+                  limits:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  requests:
+                    additionalProperties:
+                      type: string
+                    description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                    nullable: true
+                    type: object
+                type: object
+              serviceAliases:
+                items:
+                  type: string
+                type: array
+              serviceMonitor:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  interval:
+                    type: string
+                  metricsPath:
+                    type: string
+                  metricsPort:
+                    type: string
+                type: object
+              sidecars:
+                items:
+                  properties:
+                    args:
+                      items:
+                        type: string
+                      type: array
+                    command:
+                      items:
+                        type: string
+                      type: array
+                    env:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            nullable: true
+                            type: string
+                          valueFrom:
+                            nullable: true
+                            properties:
+                              configMapKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                              fieldRef:
+                                nullable: true
+                                properties:
+                                  apiVersion:
+                                    type: string
+                                  fieldPath:
+                                    type: string
+                                required:
+                                - fieldPath
+                                type: object
+                              secretKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    envFrom:
+                      items:
+                        properties:
+                          configMapRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                          prefix:
+                            type: string
+                          secretRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      type: array
+                    image:
+                      type: string
+                    imagePullPolicy:
+                      description: Image pull policy (Always / IfNotPresent / Never).
+                      type: string
+                    name:
+                      type: string
+                    volumeMounts:
+                      items:
+                        properties:
+                          mountPath:
+                            type: string
+                          name:
+                            type: string
+                          readOnly:
+                            nullable: true
+                            type: boolean
+                          subPath:
+                            type: string
+                        required:
+                        - mountPath
+                        - name
+                        type: object
+                      type: array
+                  required:
+                  - image
+                  - name
+                  type: object
+                type: array
+              storage:
+                properties:
+                  retentionPolicy:
+                    type: string
+                  size:
+                    description: Quantity string (e.g. `"10Gi"`).
+                    type: string
+                  storageClassName:
+                    type: string
+                required:
+                - size
+                type: object
+              type:
+                type: string
+              volumeMounts:
+                items:
+                  properties:
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    readOnly:
+                      nullable: true
+                      type: boolean
+                    subPath:
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              volumes:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+            required:
+            - storage
+            - type
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              connectionString:
+                type: string
+              lastBackup:
+                nullable: true
+                type: string
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                nullable: true
+                type: string
+              readyReplicas:
+                default: 0
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: HanzoDatastore
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: hanzodnses.lux.cloud
+spec:
+  group: lux.cloud
+  names:
+    categories: []
+    kind: HanzoDNS
+    plural: hanzodnses
+    shortNames:
+    - hzdns
+    singular: hanzodns
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for HanzoDNSSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              cloudflare:
+                nullable: true
+                properties:
+                  credentialsRef:
+                    nullable: true
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  enabled:
+                    default: false
+                    type: boolean
+                type: object
+              coredns:
+                nullable: true
+                properties:
+                  apiPort:
+                    default: 0
+                    format: int32
+                    type: integer
+                  dnsPort:
+                    default: 0
+                    format: int32
+                    type: integer
+                  image:
+                    type: string
+                  replicas:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  resources:
+                    nullable: true
+                    properties:
+                      limits:
+                        additionalProperties:
+                          type: string
+                        nullable: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          type: string
+                        description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                        nullable: true
+                        type: object
+                    type: object
+                type: object
+              database:
+                nullable: true
+                properties:
+                  credentialsRef:
+                    nullable: true
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  enabled:
+                    default: false
+                    type: boolean
+                  syncInterval:
+                    type: string
+                type: object
+              ingress:
+                nullable: true
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  clusterIssuer:
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  hosts:
+                    items:
+                      type: string
+                    type: array
+                  ingressClassName:
+                    type: string
+                  pathRules:
+                    items:
+                      properties:
+                        path:
+                          type: string
+                        pathType:
+                          type: string
+                        port:
+                          format: int32
+                          type: integer
+                        serviceName:
+                          type: string
+                      required:
+                      - path
+                      - pathType
+                      - port
+                      type: object
+                    type: array
+                  tls:
+                    default: true
+                    type: boolean
+                  zeroTrustPolicy:
+                    nullable: true
+                    properties:
+                      allowedDomains:
+                        items:
+                          type: string
+                        type: array
+                      allowedEmails:
+                        items:
+                          type: string
+                        type: array
+                      allowedGroups:
+                        items:
+                          type: string
+                        type: array
+                      enabled:
+                        default: false
+                        type: boolean
+                      iamEndpoint:
+                        type: string
+                      sessionDuration:
+                        type: string
+                    type: object
+                type: object
+              labels:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              oidc:
+                nullable: true
+                properties:
+                  audience:
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  issuer:
+                    type: string
+                type: object
+              zones:
+                items:
+                  properties:
+                    cloudflareZoneId:
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              corednsReady:
+                default: false
+                type: boolean
+              managedZones:
+                default: 0
+                format: int32
+                type: integer
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                nullable: true
+                type: string
+              zoneStatuses:
+                items:
+                  properties:
+                    cloudflareSynced:
+                      type: boolean
+                    corednsSynced:
+                      type: boolean
+                    lastSyncTime:
+                      nullable: true
+                      type: string
+                    name:
+                      type: string
+                    recordCount:
+                      default: 0
+                      format: int32
+                      type: integer
+                  required:
+                  - cloudflareSynced
+                  - corednsSynced
+                  - name
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: HanzoDNS
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: luxnetworks.lux.cloud
+spec:
+  group: lux.cloud
+  names:
+    categories: []
+    kind: LuxNetwork
+    plural: luxnetworks
+    shortNames:
+    - luxnet
+    singular: luxnetwork
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.networkID
+      name: NetworkID
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.activeValidators
+      name: Validators
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for LuxNetworkSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              chains:
+                items:
+                  properties:
+                    bootstrapBlocking:
+                      nullable: true
+                      type: boolean
+                    chainID:
+                      type: string
+                    component:
+                      type: string
+                    genesisConfigMap:
+                      type: string
+                    vmID:
+                      type: string
+                  required:
+                  - chainID
+                  type: object
+                type: array
+              exportSchedules:
+                items:
+                  properties:
+                    chainAlias:
+                      type: string
+                    destination:
+                      description: Discriminated union — exactly one of `pvc` / `s3` is set.
+                      properties:
+                        pvc:
+                          description: In-cluster PVC destination for a chain-state export.
+                          nullable: true
+                          properties:
+                            claimName:
+                              type: string
+                            subPath:
+                              type: string
+                          required:
+                          - claimName
+                          type: object
+                        s3:
+                          description: S3-compatible bucket destination for a chain-state export.
+                          nullable: true
+                          properties:
+                            bucket:
+                              type: string
+                            credentialsSecretRef:
+                              properties:
+                                name:
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            endpoint:
+                              type: string
+                            keyPrefix:
+                              type: string
+                          required:
+                          - bucket
+                          - credentialsSecretRef
+                          - endpoint
+                          type: object
+                      type: object
+                    fromHeight:
+                      default: 0
+                      format: uint64
+                      minimum: 0.0
+                      type: integer
+                    image:
+                      type: string
+                    name:
+                      type: string
+                    resources:
+                      nullable: true
+                      properties:
+                        limits:
+                          additionalProperties:
+                            type: string
+                          nullable: true
+                          type: object
+                        requests:
+                          additionalProperties:
+                            type: string
+                          description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                          nullable: true
+                          type: object
+                      type: object
+                    schedule:
+                      type: string
+                    toHeight:
+                      type: string
+                  required:
+                  - chainAlias
+                  - destination
+                  - name
+                  - schedule
+                  type: object
+                type: array
+              genesisConfigMap:
+                type: string
+              httpPort:
+                default: 0
+                format: int32
+                type: integer
+              image:
+                default:
+                  repository: ''
+                properties:
+                  pullPolicy:
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                items:
+                  type: string
+                type: array
+              labels:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              networkID:
+                default: 0
+                format: int32
+                type: integer
+              networkName:
+                type: string
+              pluginSource:
+                nullable: true
+                properties:
+                  bucket:
+                    type: string
+                  endpoint:
+                    type: string
+                  image:
+                    type: string
+                  pluginDir:
+                    type: string
+                  vmPlugins:
+                    items:
+                      properties:
+                        chainIDs:
+                          items:
+                            type: string
+                          type: array
+                        objectKey:
+                          type: string
+                        sha256:
+                          type: string
+                        vmID:
+                          type: string
+                      required:
+                      - objectKey
+                      - vmID
+                      type: object
+                    type: array
+                type: object
+              resources:
+                nullable: true
+                properties:
+                  limits:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  requests:
+                    additionalProperties:
+                      type: string
+                    description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                    nullable: true
+                    type: object
+                type: object
+              seedRestore:
+                nullable: true
+                properties:
+                  dataDir:
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  image:
+                    type: string
+                  sources:
+                    items:
+                      description: One seed-restore transport. The init container walks `sources` in order and uses the first that succeeds.
+                      properties:
+                        expectedHash:
+                          type: string
+                        type:
+                          description: 'Transport class: `ObjectStore` | `InternalHTTP` | `OCIArtifact` | `PeerPod`.'
+                          type: string
+                        url:
+                          type: string
+                      required:
+                      - type
+                      - url
+                      type: object
+                    type: array
+                type: object
+              stakingPort:
+                default: 0
+                format: int32
+                type: integer
+              storage:
+                nullable: true
+                properties:
+                  retentionPolicy:
+                    type: string
+                  size:
+                    description: Quantity string (e.g. `"10Gi"`).
+                    type: string
+                  storageClassName:
+                    type: string
+                required:
+                - size
+                type: object
+              tenantImports:
+                items:
+                  description: One-time RLP import for a tenant chain.
+                  properties:
+                    blockchainID:
+                      type: string
+                    chainAlias:
+                      type: string
+                    sha256:
+                      type: string
+                    sourceURL:
+                      type: string
+                    tenant:
+                      type: string
+                  required:
+                  - blockchainID
+                  - chainAlias
+                  - sourceURL
+                  - tenant
+                  type: object
+                type: array
+              tenantNetworks:
+                items:
+                  properties:
+                    chains:
+                      items:
+                        properties:
+                          blockchainId:
+                            type: string
+                          configMapRef:
+                            description: In-namespace ConfigMap pointer.
+                            properties:
+                              name:
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          vmId:
+                            type: string
+                        required:
+                        - blockchainId
+                        - configMapRef
+                        - vmId
+                        type: object
+                      type: array
+                    parentNetworkId:
+                      type: string
+                  required:
+                  - parentNetworkId
+                  type: object
+                type: array
+              validators:
+                format: int32
+                nullable: true
+                type: integer
+              wipeOnRecreate:
+                nullable: true
+                properties:
+                  scope:
+                    description: '`none` | `fullDB` | `chainData/<chainID>`. Default `none`.'
+                    type: string
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              activeValidators:
+                default: 0
+                format: int32
+                type: integer
+              chainStatuses:
+                items:
+                  properties:
+                    alias:
+                      type: string
+                    blockchainId:
+                      type: string
+                    lastObserved:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    phase:
+                      type: string
+                    reason:
+                      type: string
+                  required:
+                  - alias
+                  - phase
+                  type: object
+                type: array
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              exportSchedules:
+                items:
+                  properties:
+                    lastError:
+                      type: string
+                    lastScheduleTime:
+                      nullable: true
+                      type: string
+                    lastSuccessTime:
+                      nullable: true
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                nullable: true
+                type: string
+              tenantNetworks:
+                items:
+                  properties:
+                    blockchainId:
+                      type: string
+                    message:
+                      type: string
+                    parentNetworkId:
+                      type: string
+                    phase:
+                      type: string
+                    reason:
+                      type: string
+                  required:
+                  - blockchainId
+                  - parentNetworkId
+                  - phase
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        title: LuxNetwork
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: nodefleets.lux.cloud
+spec:
+  group: lux.cloud
+  names:
+    categories: []
+    kind: NodeFleet
+    plural: nodefleets
+    shortNames:
+    - fleet
+    singular: nodefleet
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.networkID
+      name: NetworkID
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.readyReplicas
+      name: Replicas
+      type: integer
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for NodeFleetSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              annotations:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              archive:
+                default:
+                  snapshotCacheMB: 0
+                properties:
+                  ancientStore:
+                    nullable: true
+                    properties:
+                      backend:
+                        description: 'Freezer backend: `zap` (canonical) | `legacy`. Default `zap`.'
+                        type: string
+                      maxTableSize:
+                        default: 0
+                        format: int64
+                        type: integer
+                      path:
+                        type: string
+                    type: object
+                  hostAffinity:
+                    description: Minimal nodeAffinity subset NodeFleet composes onto pods.
+                    nullable: true
+                    properties:
+                      nodeName:
+                        type: string
+                      nodeSelector:
+                        additionalProperties:
+                          type: string
+                        nullable: true
+                        type: object
+                    type: object
+                  resources:
+                    nullable: true
+                    properties:
+                      limits:
+                        additionalProperties:
+                          type: string
+                        nullable: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          type: string
+                        description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                        nullable: true
+                        type: object
+                    type: object
+                  snapshotCacheMB:
+                    default: 0
+                    format: int32
+                    type: integer
+                  storage:
+                    nullable: true
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                type: object
+              chains:
+                items:
+                  properties:
+                    alias:
+                      type: string
+                    vmID:
+                      type: string
+                  required:
+                  - alias
+                  type: object
+                type: array
+              httpPort:
+                default: 0
+                format: int32
+                type: integer
+              image:
+                default:
+                  repository: ''
+                properties:
+                  pullPolicy:
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                items:
+                  type: string
+                type: array
+              labels:
+                additionalProperties:
+                  type: string
+                nullable: true
+                type: object
+              networkID:
+                default: 0
+                format: int32
+                type: integer
+              networkName:
+                type: string
+              stakingPort:
+                default: 0
+                format: int32
+                type: integer
+              stateSync:
+                default:
+                  blockCacheMB: 0
+                  replicas: 0
+                  snapshotCacheMB: 0
+                  stateSyncMinBlocks: 0
+                  trieCacheMB: 0
+                properties:
+                  blockCacheMB:
+                    default: 0
+                    format: int32
+                    type: integer
+                  hostAffinity:
+                    description: Minimal nodeAffinity subset NodeFleet composes onto pods.
+                    nullable: true
+                    properties:
+                      nodeName:
+                        type: string
+                      nodeSelector:
+                        additionalProperties:
+                          type: string
+                        nullable: true
+                        type: object
+                    type: object
+                  lowMemory:
+                    nullable: true
+                    type: boolean
+                  replicas:
+                    format: int32
+                    type: integer
+                  resources:
+                    nullable: true
+                    properties:
+                      limits:
+                        additionalProperties:
+                          type: string
+                        nullable: true
+                        type: object
+                      requests:
+                        additionalProperties:
+                          type: string
+                        description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                        nullable: true
+                        type: object
+                    type: object
+                  snapshotCacheMB:
+                    default: 0
+                    format: int32
+                    type: integer
+                  stateSyncMinBlocks:
+                    default: 0
+                    format: int32
+                    type: integer
+                  storage:
+                    nullable: true
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  trieCacheMB:
+                    default: 0
+                    format: int32
+                    type: integer
+                required:
+                - replicas
+                type: object
+            type: object
+          status:
+            nullable: true
+            properties:
+              archiveReady:
+                default: false
+                type: boolean
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                nullable: true
+                type: string
+              readyReplicas:
+                default: 0
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: NodeFleet
         type: object
     served: true
     storage: true
