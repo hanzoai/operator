@@ -45,7 +45,26 @@ async fn reconcile_inner(
     spec: &NetworkSpec,
     owner: OwnerReference,
 ) -> Result<()> {
-    let v = &spec.validators;
+    // Networks declaring validators == 0 emit no validator workloads —
+    // the chains listed in this CR are served by the existing validator
+    // set on the network identified by spec.network_id.
+    if !spec.has_own_validator_set() {
+        info!(
+            name,
+            namespace,
+            mode = ?spec.network_mode(),
+            network_id = spec.network_id,
+            "Network borrows existing validator set; no workloads emitted"
+        );
+        return Ok(());
+    }
+    // The per-validator pod-spec template is required when the network
+    // runs its own consensus.
+    let v = spec.validator_template.as_ref().ok_or_else(|| {
+        OperatorError::Config(
+            "Network with validators > 0 must declare spec.validatorTemplate".into(),
+        )
+    })?;
     let labels = manifests::standard_labels(name, "validator", "", &v.image.tag);
     let sel = manifests::selector_labels(name);
 
@@ -95,12 +114,22 @@ async fn reconcile_inner(
         vec![]
     };
 
+    // Replica count: explicit pod-template override wins; otherwise honour
+    // the spec-declared validator count; default to 3 when neither is set.
+    let replicas = v
+        .replicas
+        .or(if spec.validators > 0 {
+            Some(spec.validators)
+        } else {
+            None
+        })
+        .or(Some(3));
     let mut sts = manifests::build_statefulset(
         name,
         namespace,
         labels.clone(),
         sel.clone(),
-        v.replicas.or(Some(3)),
+        replicas,
         vec![main],
         vec![],
         pvc_templates,
@@ -127,7 +156,13 @@ async fn reconcile_inner(
     clip.metadata.owner_references = Some(vec![owner.clone()]);
     apply::apply(&svcs, &clip).await?;
 
-    info!(name, namespace, network_id = %spec.network_id, "Network reconciled");
+    info!(
+        name,
+        namespace,
+        network_id = spec.network_id,
+        mode = ?spec.network_mode(),
+        "Network reconciled"
+    );
     Ok(())
 }
 

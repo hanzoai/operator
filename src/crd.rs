@@ -1,6 +1,6 @@
 //! Custom Resource Definitions for the Hanzo operator.
 //!
-//! All 24 Kinds at `hanzo.ai/v1` (the compile-time default). For other
+//! All 29 Kinds at `hanzo.ai/v1` (the compile-time default). For other
 //! universes (lux.cloud, zoo.cloud, osage.cloud), generate CRD YAMLs with
 //! the `generate-crd-yaml` binary, which rewrites the group at install time.
 //!
@@ -613,7 +613,7 @@ pub struct ChainSpec {
     pub vm_id: String,
     pub genesis: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub subnet_id: String,
+    pub network_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -642,6 +642,52 @@ pub struct ExplorerSpec {
     pub postgres_storage: Option<StorageSpec>,
 }
 
+/// ChainRef is an opaque reference to one blockchain hosted by a Network.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainRef {
+    #[serde(rename = "blockchainID")]
+    pub blockchain_id: String,
+    #[serde(rename = "vmID", default, skip_serializing_if = "String::is_empty")]
+    pub vm_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+/// NetworkModeKind names the workload's relationship to its network ID.
+/// Derived from (network_id, validators) — there is no flag field, no
+/// `parent`, no `sovereign: bool`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+pub enum NetworkModeKind {
+    /// Hosted on a Lux primary, sharing its validator set.
+    /// network_id ∈ {1,2,3,1337} AND validators == 0.
+    L2,
+    /// Runs its own validator subset against a Lux primary. Covers both
+    /// the primary itself and any sovereign L1 anchored to it.
+    /// network_id ∈ {1,2,3,1337} AND validators > 0.
+    Anchored,
+    /// Own primary, fully independent of Lux.
+    /// network_id ∉ {1,2,3,1337} AND validators > 0.
+    Independent,
+}
+
+/// Reserved primary network IDs.
+pub const PRIMARY_NETWORK_ID_MAINNET: u32 = 1;
+pub const PRIMARY_NETWORK_ID_TESTNET: u32 = 2;
+pub const PRIMARY_NETWORK_ID_DEVNET: u32 = 3;
+pub const PRIMARY_NETWORK_ID_LOCALNET: u32 = 1337;
+
+/// True iff nid is one of {1, 2, 3, 1337}.
+pub fn is_primary_network_id(nid: u32) -> bool {
+    matches!(
+        nid,
+        PRIMARY_NETWORK_ID_MAINNET
+            | PRIMARY_NETWORK_ID_TESTNET
+            | PRIMARY_NETWORK_ID_DEVNET
+            | PRIMARY_NETWORK_ID_LOCALNET
+    )
+}
+
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
     group = "hanzo.ai",
@@ -652,13 +698,44 @@ pub struct ExplorerSpec {
     status = "NetworkStatus",
     shortname = "hnet"
 )]
+/// NetworkSpec — unified blockchain-network CRD.
+///
+/// Two data fields drive everything: network_id + validators. Mode is
+/// derived (see NetworkSpec::network_mode); there is no `sovereign`
+/// flag, no `parent` pointer, no `mode` enum field.
 #[serde(rename_all = "camelCase")]
 pub struct NetworkSpec {
+    /// What network this instance is on / part of. Matches luxd's
+    /// LUX_NETWORK_ID env var. Reserved values {1,2,3,1337} denote Lux
+    /// primaries; any other value denotes an independent primary's own ID.
     #[serde(rename = "networkID")]
-    pub network_id: String,
-    pub validators: ValidatorSpec,
+    pub network_id: u32,
+
+    /// EVM chain ID (EIP-155 replay-protection root). Unique per
+    /// brand × env across the canonical map at
+    /// luxfi/genesis/configs/lp182_chain_id_map.go.
+    #[serde(rename = "evmChainID", default)]
+    pub evm_chain_id: u64,
+
+    /// Validator-set size declaration.
+    ///   0 → this CR emits no validator workloads. Listed chains are
+    ///        served by the existing validator set on the network
+    ///        identified by network_id (L2 mode).
+    ///   N → this CR emits N validator pods that participate in the
+    ///        network identified by network_id (Anchored or
+    ///        Independent mode depending on network_id).
+    #[serde(default)]
+    pub validators: i32,
+
+    /// Blockchains hosted on this network. Opaque to the operator.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub chains: Vec<ChainSpec>,
+    pub chains: Vec<ChainRef>,
+
+    /// Per-validator pod-spec template applied when validators > 0.
+    /// Ignored when validators == 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_template: Option<ValidatorSpec>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexer: Option<SubServiceSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -675,11 +752,36 @@ pub struct NetworkSpec {
     pub image_pull_secrets: Vec<String>,
 }
 
+impl NetworkSpec {
+    /// Derive the workload's mode from (network_id, validators). No
+    /// flag dispatch — pure data → mode.
+    pub fn network_mode(&self) -> NetworkModeKind {
+        if is_primary_network_id(self.network_id) {
+            if self.validators > 0 {
+                NetworkModeKind::Anchored
+            } else {
+                NetworkModeKind::L2
+            }
+        } else {
+            NetworkModeKind::Independent
+        }
+    }
+
+    /// True when this CR emits validator workloads (validators > 0);
+    /// false when it borrows the network's existing set.
+    pub fn has_own_validator_set(&self) -> bool {
+        self.validators > 0
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NetworkStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
+    /// Mode derived from spec data — surfaced for kubectl describe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<NetworkModeKind>,
     #[serde(default)]
     pub active_validators: i32,
     #[serde(default)]
@@ -1111,23 +1213,10 @@ pub struct ValidatorKindSpec {
     pub spec: ValidatorSpec,
 }
 
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "Subnet",
-    plural = "subnets",
-    namespaced,
-    status = "NetworkStatus",
-    shortname = "subnet"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct SubnetSpec {
-    pub network: String,
-    pub subnet_id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub chains: Vec<ChainSpec>,
-}
+// Standalone Network facade (formerly a sub-resource) is
+// dropped. The canonical `Network` kind is the sovereign-L1 CRD above
+// (line ~645) — it owns chains directly. There is no separate
+// chain-owner Network kind in this operator.
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
@@ -1274,3 +1363,465 @@ pub struct ObservabilityKindSpec(pub ServiceSpec);
 )]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionKindSpec(pub ServiceSpec);
+
+// ============================================================================
+// Backcompat alias Kinds — HanzoService / HanzoDatastore / HanzoDNS
+// ============================================================================
+//
+// These mirror the Go `api/v1alpha1` legacy aliases: distinct Kinds that
+// reuse the canonical Spec/Status verbatim and delegate to the SAME
+// controller logic as their base Kind. Newtype facades over ServiceSpec /
+// DatastoreSpec / DNSSpec — identical shape to `Indexer` above. No
+// duplicated reconcile: their controllers call the base inner handler.
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "HanzoService",
+    plural = "hanzoservices",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "hzsvc"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct HanzoServiceSpec(pub ServiceSpec);
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "HanzoDatastore",
+    plural = "hanzodatastores",
+    namespaced,
+    status = "DatastoreStatus",
+    shortname = "hzds"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct HanzoDatastoreSpec(pub DatastoreSpec);
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "HanzoDNS",
+    plural = "hanzodnses",
+    namespaced,
+    status = "DNSStatus",
+    shortname = "hzdns"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct HanzoDNSSpec(pub DNSSpec);
+
+// ============================================================================
+// LuxNetwork Kind — luxd validator-set deployment (mirrors Go api/v1
+// luxnetwork_types.go field shapes).
+// ============================================================================
+
+/// One seed-restore transport. The init container walks `sources` in order
+/// and uses the first that succeeds.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedSource {
+    /// Transport class: `ObjectStore` | `InternalHTTP` | `OCIArtifact` | `PeerPod`.
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub expected_hash: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SeedRestoreSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SeedSource>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub data_dir: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WipeOnRecreateSpec {
+    /// `none` | `fullDB` | `chainData/<chainID>`. Default `none`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LuxChainSpec {
+    #[serde(rename = "chainID")]
+    pub chain_id: String,
+    #[serde(rename = "vmID", default, skip_serializing_if = "String::is_empty")]
+    pub vm_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub genesis_config_map: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_blocking: Option<bool>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub component: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VMPluginRef {
+    #[serde(rename = "vmID")]
+    pub vm_id: String,
+    pub object_key: String,
+    #[serde(rename = "chainIDs", default, skip_serializing_if = "Vec::is_empty")]
+    pub chain_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginSourceSpec {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bucket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plugin_dir: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vm_plugins: Vec<VMPluginRef>,
+}
+
+/// One-time RLP import for a tenant chain.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantImportSpec {
+    pub tenant: String,
+    pub chain_alias: String,
+    #[serde(rename = "sourceURL")]
+    pub source_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+    #[serde(rename = "blockchainID")]
+    pub blockchain_id: String,
+}
+
+/// In-namespace ConfigMap pointer.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigMapReference {
+    pub name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantChainTrack {
+    #[serde(rename = "blockchainId")]
+    pub blockchain_id: String,
+    #[serde(rename = "vmId")]
+    pub vm_id: String,
+    pub config_map_ref: ConfigMapReference,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantNetworkImport {
+    #[serde(rename = "parentNetworkId")]
+    pub parent_network_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<TenantChainTrack>,
+}
+
+/// In-cluster PVC destination for a chain-state export.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDestinationPVC {
+    pub claim_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sub_path: String,
+}
+
+/// S3-compatible bucket destination for a chain-state export.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDestinationS3 {
+    pub endpoint: String,
+    pub bucket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_prefix: String,
+    pub credentials_secret_ref: LocalObjectReference,
+}
+
+/// Discriminated union — exactly one of `pvc` / `s3` is set.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportDestination {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pvc: Option<ExportDestinationPVC>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3: Option<ExportDestinationS3>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportScheduleSpec {
+    pub name: String,
+    pub chain_alias: String,
+    pub schedule: String,
+    #[serde(default)]
+    pub from_height: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub to_height: String,
+    pub destination: ExportDestination,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportScheduleStatus {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_schedule_time: Option<Time>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_time: Option<Time>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_error: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantNetworkStatus {
+    #[serde(rename = "parentNetworkId")]
+    pub parent_network_id: String,
+    #[serde(rename = "blockchainId")]
+    pub blockchain_id: String,
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainStatus {
+    pub alias: String,
+    #[serde(
+        rename = "blockchainId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub blockchain_id: String,
+    pub phase: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed: Option<Time>,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "LuxNetwork",
+    plural = "luxnetworks",
+    namespaced,
+    status = "LuxNetworkStatus",
+    shortname = "luxnet",
+    printcolumn = r#"{"name":"NetworkID","type":"integer","jsonPath":".spec.networkID"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Validators","type":"integer","jsonPath":".status.activeValidators"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct LuxNetworkSpec {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub network_name: String,
+    #[serde(rename = "networkID", default)]
+    pub network_id: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validators: Option<i32>,
+    #[serde(default)]
+    pub image: ImageSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<LuxChainSpec>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub genesis_config_map: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_source: Option<PluginSourceSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tenant_imports: Vec<TenantImportSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub export_schedules: Vec<ExportScheduleSpec>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tenant_networks: Vec<TenantNetworkImport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_restore: Option<SeedRestoreSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wipe_on_recreate: Option<WipeOnRecreateSpec>,
+    #[serde(default)]
+    pub staking_port: i32,
+    #[serde(default)]
+    pub http_port: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_pull_secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LuxNetworkStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    #[serde(default)]
+    pub active_validators: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tenant_networks: Vec<TenantNetworkStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub export_schedules: Vec<ExportScheduleStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain_statuses: Vec<ChainStatus>,
+}
+
+// ============================================================================
+// NodeFleet Kind — "1 archive serves N state-sync replicas" topology
+// (mirrors Go api/v1 nodefleet_types.go field shapes).
+// ============================================================================
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AncientStoreSpec {
+    /// Freezer backend: `zap` (canonical) | `legacy`. Default `zap`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub backend: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default)]
+    pub max_table_size: i64,
+}
+
+/// Minimal nodeAffinity subset NodeFleet composes onto pods.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HostAffinitySpec {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub node_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_selector: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ancient_store: Option<AncientStoreSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_affinity: Option<HostAffinitySpec>,
+    #[serde(rename = "snapshotCacheMB", default)]
+    pub snapshot_cache_mb: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StateSyncSpec {
+    pub replicas: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<StorageSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_affinity: Option<HostAffinitySpec>,
+    #[serde(default)]
+    pub state_sync_min_blocks: i32,
+    #[serde(rename = "snapshotCacheMB", default)]
+    pub snapshot_cache_mb: i32,
+    #[serde(rename = "blockCacheMB", default)]
+    pub block_cache_mb: i32,
+    #[serde(rename = "trieCacheMB", default)]
+    pub trie_cache_mb: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub low_memory: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetChainSpec {
+    pub alias: String,
+    #[serde(rename = "vmID", default, skip_serializing_if = "String::is_empty")]
+    pub vm_id: String,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "NodeFleet",
+    plural = "nodefleets",
+    namespaced,
+    status = "NodeFleetStatus",
+    shortname = "fleet",
+    printcolumn = r#"{"name":"NetworkID","type":"integer","jsonPath":".spec.networkID"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Replicas","type":"integer","jsonPath":".status.readyReplicas"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeFleetSpec {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub network_name: String,
+    #[serde(rename = "networkID", default)]
+    pub network_id: i32,
+    #[serde(default)]
+    pub image: ImageSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chains: Vec<FleetChainSpec>,
+    #[serde(default)]
+    pub archive: ArchiveSpec,
+    #[serde(default)]
+    pub state_sync: StateSyncSpec,
+    #[serde(default)]
+    pub http_port: i32,
+    #[serde(default)]
+    pub staking_port: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_pull_secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeFleetStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    #[serde(default)]
+    pub archive_ready: bool,
+    #[serde(default)]
+    pub ready_replicas: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+}

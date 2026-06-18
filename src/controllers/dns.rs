@@ -38,6 +38,17 @@ pub async fn reconcile(cr: Arc<DNSCR>, ctx: Arc<Ctx>) -> Result<Action> {
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
+/// Public alias for use by compat facades (HanzoDNS).
+pub async fn reconcile_dns_inner_pub(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &DNSSpec,
+    owner: OwnerReference,
+) -> Result<()> {
+    reconcile_inner(client, name, namespace, spec, owner).await
+}
+
 async fn reconcile_inner(
     client: &Client,
     name: &str,
