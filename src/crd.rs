@@ -1001,7 +1001,10 @@ pub struct DNSStatus {
 }
 
 // ============================================================================
-// Base Kind (renamed from BaseApp in v0.3.0)
+// BaseApp Kind — hanzoai/base-ha cluster (Hanzo Base, IAM-native). Canonical
+// Kind name at `bootno.de/v1` is `BaseApp` (plural `baseapps`, shortname
+// `bapp`); the same Kind is exposed here under the configured white-label
+// group (default `hanzo.ai`).
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -1027,14 +1030,14 @@ pub struct BaseGatewaySpec {
 #[kube(
     group = "hanzo.ai",
     version = "v1",
-    kind = "Base",
-    plural = "bases",
+    kind = "BaseApp",
+    plural = "baseapps",
     namespaced,
-    status = "BaseStatus",
-    shortname = "base"
+    status = "BaseAppStatus",
+    shortname = "bapp"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct BaseSpec {
+pub struct BaseAppSpec {
     pub image: ImageSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i32>,
@@ -1071,7 +1074,7 @@ pub struct BaseSpec {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BaseStatus {
+pub struct BaseAppStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
     #[serde(default)]
@@ -1414,8 +1417,10 @@ pub struct HanzoDatastoreSpec(pub DatastoreSpec);
 pub struct HanzoDNSSpec(pub DNSSpec);
 
 // ============================================================================
-// LuxNetwork Kind — luxd validator-set deployment (mirrors Go api/v1
-// luxnetwork_types.go field shapes).
+// LuxRuntime Kind — luxd validator-set deployment (mirrors Go api/v1
+// luxruntime_types.go field shapes). Canonical Kind name at `bootno.de/v1`
+// is `LuxRuntime` (plural `luxruntimes`, shortname `lrt`); the same Kind is
+// exposed here under the configured white-label group (default `hanzo.ai`).
 // ============================================================================
 
 /// One seed-restore transport. The init container walks `sources` in order
@@ -1450,6 +1455,52 @@ pub struct WipeOnRecreateSpec {
     /// `none` | `fullDB` | `chainData/<chainID>`. Default `none`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scope: String,
+}
+
+/// Configures native ZAP replication of the node's ZapDB to an object store
+/// (hanzoai/vfs `s3://`). When enabled, the operator emits the full native
+/// pipeline as `REPLICATE_*` env: CDC change-feed incrementals (no keyspace
+/// scan), physical SST-copy snapshots, per-DB streams, restore-on-boot, and
+/// post-quantum (ML-KEM-768) encryption client-side. A single ordinal writes
+/// the shared stream (`sourceNodeIndex`); every peer restores-on-boot only.
+///
+/// Mirrors Go `api/v1` `ReplicationSpec` field-for-field.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicationSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub s3_endpoint: String,
+    /// S3 bucket for replication objects. Default `replicate`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub s3_bucket: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub s3_region: String,
+    /// S3 key prefix; defaults to the node's db path.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub s3_path: String,
+    #[serde(rename = "s3UseSsl", default)]
+    pub s3_use_ssl: bool,
+    /// K8s Secret with `REPLICATE_S3_ACCESS_KEY` / `_SECRET_KEY`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credentials_secret: String,
+    /// age public key (`age1pq1...` for post-quantum) enabling client-side
+    /// encryption of snapshots.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub age_recipient: String,
+    /// K8s Secret holding `REPLICATE_AGE_IDENTITY` for restore.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub age_identity_secret: String,
+    /// Only this ordinal writes; peers restore-on-boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_node_index: Option<i32>,
+    /// Seconds between full snapshots. Default 3600.
+    #[serde(default)]
+    pub snapshot_interval_seconds: i64,
+    /// Seconds between incrementals. Default 5.
+    #[serde(default)]
+    pub incremental_interval_seconds: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
@@ -1630,17 +1681,17 @@ pub struct ChainStatus {
 #[kube(
     group = "hanzo.ai",
     version = "v1",
-    kind = "LuxNetwork",
-    plural = "luxnetworks",
+    kind = "LuxRuntime",
+    plural = "luxruntimes",
     namespaced,
-    status = "LuxNetworkStatus",
-    shortname = "luxnet",
+    status = "LuxRuntimeStatus",
+    shortname = "lrt",
     printcolumn = r#"{"name":"NetworkID","type":"integer","jsonPath":".spec.networkID"}"#,
     printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"Validators","type":"integer","jsonPath":".status.activeValidators"}"#
 )]
 #[serde(rename_all = "camelCase")]
-pub struct LuxNetworkSpec {
+pub struct LuxRuntimeSpec {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub network_name: String,
     #[serde(rename = "networkID", default)]
@@ -1679,11 +1730,17 @@ pub struct LuxNetworkSpec {
     pub annotations: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_pull_secrets: Vec<String>,
+
+    /// Turns on native ZAP replication: the node streams CDC incrementals +
+    /// physical snapshots to S3 (database >= v1.20.3) and restores-on-boot.
+    /// Translated to `REPLICATE_*` env on the luxd container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replication: Option<ReplicationSpec>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct LuxNetworkStatus {
+pub struct LuxRuntimeStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
     #[serde(default)]
