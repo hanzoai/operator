@@ -1,9 +1,9 @@
-//! LuxNetwork reconciler — luxd validator-set deployment. Renders a luxd
+//! LuxRuntime reconciler — luxd validator-set deployment. Renders a luxd
 //! StatefulSet plus a headless Service (pod DNS) and a ClusterIP Service
 //! (JSON-RPC / staking) via the shared `manifests` + `apply` helpers — the
 //! same render path the canonical `Network` controller uses. The rich
 //! seed-restore / plugin-fetch / export-CronJob machinery in the Go impl is
-//! reconcile-internal; the canonical workload a LuxNetwork CR produces is the
+//! reconcile-internal; the canonical workload a LuxRuntime CR produces is the
 //! validator StatefulSet + its Services.
 
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use tracing::{error, info, warn};
 use crate::apply;
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    LuxNetwork, LuxNetworkSpec, LuxNetworkStatus, Phase, ServicePort as CrServicePort,
+    LuxRuntime, LuxRuntimeSpec, LuxRuntimeStatus, Phase, ServicePort as CrServicePort,
 };
 use crate::crd_types::build_condition;
 use crate::manifests;
@@ -35,13 +35,13 @@ pub struct Ctx {
     pub api_group: String,
 }
 
-pub async fn reconcile(cr: Arc<LuxNetwork>, ctx: Arc<Ctx>) -> Result<Action> {
+pub async fn reconcile(cr: Arc<LuxRuntime>, ctx: Arc<Ctx>) -> Result<Action> {
     let name = cr.name_any();
     let namespace = cr
         .namespace()
-        .ok_or_else(|| OperatorError::Config("LuxNetwork has no namespace".into()))?;
+        .ok_or_else(|| OperatorError::Config("LuxRuntime has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "LuxNetwork");
+    let owner = owner_ref_for(cr.as_ref(), &api_version, "LuxRuntime");
     reconcile_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
     write_status(&ctx.client, &name, &namespace, &cr).await;
     Ok(Action::requeue(Duration::from_secs(60)))
@@ -51,7 +51,7 @@ async fn reconcile_inner(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &LuxNetworkSpec,
+    spec: &LuxRuntimeSpec,
     owner: OwnerReference,
 ) -> Result<()> {
     let labels = manifests::standard_labels(name, "validator", "", &spec.image.tag);
@@ -151,21 +151,21 @@ async fn reconcile_inner(
         namespace,
         network_id = spec.network_id,
         chains = spec.chains.len(),
-        "LuxNetwork reconciled"
+        "LuxRuntime reconciled"
     );
     Ok(())
 }
 
-async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxNetwork) {
+async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxRuntime) {
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     let sts = match stss.get_opt(name).await {
         Ok(s) => s,
         Err(e) => {
-            warn!(error = %e, "failed to fetch StatefulSet for LuxNetwork status");
+            warn!(error = %e, "failed to fetch StatefulSet for LuxRuntime status");
             return;
         }
     };
-    let mut status = LuxNetworkStatus {
+    let mut status = LuxRuntimeStatus {
         observed_generation: cr.meta().generation.unwrap_or(0),
         ..Default::default()
     };
@@ -188,32 +188,32 @@ async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxNetw
         &format!("{}/{} validators ready", status.active_validators, desired),
         status.observed_generation,
     ));
-    let api: Api<LuxNetwork> = Api::namespaced(client.clone(), namespace);
+    let api: Api<LuxRuntime> = Api::namespaced(client.clone(), namespace);
     let patch = serde_json::json!({ "status": status });
     let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
     if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update LuxNetwork status");
+        warn!(error = %e, "failed to update LuxRuntime status");
     }
 }
 
-pub fn on_error(_obj: Arc<LuxNetwork>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
-    error!(error = %err, "LuxNetwork reconcile failed");
+pub fn on_error(_obj: Arc<LuxRuntime>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "LuxRuntime reconcile failed");
     Action::requeue(Duration::from_secs(30))
 }
 
-pub async fn run_luxnetwork_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<LuxNetwork> = if namespace.is_empty() {
+pub async fn run_luxruntime_controller(client: Client, namespace: String, api_group: String) {
+    let api: Api<LuxRuntime> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), &namespace)
     };
-    info!(group = %api_group, "Starting LuxNetwork controller");
+    info!(group = %api_group, "Starting LuxRuntime controller");
     let ctx = Arc::new(Ctx { client, api_group });
     Controller::new(api, Config::default())
         .run(reconcile, on_error, ctx)
         .for_each(|res| async move {
             if let Err(e) = res {
-                warn!(error = %e, "LuxNetwork reconcile error");
+                warn!(error = %e, "LuxRuntime reconcile error");
             }
         })
         .await;
@@ -221,10 +221,10 @@ pub async fn run_luxnetwork_controller(client: Client, namespace: String, api_gr
 
 #[cfg(test)]
 mod tests {
-    use crate::crd::{ImageSpec, LuxChainSpec, LuxNetworkSpec, StorageSpec};
+    use crate::crd::{ImageSpec, LuxChainSpec, LuxRuntimeSpec, ReplicationSpec, StorageSpec};
 
-    fn spec() -> LuxNetworkSpec {
-        LuxNetworkSpec {
+    fn spec() -> LuxRuntimeSpec {
+        LuxRuntimeSpec {
             network_id: 1,
             validators: Some(5),
             image: ImageSpec {
@@ -243,12 +243,22 @@ mod tests {
                 bootstrap_blocking: Some(true),
                 component: String::new(),
             }],
+            replication: Some(ReplicationSpec {
+                enabled: true,
+                s3_endpoint: "https://s3.lux.network".to_string(),
+                s3_bucket: "replicate".to_string(),
+                s3_use_ssl: true,
+                source_node_index: Some(0),
+                snapshot_interval_seconds: 3600,
+                incremental_interval_seconds: 5,
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
 
     #[test]
-    fn luxnetwork_spec_round_trips_through_json() {
+    fn luxruntime_spec_round_trips_through_json() {
         let s = spec();
         let json = serde_json::to_value(&s).expect("serialize");
         // camelCase + rename overrides land on the wire as the Go CRD expects.
@@ -256,10 +266,33 @@ mod tests {
         assert_eq!(json["validators"], 5);
         assert_eq!(json["chains"][0]["chainID"], "C");
         assert_eq!(json["chains"][0]["bootstrapBlocking"], true);
-        let back: LuxNetworkSpec = serde_json::from_value(json).expect("deserialize");
+        let back: LuxRuntimeSpec = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back.network_id, 1);
         assert_eq!(back.validators, Some(5));
         assert_eq!(back.chains.len(), 1);
         assert_eq!(back.chains[0].chain_id, "C");
+    }
+
+    #[test]
+    fn replication_field_matches_go_wire_keys() {
+        let s = spec();
+        let json = serde_json::to_value(&s).expect("serialize");
+        let rep = &json["replication"];
+        // Field keys must be byte-identical to Go `ReplicationSpec` json tags.
+        assert_eq!(rep["enabled"], true);
+        assert_eq!(rep["s3Endpoint"], "https://s3.lux.network");
+        assert_eq!(rep["s3Bucket"], "replicate");
+        // Go tag is `s3UseSsl` (lowercase `ssl`), NOT the camelCase default
+        // `s3UseSSL` — the explicit serde rename must preserve it.
+        assert_eq!(rep["s3UseSsl"], true);
+        assert_eq!(rep["sourceNodeIndex"], 0);
+        assert_eq!(rep["snapshotIntervalSeconds"], 3600);
+        assert_eq!(rep["incrementalIntervalSeconds"], 5);
+        let back: LuxRuntimeSpec = serde_json::from_value(json).expect("deserialize");
+        let br = back.replication.expect("replication present");
+        assert!(br.enabled);
+        assert!(br.s3_use_ssl);
+        assert_eq!(br.source_node_index, Some(0));
+        assert_eq!(br.snapshot_interval_seconds, 3600);
     }
 }

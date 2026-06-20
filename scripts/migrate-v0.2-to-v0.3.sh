@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Migrate v0.2.x CRs to v0.3.0 schema.
 #
-# v0.2.x had legacy compat Kinds (HanzoService/HanzoDatastore/HanzoDNS) and
-# the BaseApp Kind. v0.3.0 collapses to the unprefixed canonical Kinds:
+# v0.2.x had legacy compat Kinds (HanzoService/HanzoDatastore/HanzoDNS).
+# v0.3.0+ collapses those to the unprefixed canonical Kinds:
 #   HanzoService    → Service
 #   HanzoDatastore  → Datastore
 #   HanzoDNS        → DNS
-#   BaseApp         → Base
+#
+# The BaseApp Kind keeps its canonical name across v0.2 → v0.4 (it matches
+# the `bootno.de/v1` canonical `BaseApp`), so no Kind rewrite is needed for
+# BaseApp CRs.
 #
 # This script rewrites every legacy CR in the cluster to its unprefixed
 # equivalent. Idempotent. Defaults to dry-run; set DRY_RUN=false to apply.
@@ -50,7 +53,6 @@ migrate_kind() {
 migrate_kind HanzoService    Service
 migrate_kind HanzoDatastore  Datastore
 migrate_kind HanzoDNS        DNS
-migrate_kind BaseApp         Base
 
 if [ "$DRY_RUN" = "false" ]; then
   echo ""
@@ -58,5 +60,4 @@ if [ "$DRY_RUN" = "false" ]; then
   echo "  kubectl --context=${CONTEXT} delete hanzoservices.hanzo.ai -A"
   echo "  kubectl --context=${CONTEXT} delete hanzodatastores.hanzo.ai -A"
   echo "  kubectl --context=${CONTEXT} delete hanzodns.hanzo.ai -A"
-  echo "  kubectl --context=${CONTEXT} delete baseapps.hanzo.ai -A"
 fi

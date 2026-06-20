@@ -3,8 +3,9 @@
 **/*.rs.bk
 Cargo.lock.bak
 
-# Leftover from previous Go scaffold (preserved on legacy branch).
-bin/
+# Leftover Go-scaffold build output dir (root-anchored so it does NOT swallow
+# the Rust `src/bin/` source dir, which holds the generate-crd-yaml binary).
+/bin/
 
 # Editor / IDE
 .idea
