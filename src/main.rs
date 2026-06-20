@@ -289,5 +289,13 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
+        // Additive ZAP-native KMS secret projector — opt-in (off unless
+        // KMS_ZAP_CONTROLLER=true). Watches the fixed kms.hanzo.ai KMSSecret
+        // family; ignores non-zap-native CRs so the REST projector is untouched.
+        controllers::kms_zap::run_kms_zap_controller(
+            client.clone(),
+            namespace.clone(),
+            std::env::var("KMS_ZAP_CONTROLLER").map(|v| v == "true").unwrap_or(false),
+        ),
     );
 }

@@ -8,6 +8,7 @@ pub mod datastore;
 pub mod dns;
 pub mod gateway;
 pub mod ingress;
+pub mod kms_zap;
 pub mod mpc;
 pub mod network;
 pub mod service;
