@@ -16,6 +16,7 @@ mod core;
 mod crd;
 mod crd_types;
 mod manifests;
+mod zapclient;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
