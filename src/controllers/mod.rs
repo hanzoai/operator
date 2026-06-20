@@ -3,7 +3,7 @@
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::Resource;
 
-pub mod base;
+pub mod baseapp;
 pub mod datastore;
 pub mod dns;
 pub mod gateway;
@@ -48,9 +48,9 @@ pub mod s3;
 pub mod sql;
 
 // v0.3.4: union with go/ — backcompat Hanzo aliases (delegate to the base
-// Service/Datastore/DNS controllers) + LuxNetwork + NodeFleet blockchain Kinds.
+// Service/Datastore/DNS controllers) + LuxRuntime + NodeFleet blockchain Kinds.
 pub mod hanzo_datastore;
 pub mod hanzo_dns;
 pub mod hanzo_service;
-pub mod luxnetwork;
+pub mod luxruntime;
 pub mod nodefleet;
