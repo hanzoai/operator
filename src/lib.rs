@@ -13,3 +13,4 @@ pub mod core;
 pub mod crd;
 pub mod crd_types;
 pub mod manifests;
+pub mod zapclient;
