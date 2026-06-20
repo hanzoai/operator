@@ -215,7 +215,7 @@ async fn run_all_controllers(
             api_group.clone()
         ),
         controllers::dns::run_dns_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::base::run_base_controller(
+        controllers::baseapp::run_baseapp_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()
@@ -279,7 +279,7 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::luxnetwork::run_luxnetwork_controller(
+        controllers::luxruntime::run_luxruntime_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()

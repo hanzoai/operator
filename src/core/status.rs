@@ -110,7 +110,7 @@ pub fn ready_false(generation: i64, why: &str, msg: &str) -> Condition {
 pub mod convergence {
     /// Inputs `is_genuinely_degraded` distinguishes from. The fields are the
     /// minimum signal every network controller already has. Operators with
-    /// richer status (e.g. `LuxNetwork.info_conditions`) compose this with
+    /// richer status (e.g. `LuxRuntime.info_conditions`) compose this with
     /// their own check before phase selection.
     #[derive(Debug, Clone, Copy)]
     pub struct DegradationInputs {
