@@ -30,11 +30,11 @@ for existing CRs in cluster.
 | Gateway     | KrakenD-based API gateway                                 | Deployment, Service, ConfigMap (krakend.json), Ingress |
 | MPC         | Multi-party computation threshold cluster                 | StatefulSet, ClusterIP + headless Service |
 | Network     | Blockchain validator network (mode derived from networkID + validators) | StatefulSet (validators), Services, PVC |
-| LuxNetwork  | Lux primary-network validators + tenant chain imports     | StatefulSet, Services, PVC, CronJob, Jobs |
+| LuxRuntime  | Lux primary-network validators + tenant chain imports     | StatefulSet, Services, PVC, CronJob, Jobs |
 | NodeFleet   | Pinned node fleet                                         | StatefulSet, Services |
 | Ingress     | Multi-domain routing with cert-manager TLS                | Multiple Ingress resources |
 | DNS         | Multi-tenant CoreDNS deployment                           | Deployment, Service |
-| Base        | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
+| BaseApp     | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
 | IAM / KMS / LLM / Indexer / Explorer | Thin facades over Service          | Same as Service |
 | SPA / Static / Queue / Observability / Function | App-shaped facades            | Service / Datastore facades |
 | Chain / Validator | Sub-resources of Network (NoOp stubs)               | — |
