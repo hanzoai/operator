@@ -297,5 +297,17 @@ async fn run_all_controllers(
             namespace.clone(),
             std::env::var("KMS_ZAP_CONTROLLER").map(|v| v == "true").unwrap_or(false),
         ),
+        // Apps-lifecycle DRIVE controller (PR 5 of platform docs/APPS_LIFECYCLE.md)
+        // — opt-in (off unless APPS_CONTROLLER=true) AND dry-run by default even
+        // when on (APPS_DRIVE_MODE=off, per-app APPS_DRIVE_ALLOW). It reads the
+        // platform `apps` table over GET /v1/apps and reconciles declared_tag →
+        // cluster by patching Deployments. It can roll the whole fleet, so it
+        // NEVER patches until the master enable, the drive mode, AND the per-app
+        // allow-list all open. See controllers/apps.rs for the gate model.
+        controllers::apps::run_apps_controller(
+            client.clone(),
+            namespace.clone(),
+            std::env::var("APPS_CONTROLLER").map(|v| v == "true").unwrap_or(false),
+        ),
     );
 }
