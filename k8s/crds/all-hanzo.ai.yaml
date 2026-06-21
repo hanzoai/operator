@@ -475,11 +475,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -488,21 +492,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -511,7 +523,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -757,6 +772,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -808,6 +824,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -1278,6 +1295,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -1327,6 +1345,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -1590,6 +1609,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -1846,6 +1866,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyNodes:
@@ -1887,7 +1908,9 @@ spec:
             description: |-
               NetworkSpec — unified blockchain-network CRD.
 
-              Two data fields drive everything: network_id + validators. Mode is derived (see NetworkSpec::network_mode); there is no `sovereign` flag, no `parent` pointer, no `mode` enum field.
+              Two data fields drive everything: network_id + validators. Mode is
+              derived (see NetworkSpec::network_mode); there is no `sovereign`
+              flag, no `parent` pointer, no `mode` enum field.
             properties:
               annotations:
                 additionalProperties:
@@ -1959,7 +1982,10 @@ spec:
                 type: array
               evmChainID:
                 default: 0
-                description: EVM chain ID (EIP-155 replay-protection root). Unique per brand × env across the canonical map at luxfi/genesis/configs/lp182_chain_id_map.go.
+                description: |-
+                  EVM chain ID (EIP-155 replay-protection root). Unique per
+                  brand × env across the canonical map at
+                  luxfi/genesis/configs/lp182_chain_id_map.go.
                 format: uint64
                 minimum: 0.0
                 type: integer
@@ -2036,12 +2062,17 @@ spec:
                 nullable: true
                 type: object
               networkID:
-                description: What network this instance is on / part of. Matches luxd's LUX_NETWORK_ID env var. Reserved values {1,2,3,1337} denote Lux primaries; any other value denotes an independent primary's own ID.
+                description: |-
+                  What network this instance is on / part of. Matches luxd's
+                  LUX_NETWORK_ID env var. Reserved values {1,2,3,1337} denote Lux
+                  primaries; any other value denotes an independent primary's own ID.
                 format: uint32
                 minimum: 0.0
                 type: integer
               validatorTemplate:
-                description: Per-validator pod-spec template applied when validators > 0. Ignored when validators == 0.
+                description: |-
+                  Per-validator pod-spec template applied when validators > 0.
+                  Ignored when validators == 0.
                 nullable: true
                 properties:
                   bootstrapNodes:
@@ -2104,7 +2135,14 @@ spec:
                 type: object
               validators:
                 default: 0
-                description: Validator-set size declaration. 0 → this CR emits no validator workloads. Listed chains are served by the existing validator set on the network identified by network_id (L2 mode). N → this CR emits N validator pods that participate in the network identified by network_id (Anchored or Independent mode depending on network_id).
+                description: |-
+                  Validator-set size declaration.
+                    0 → this CR emits no validator workloads. Listed chains are
+                         served by the existing validator set on the network
+                         identified by network_id (L2 mode).
+                    N → this CR emits N validator pods that participate in the
+                         network identified by network_id (Anchored or
+                         Independent mode depending on network_id).
                 format: int32
                 type: integer
             required:
@@ -2150,7 +2188,10 @@ spec:
                   type: object
                 type: array
               mode:
-                description: Mode derived from spec data — surfaced for kubectl describe.
+                description: |-
+                  NetworkModeKind names the workload's relationship to its network ID.
+                  Derived from (network_id, validators) — there is no flag field, no
+                  `parent`, no `sovereign: bool`.
                 enum:
                 - L2
                 - Anchored
@@ -2168,6 +2209,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
             type: object
@@ -2342,6 +2384,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
             type: object
@@ -2589,6 +2632,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               zoneStatuses:
@@ -2936,6 +2980,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -3402,6 +3447,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -3451,6 +3497,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -3912,6 +3959,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -3961,6 +4009,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -4422,6 +4471,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -4471,6 +4521,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -4951,11 +5002,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -4964,21 +5019,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -4987,7 +5050,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -5233,6 +5299,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -5284,6 +5351,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -5764,11 +5832,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -5777,21 +5849,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -5800,7 +5880,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -6046,6 +6129,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -6097,6 +6181,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -6577,11 +6662,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -6590,21 +6679,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -6613,7 +6710,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -6859,6 +6959,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -6910,6 +7011,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -7371,6 +7473,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -7420,6 +7523,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -7520,7 +7624,10 @@ spec:
                   type: object
                 type: array
               mode:
-                description: Mode derived from spec data — surfaced for kubectl describe.
+                description: |-
+                  NetworkModeKind names the workload's relationship to its network ID.
+                  Derived from (network_id, validators) — there is no flag field, no
+                  `parent`, no `sovereign: bool`.
                 enum:
                 - L2
                 - Anchored
@@ -7538,6 +7645,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
             type: object
@@ -7686,6 +7794,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -8166,11 +8275,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -8179,21 +8292,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -8202,7 +8323,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -8448,6 +8572,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -8499,6 +8624,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -8979,11 +9105,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -8992,21 +9122,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -9015,7 +9153,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -9261,6 +9402,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -9312,6 +9454,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -9530,6 +9673,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -9698,6 +9842,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -10178,11 +10323,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -10191,21 +10340,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -10214,7 +10371,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -10460,6 +10620,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -10511,6 +10672,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -10991,11 +11153,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -11004,21 +11170,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -11027,7 +11201,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -11273,6 +11450,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -11324,6 +11502,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -11804,11 +11983,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -11817,21 +12000,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -11840,7 +12031,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -12086,6 +12280,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -12137,6 +12332,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -12617,11 +12813,15 @@ spec:
                     type: integer
                 type: object
               persistence:
-                description: Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field auto-wires the restore init + replication sidecar + ConfigMap + PVC.
+                description: |-
+                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
                   ageSecret:
-                    description: K8s Secret with `identity` / `recipients` (age keypair). Default `<service-name>-replicate-age`.
+                    description: |-
+                      K8s Secret with `identity` / `recipients` (age keypair). Default
+                      `<service-name>-replicate-age`.
                     type: string
                   bucket:
                     description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
@@ -12630,21 +12830,29 @@ spec:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
                     type: string
                   dataDir:
-                    description: Mount path shared by the main container, the restore init, and the sidecar, e.g. `/var/lib/hanzo/console`.
+                    description: |-
+                      Mount path shared by the main container, the restore init, and the
+                      sidecar, e.g. `/var/lib/hanzo/console`.
                     type: string
                   dbPath:
-                    description: Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when `!dir_mode`.
+                    description: |-
+                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
+                      `!dir_mode`.
                     type: string
                   dirMode:
                     default: false
-                    description: 'Per-org/user/project fan-out: `replicate` watches `data_dir` for many DBs instead of a single file.'
+                    description: |-
+                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
+                      DBs instead of a single file.
                     type: boolean
                   enabled:
                     default: false
                     type: boolean
                   forcePathStyle:
                     default: true
-                    description: SeaweedFS/MinIO require path-style addressing (subdomain buckets don't resolve in-cluster). Default `true`.
+                    description: |-
+                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
+                      don't resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -12653,7 +12861,10 @@ spec:
                     description: Glob used in `dir_mode`. Default `**/*.db`.
                     type: string
                   s3Endpoint:
-                    description: S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client prepends `https://` to a scheme-less endpoint, which the cleartext in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
+                    description: |-
+                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
+                      prepends `https://` to a scheme-less endpoint, which the cleartext
+                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
                     type: string
                   s3Path:
                     description: S3 key prefix, e.g. `console/app`.
@@ -12899,6 +13110,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -12950,6 +13162,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -13411,6 +13624,7 @@ spec:
                   required:
                   - name
                   type: object
+                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
@@ -13460,6 +13674,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:
@@ -13711,6 +13926,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               zoneStatuses:
@@ -13942,14 +14158,19 @@ spec:
                     type: array
                 type: object
               replication:
-                description: 'Turns on native ZAP replication: the node streams CDC incrementals + physical snapshots to S3 (database >= v1.20.3) and restores-on-boot. Translated to `REPLICATE_*` env on the luxd container.'
+                description: |-
+                  Turns on native ZAP replication: the node streams CDC incrementals +
+                  physical snapshots to S3 (database >= v1.20.3) and restores-on-boot.
+                  Translated to `REPLICATE_*` env on the luxd container.
                 nullable: true
                 properties:
                   ageIdentitySecret:
                     description: K8s Secret holding `REPLICATE_AGE_IDENTITY` for restore.
                     type: string
                   ageRecipient:
-                    description: age public key (`age1pq1...` for post-quantum) enabling client-side encryption of snapshots.
+                    description: |-
+                      age public key (`age1pq1...` for post-quantum) enabling client-side
+                      encryption of snapshots.
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `REPLICATE_S3_ACCESS_KEY` / `_SECRET_KEY`.
@@ -14013,7 +14234,9 @@ spec:
                     type: string
                   sources:
                     items:
-                      description: One seed-restore transport. The init container walks `sources` in order and uses the first that succeeds.
+                      description: |-
+                        One seed-restore transport. The init container walks `sources` in order
+                        and uses the first that succeeds.
                       properties:
                         expectedHash:
                           type: string
@@ -14189,6 +14412,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               tenantNetworks:
@@ -14482,6 +14706,7 @@ spec:
                 - Running
                 - Degraded
                 - Deleting
+                - null
                 nullable: true
                 type: string
               readyReplicas:

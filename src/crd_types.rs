@@ -174,14 +174,14 @@ impl EnvVar {
             value_from: self.value_from.as_ref().map(|s| K8sEnvVarSource {
                 config_map_key_ref: s.config_map_key_ref.as_ref().map(|c| {
                     k8s_openapi::api::core::v1::ConfigMapKeySelector {
-                        name: Some(c.name.clone()),
+                        name: c.name.clone(),
                         key: c.key.clone(),
                         optional: c.optional,
                     }
                 }),
                 secret_key_ref: s.secret_key_ref.as_ref().map(|c| {
                     k8s_openapi::api::core::v1::SecretKeySelector {
-                        name: Some(c.name.clone()),
+                        name: c.name.clone(),
                         key: c.key.clone(),
                         optional: c.optional,
                     }
@@ -207,13 +207,13 @@ impl EnvFromSource {
         K8sEnvFromSource {
             config_map_ref: self.config_map_ref.as_ref().map(|c| {
                 k8s_openapi::api::core::v1::ConfigMapEnvSource {
-                    name: Some(c.name.clone()),
+                    name: c.name.clone(),
                     optional: c.optional,
                 }
             }),
             secret_ref: self.secret_ref.as_ref().map(|c| {
                 k8s_openapi::api::core::v1::SecretEnvSource {
-                    name: Some(c.name.clone()),
+                    name: c.name.clone(),
                     optional: c.optional,
                 }
             }),
@@ -264,7 +264,7 @@ impl Volume {
 impl LocalObjectReference {
     pub fn to_k8s(&self) -> K8sLocalObjectReference {
         K8sLocalObjectReference {
-            name: Some(self.name.clone()),
+            name: self.name.clone(),
         }
     }
 }
@@ -329,12 +329,15 @@ impl Condition {
             status: self.status.clone(),
             reason: self.reason.clone(),
             message: self.message.clone(),
+            // k8s-openapi 0.28 backs meta/v1 Time with jiff::Timestamp (not
+            // chrono). Our wire wrapper stays an RFC3339 string; parse it into a
+            // jiff timestamp, falling back to now on a malformed/absent value.
             last_transition_time: self
                 .last_transition_time
                 .as_ref()
-                .and_then(|t| chrono::DateTime::parse_from_rfc3339(&t.0).ok())
-                .map(|dt| K8sTime(dt.with_timezone(&chrono::Utc)))
-                .unwrap_or_else(|| K8sTime(chrono::Utc::now())),
+                .and_then(|t| t.0.parse::<jiff::Timestamp>().ok())
+                .map(K8sTime)
+                .unwrap_or_else(|| K8sTime(jiff::Timestamp::now())),
             observed_generation: self.observed_generation,
         }
     }
@@ -345,7 +348,9 @@ impl Condition {
             status: c.status.clone(),
             reason: c.reason.clone(),
             message: c.message.clone(),
-            last_transition_time: Some(Time(c.last_transition_time.0.to_rfc3339())),
+            // jiff::Timestamp's Display is RFC3339 — the same shape our wrapper
+            // carries, so the round-trip through the CRD wire stays valid.
+            last_transition_time: Some(Time(c.last_transition_time.0.to_string())),
             observed_generation: c.observed_generation,
         }
     }
@@ -368,7 +373,10 @@ pub fn build_condition(
         },
         reason: reason.to_string(),
         message: message.to_string(),
-        last_transition_time: Some(Time(chrono::Utc::now().to_rfc3339())),
+        // jiff::Timestamp's Display is RFC3339 — the wire shape our `Time(String)`
+        // wrapper carries (the operator's only timestamp library, matching the
+        // jiff-backed k8s meta/v1 Time at the boundary).
+        last_transition_time: Some(Time(jiff::Timestamp::now().to_string())),
         observed_generation: Some(generation),
     }
 }
