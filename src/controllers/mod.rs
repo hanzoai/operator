@@ -3,7 +3,7 @@
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::Resource;
 
-pub mod baseapp;
+pub mod base;
 pub mod datastore;
 pub mod dns;
 pub mod gateway;
@@ -12,8 +12,6 @@ pub mod kms_zap;
 pub mod mpc;
 pub mod network;
 pub mod service;
-
-// Re-export shared inner functions for compat facades.
 
 /// Build an OwnerReference pointing at a CR. The CR must have a UID set.
 pub fn owner_ref_for<K>(cr: &K, api_version: &str, kind: &str) -> OwnerReference
@@ -48,11 +46,7 @@ pub mod llm;
 pub mod s3;
 pub mod sql;
 
-// v0.3.4: union with go/ — backcompat Hanzo aliases (delegate to the base
-// Service/Datastore/DNS controllers) + LuxRuntime + NodeFleet blockchain Kinds.
-pub mod hanzo_datastore;
-pub mod hanzo_dns;
-pub mod hanzo_service;
+// v0.3.4: union with go/ — LuxRuntime + NodeFleet blockchain Kinds.
 pub mod luxruntime;
 pub mod nodefleet;
 
