@@ -6,15 +6,17 @@
 //!
 //! ## Modules
 //!
-//! | Module        | What it owns                                                            |
-//! |---------------|-------------------------------------------------------------------------|
-//! | [`error`]     | `OperatorError` — single canonical error type for the operator.         |
-//! | [`leader`]    | `LeaderElection` — `coordination.k8s.io/v1` lease loop.                 |
-//! | [`iam_admin`] | IAM admin client (`POST /v1/iam/admin/applications/upsert`).            |
-//! | [`secret`]    | Strict hijack guard + `\0` rejection for KMS-projected K8s Secrets.     |
-//! | [`status`]    | Standard `status.conditions` mint helpers.                              |
-//! | [`reconciler`]| `Action` requeue cadence + `clamp_resync`.                              |
+//! | Module         | What it owns                                                            |
+//! |----------------|-------------------------------------------------------------------------|
+//! | [`error`]      | `OperatorError` — single canonical error type for the operator.         |
+//! | [`leader`]     | `LeaderElection` — `coordination.k8s.io/v1` lease loop.                 |
+//! | [`iam_admin`]  | IAM admin client (`POST /v1/iam/admin/applications/upsert`).            |
+//! | [`apps_client`]| Read-side for the platform `apps` table (`GET /v1/apps`) + semver gate. |
+//! | [`secret`]     | Strict hijack guard + `\0` rejection for KMS-projected K8s Secrets.     |
+//! | [`status`]     | Standard `status.conditions` mint helpers.                              |
+//! | [`reconciler`] | `Action` requeue cadence + `clamp_resync`.                             |
 
+pub mod apps_client;
 pub mod error;
 pub mod iam_admin;
 pub mod leader;
