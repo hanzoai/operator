@@ -165,3 +165,95 @@ All 9 are wired into `main.rs`'s `tokio::join!` so they spin up
 alongside the canonical Kinds when the leader is elected.
 
 Test count: 35 → 44 (9 new smoke tests, 0 regressions).
+
+## v0.4.1 — Apps-lifecycle DRIVE controller (PR 5 of platform APPS_LIFECYCLE.md)
+
+The "DRIVE" half of the apps lifecycle. It is **not a CRD Kind** — its
+reconcile source is the platform `apps` table (one row per
+`(org, app, env)`), read over HTTP from `GET /v1/apps` (the single read
+authority that projects every row through platform's one `computeDrift`
+module). It is the inverse of platform PR 2's running-tag reader: the
+reader observes the cluster INTO the table; this controller drives the
+table BACK ONTO the cluster.
+
+Files:
+- `src/core/apps_client.rs` — read-side: `AppView` DTO (the `/v1/apps`
+  wire shape), `list_apps[_for_cluster]` (reqwest + Bearer, mirrors
+  `core::iam_admin`), and the two pure predicates the boundary needs:
+  `is_semver` (`^v\d+\.\d+\.\d+$`) and `parse_image_ref` (the Rust mirror
+  of platform's canonical `parseImageRef`).
+- `src/controllers/apps.rs` — the poll loop + the pure policy `decide()`
+  (the safety brain) + Deployment patch + rollout wait + k8s Event
+  emission.
+
+What it does each sweep: read the rows for THIS operator's cluster, and
+for each row where `declared_tag != running_tag`, find the Deployment in
+the row's namespace whose container image **repository == `apps.registry`**
+(the SAME join key the reader uses — NOT the Deployment name, which the
+operator derives from a CR and can differ, e.g. `cloud` → `cloud-api`),
+then patch only that container's image to `<registry>:<declared_tag>` and
+wait for rollout (`rollout_complete`: observed-generation caught up,
+updated==desired==available, no lingering replicas).
+
+### Safety gate (the load-bearing part — DRY-RUN BY DEFAULT)
+
+This controller can roll the whole fleet, so it NEVER patches until FOUR
+gates open — three configurable, one absolute:
+
+1. **Master enable** `APPS_CONTROLLER=true` (default off → loop never
+   starts; mirrors `KMS_ZAP_CONTROLLER`). First deploy of this binary is
+   inert.
+2. **Drive mode** `APPS_DRIVE_MODE` ∈ {`off` (default), `dry-run`, `on`}.
+   `off`/`dry-run` NEVER patch — they log + emit a `DriveIntended` Event
+   describing the patch they WOULD apply. Only `on` can patch.
+3. **Per-app allow-list** `APPS_DRIVE_ALLOW` (comma-sep
+   `<org>/<app>/<env>` | `<org>/<app>` | `<org>/*` | `*`). Even in `on`
+   mode, an app NOT matched is dry-run-reported. So `on` does NOT
+   reconcile-and-patch everything — you opt each app in explicitly.
+4. **Semver-only at the reconcile boundary** — ABSOLUTE, no config
+   overrides it. A `declared_tag` that is not `^v\d+\.\d+\.\d+$` is
+   refused (e.g. the kms `multi-issuer` seed, a stray `:main`). The
+   `decide()` order checks semver BEFORE mode/allow so dry-run output
+   never promises a patch that `on` would refuse.
+
+`decide(mode, allow, app) -> Skip | Report | Patch` is pure and the unit
+of test (no cluster/platform needed). `decide_floating_..._even_when_on_and_allowed`
+and `decide_on_but_not_allowlisted_only_reports` lock the two
+fleet-protecting properties.
+
+### Enabling real drive (the deploy steps)
+
+The controller is OFF in every existing manifest (the env vars are
+unset). To turn it on, on the operator Deployment in the universe
+manifests (`hanzoai/universe` operator deployment) set:
+
+```
+APPS_CONTROLLER=true                 # master enable
+APPS_PLATFORM_URL=http://platform.<ns>.svc.cluster.local:3000   # /v1/apps base
+APPS_SERVICE_TOKEN=<token>           # (or PLATFORM_SERVICE_TOKEN / HANZO_API_KEY) — from a KMS-synced Secret
+APPS_CLUSTER=hanzo-k8s              # which cluster's rows to drive (default hanzo-k8s)
+# --- still dry-run until BOTH of these are set: ---
+APPS_DRIVE_MODE=on                   # off|dry-run|on  (default off)
+APPS_DRIVE_ALLOW=hanzoai/iam/test  # start with ONE app, widen deliberately
+# optional: APPS_ORG_ID=<org>, APPS_POLL_SECS=60
+```
+
+Recommended rollout: `APPS_CONTROLLER=true` + `APPS_DRIVE_MODE=dry-run`
+first (watch `DriveIntended` Events + logs across the fleet), then flip
+`APPS_DRIVE_MODE=on` with a single-app `APPS_DRIVE_ALLOW`, widen one app
+at a time, end at `APPS_DRIVE_ALLOW=*` only once trusted.
+
+### RBAC + Events
+
+No new RBAC: the existing operator ClusterRole already grants
+`apps/deployments` get/list/watch/patch and core `events` create/patch.
+The controller emits namespaced Events (`reason` ∈ {`DriveIntended`,
+`Driven`, `DriveRolloutPending`, `DriveFailed`}) against a synthetic
+`involvedObject` kind `App` named by the lifecycle id — readable via
+`kubectl get events` and surfaceable on `platform.hanzo.ai/apps`. Event
+write failures are non-fatal (logged, swallowed). A failed sweep
+(platform unreachable/auth) logs and retries next tick — it never crashes
+the operator.
+
+Test count: 94 → 103 lib tests (+9 apps controller gate/rollout, plus the
+apps_client semver/image-ref/wire-shape suite; 0 regressions).
