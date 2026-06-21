@@ -14,10 +14,10 @@ use k8s_openapi::api::autoscaling::v2::{
     MetricTarget, ResourceMetricSource,
 };
 use k8s_openapi::api::core::v1::{
-    Container, ContainerPort, EnvFromSource, EnvVar, ExecAction, HTTPGetAction, Lifecycle,
-    LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PodSpec, PodTemplateSpec, Probe,
-    ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
-    ServiceSpec as CoreServiceSpec, Volume, VolumeMount,
+    ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction, HTTPGetAction,
+    Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PodSpec,
+    PodTemplateSpec, Probe, ResourceRequirements as K8sResourceRequirements,
+    Service as CoreService, ServicePort, ServiceSpec as CoreServiceSpec, Volume, VolumeMount,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -680,6 +680,25 @@ pub fn build_container(
         resources,
         liveness_probe,
         readiness_probe,
+        ..Default::default()
+    }
+}
+
+/// Build a ConfigMap from a `key -> contents` map.
+pub fn build_configmap(
+    name: &str,
+    namespace: &str,
+    labels: BTreeMap<String, String>,
+    data: BTreeMap<String, String>,
+) -> ConfigMap {
+    ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        data: Some(data),
         ..Default::default()
     }
 }
