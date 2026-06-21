@@ -4,19 +4,20 @@
 Canonical Kubernetes operator for the Hanzo platform. Rust implementation,
 shared by Hanzo, Lux, Zoo, and Osage universes.
 
-One binary. 20 CRD Kinds (8 canonical + 9 unbranded facades + 3 legacy
-compat). API group configurable at install time via `--api-group` /
+One binary. 26 CRD Kinds. No compat aliases — the v1 Kinds are the one
+way. API group configurable at install time via `--api-group` /
 `OPERATOR_API_GROUP` (default `hanzo.ai`).
 
 ## Tech Stack
 - Rust 1.79+ (stable). edition = 2021.
-- kube-rs 0.87 (CustomResource derive + runtime::Controller).
-- k8s-openapi 0.20 (v1_28 feature).
+- kube 4 (CustomResource derive + runtime::Controller).
+- k8s-openapi 0.28 (v1_33 feature).
+- schemars 1 (JsonSchema derive). jiff (not chrono) for k8s Time.
 - Tokio multi-threaded runtime.
 - Image: `ghcr.io/hanzoai/operator:vX.Y.Z` (semver only, no `:latest`).
 - Runs in `hanzo-operator-system` namespace.
 
-## CRD Kinds (20 total)
+## CRD Kinds (26 total)
 
 ### Canonical (v1)
 | Kind        | Short  | Materializes |
@@ -28,7 +29,7 @@ compat). API group configurable at install time via `--api-group` /
 | Network     | hnet   | StatefulSet (validators) + Services + PVC |
 | Ingress     | hing   | Multiple Ingress resources with cert-manager TLS |
 | DNS         | hdns   | Deployment + Service (CoreDNS) |
-| BaseApp     | bapp   | StatefulSet + headless + ClusterIP Service (Quasar writer election) |
+| Base        | bapp   | StatefulSet + headless + ClusterIP Service (Quasar writer election) |
 
 ### Facades (v1) — delegate to Service/Datastore
 | Kind    | Short | Inner |
@@ -43,36 +44,40 @@ compat). API group configurable at install time via `--api-group` /
 | Indexer | idx   | Service |
 | Explorer| exp   | Service |
 
+### App-shaped facades (v1)
+| Kind          | Short | Inner |
+|---------------|-------|-------|
+| SPA           | spa   | Service |
+| Static        | st    | Service |
+| Queue         | q     | Service |
+| Observability | o11y  | Service |
+| Function      | fn    | Service |
+
 ### Network sub-resources (v1) — NoOp stubs (Network handles materialization)
 | Kind      | Short  |
 |-----------|--------|
 | Chain     | chain  |
-| Subnet    | subnet |
 | Validator | val    |
 
-### Legacy compat (v1alpha1) — delegate to v1 reconcilers
-| Kind            | Inner            |
-|-----------------|------------------|
-| HanzoService    | Service          |
-| HanzoDatastore  | Datastore        |
-| HanzoDNS        | DNS              |
-
-Existing CRs at `~/work/hanzo/universe/infra/k8s/hanzo-operator/crs/*.yaml`
-keep working unchanged through the compat aliases.
+### Blockchain (v1)
+| Kind       | Short | Materializes |
+|------------|-------|--------------|
+| LuxRuntime | lrt   | StatefulSet (luxd validators) + Services + PVC + CronJob/Jobs |
+| NodeFleet  | nf    | StatefulSet + Services (pinned node fleet) |
 
 ## Layout
 ```
 src/
   main.rs           Entrypoint — clap args, leader election, controller spawn.
   lib.rs            Library facade.
-  crd.rs            All 20 CRD types.
+  crd.rs            All 26 CRD types.
   crd_types.rs      JsonSchema wrappers for k8s-openapi types.
   manifests.rs      Pure K8s object builders.
   apply.rs          Server-side apply (typed + DynamicObject).
   api_group.rs      Runtime API-group resolution.
   controllers/      One module per Kind.
     service.rs, datastore.rs, gateway.rs, mpc.rs, network.rs,
-    ingress.rs, dns.rs, baseapp.rs, compat.rs
+    ingress.rs, dns.rs, base.rs, luxruntime.rs, nodefleet.rs, …
   core/             Absorbed from former hanzoai/operator-core repo.
     error.rs, leader.rs, iam_admin.rs, secret.rs, status.rs, reconciler.rs
   bin/

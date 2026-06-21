@@ -18,18 +18,18 @@
 //!
 //! The Kind set + ordering is canonical and mirrors `bootnode/operator`'s
 //! `config/crd/bases/bootno.de_*.yaml`: Service, Datastore, Gateway, MPC,
-//! Network, Ingress, DNS, BaseApp, SQL, KV, DocDB, IAM, KMS, LLM, S3, Chain,
+//! Network, Ingress, DNS, Base, SQL, KV, DocDB, IAM, KMS, LLM, S3, Chain,
 //! Validator, Indexer, Explorer, SPA, Static, Queue, Observability, Function,
-//! plus the unbranded Hanzo facades and the LuxRuntime + NodeFleet blockchain
-//! Kinds.
+//! plus the LuxRuntime + NodeFleet blockchain Kinds. No compat aliases — the
+//! v1 Kinds are the one way.
 
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt;
 use operator::api_group::{ApiGroup, DEFAULT_API_GROUP};
 use operator::crd::{
-    BaseApp, Chain, Datastore, DocDB, Explorer, Function, Gateway, HanzoDNS, HanzoDatastore,
-    HanzoService, Indexer, Ingress, LuxRuntime, Network, NodeFleet, Observability, Queue, Service,
-    Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
+    Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress, LuxRuntime,
+    Network, NodeFleet, Observability, Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM,
+    MPC, S3, SPA, SQL,
 };
 
 /// Returns every managed CRD in canonical bundle order, with the group already
@@ -47,7 +47,7 @@ fn bundle(group: &str) -> Vec<CustomResourceDefinition> {
         Network::crd(),
         Ingress::crd(),
         DNS::crd(),
-        BaseApp::crd(),
+        Base::crd(),
         SQL::crd(),
         KV::crd(),
         DocDB::crd(),
@@ -64,9 +64,6 @@ fn bundle(group: &str) -> Vec<CustomResourceDefinition> {
         Queue::crd(),
         Observability::crd(),
         Function::crd(),
-        HanzoService::crd(),
-        HanzoDatastore::crd(),
-        HanzoDNS::crd(),
         LuxRuntime::crd(),
         NodeFleet::crd(),
     ];
@@ -124,9 +121,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundle_is_the_canonical_29_kind_set() {
+    fn bundle_is_the_canonical_26_kind_set() {
         let crds = bundle(DEFAULT_API_GROUP);
-        assert_eq!(crds.len(), 29, "managed Kind count must stay at 29");
+        assert_eq!(crds.len(), 26, "managed Kind count must stay at 26");
 
         // Every Kind carries the default group and a well-formed metadata.name.
         for crd in &crds {
@@ -137,6 +134,37 @@ mod tests {
                 Some(format!("{plural}.{DEFAULT_API_GROUP}").as_str()),
             );
         }
+    }
+
+    #[test]
+    fn bundle_is_compat_free_and_base_is_bare_named() {
+        let crds = bundle(DEFAULT_API_GROUP);
+        let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
+
+        // Bare `Base` — not the old `BaseApp` — at `bases.hanzo.ai`.
+        assert!(kinds.contains(&"Base"), "Base Kind must be present");
+        assert!(
+            !kinds.contains(&"BaseApp"),
+            "legacy BaseApp Kind must be gone (renamed to Base)",
+        );
+        let base = crds
+            .iter()
+            .find(|c| c.spec.names.kind == "Base")
+            .expect("Base CRD");
+        assert_eq!(base.spec.names.plural, "bases");
+        assert_eq!(base.spec.names.singular.as_deref(), Some("base"));
+        assert_eq!(base.metadata.name.as_deref(), Some("bases.hanzo.ai"));
+
+        // NO Hanzo-prefixed compat alias Kinds survive.
+        for k in &kinds {
+            assert!(
+                !k.starts_with("Hanzo"),
+                "compat-free: no Hanzo-prefixed Kind allowed, found {k}",
+            );
+        }
+        assert!(!kinds.contains(&"HanzoService"));
+        assert!(!kinds.contains(&"HanzoDatastore"));
+        assert!(!kinds.contains(&"HanzoDNS"));
     }
 
     #[test]
