@@ -295,7 +295,9 @@ async fn run_all_controllers(
         controllers::kms_zap::run_kms_zap_controller(
             client.clone(),
             namespace.clone(),
-            std::env::var("KMS_ZAP_CONTROLLER").map(|v| v == "true").unwrap_or(false),
+            std::env::var("KMS_ZAP_CONTROLLER")
+                .map(|v| v == "true")
+                .unwrap_or(false),
         ),
         // Apps-lifecycle DRIVE controller (PR 5 of platform docs/APPS_LIFECYCLE.md)
         // — opt-in (off unless APPS_CONTROLLER=true) AND dry-run by default even
@@ -307,7 +309,9 @@ async fn run_all_controllers(
         controllers::apps::run_apps_controller(
             client.clone(),
             namespace.clone(),
-            std::env::var("APPS_CONTROLLER").map(|v| v == "true").unwrap_or(false),
+            std::env::var("APPS_CONTROLLER")
+                .map(|v| v == "true")
+                .unwrap_or(false),
         ),
     );
 }

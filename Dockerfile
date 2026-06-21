@@ -1,8 +1,7 @@
-# Rust implementation of the Lux operator.
+# Canonical Rust implementation of the Hanzo operator.
 #
-# Build from the repo root with: `docker build -f rust/Dockerfile .`
-# Image: ghcr.io/luxfi/operator-rust:vX.Y.Z (sibling of ghcr.io/luxfi/operator
-# which is built from go/Dockerfile).
+# Build from the repo root: `docker build .`
+# Image: ghcr.io/hanzoai/operator:vX.Y.Z (Go sibling: ghcr.io/luxfi/operator).
 #
 # Builder
 FROM rust:1.79-bookworm AS builder
@@ -10,7 +9,7 @@ FROM rust:1.79-bookworm AS builder
 WORKDIR /build
 
 # Copy Cargo manifest and lock first for layer caching.
-COPY rust/Cargo.toml rust/Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
 
 # Pre-build a dummy binary so dependencies cache between builds.
 RUN mkdir -p src src/bin && \
@@ -20,7 +19,7 @@ RUN mkdir -p src src/bin && \
     cargo build --release 2>/dev/null || true
 
 # Now copy real source and build.
-COPY rust/src/ src/
+COPY src/ src/
 RUN touch src/main.rs src/lib.rs src/bin/generate_crd_yaml.rs && cargo build --release
 
 # Runtime
