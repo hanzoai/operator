@@ -30,7 +30,9 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::apply;
-use crate::core::secret::{is_operator_managed, owner_ref, validate_secret_value, MANAGED_BY_LABEL};
+use crate::core::secret::{
+    is_operator_managed, owner_ref, validate_secret_value, MANAGED_BY_LABEL,
+};
 use crate::zapclient::ZapClient;
 
 /// managed-by value for Secrets this controller owns — distinct from the REST
@@ -190,7 +192,12 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
     // Project via SSA. managed-by label + ownerRef so only we adopt it.
     let mut labels = BTreeMap::new();
     labels.insert(MANAGED_BY_LABEL.to_string(), KMS_ZAP_MANAGER.to_string());
-    let owner = owner_ref(&format!("{KMS_GROUP}/{KMS_VERSION}"), KMS_KIND, &name, &cr_uid);
+    let owner = owner_ref(
+        &format!("{KMS_GROUP}/{KMS_VERSION}"),
+        KMS_KIND,
+        &name,
+        &cr_uid,
+    );
     let secret = Secret {
         metadata: ObjectMeta {
             name: Some(spec.managed_secret_name.clone()),
@@ -206,7 +213,12 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
         .await
         .map_err(|e| format!("apply secret: {e}"))?;
 
-    info!(name, namespace = target_ns, keys = spec.keys.len(), "KMSSecret (zap) reconciled");
+    info!(
+        name,
+        namespace = target_ns,
+        keys = spec.keys.len(),
+        "KMSSecret (zap) reconciled"
+    );
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
@@ -231,7 +243,10 @@ pub async fn run_kms_zap_controller(client: Client, namespace: String, enabled: 
     } else {
         Api::namespaced_with(client.clone(), &namespace, &ar)
     };
-    info!(group = KMS_GROUP, "Starting KMS ZAP controller (additive, zap-native CRs only)");
+    info!(
+        group = KMS_GROUP,
+        "Starting KMS ZAP controller (additive, zap-native CRs only)"
+    );
     let ctx = Arc::new(Ctx { client });
     Controller::new_with(api, Config::default(), ar)
         .run(reconcile, on_error, ctx)

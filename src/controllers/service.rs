@@ -17,7 +17,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::autoscaling::v2::{CrossVersionObjectReference, HorizontalPodAutoscaler};
-use k8s_openapi::api::core::v1::Service as CoreService;
+use k8s_openapi::api::core::v1::{ConfigMap, Service as CoreService};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
@@ -29,7 +29,9 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{KMSSecretRef, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus};
+use crate::crd::{
+    KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
+};
 use crate::crd_types;
 use crate::manifests;
 
@@ -42,6 +44,238 @@ fn upsert_condition(conditions: &mut Vec<Condition>, new_cond: Condition) {
         *slot = new_cond;
     } else {
         conditions.push(new_cond);
+    }
+}
+
+// ============================================================================
+// persistence — durable SeaweedFS-backed SQLite via hanzoai/replicate.
+//
+// Generalizes the proven console-sqlite wiring (restore initContainer +
+// replicate sidecar + replicate-config ConfigMap + app-db PVC) into ONE
+// `spec.persistence` field that any Service Kind can set. All builders here
+// are pure functions of a resolved `PersistenceSpec` so they are unit-tested
+// without a cluster.
+// ============================================================================
+
+/// Default `hanzoai/replicate` image. Pinned to the repo's `VERSION` (0.5.13;
+/// the `v0.5.13` tag is published to GHCR). Semver-only per house rule —
+/// never `:latest`.
+const REPLICATE_IMAGE: &str = "ghcr.io/hanzoai/replicate:v0.5.13";
+const REPLICATE_CMD: &str = "/usr/local/bin/replicate";
+/// Shared volume name for the live DB file (mounted on main + init + sidecar).
+const APP_DB_VOLUME: &str = "app-db";
+/// Volume name for the mounted `replicate.yml` ConfigMap.
+const REPLICATE_CONFIG_VOLUME: &str = "replicate-config";
+const REPLICATE_CONFIG_MOUNT: &str = "/etc/replicate";
+
+/// Apply sane defaults to a user-supplied `PersistenceSpec`. The user only
+/// has to set `enabled` + `data_dir` (+ `db_path` or `dir_mode`); everything
+/// else (endpoint, region, secrets, image) defaults to the in-cluster
+/// SeaweedFS convention. `<service-name>` substitutions are resolved here.
+fn resolved_persistence(name: &str, p: &PersistenceSpec) -> PersistenceSpec {
+    let mut r = p.clone();
+    if r.pattern.is_empty() {
+        r.pattern = "**/*.db".to_string();
+    }
+    if r.s3_endpoint.is_empty() {
+        r.s3_endpoint = "http://s3.hanzo.svc:9000".to_string();
+    }
+    if r.s3_region.is_empty() {
+        r.s3_region = "us-east-1".to_string();
+    }
+    if r.credentials_secret.is_empty() {
+        r.credentials_secret = "s3-credentials".to_string();
+    }
+    if r.age_secret.is_empty() {
+        r.age_secret = format!("{}-replicate-age", name);
+    }
+    if r.image.is_empty() {
+        r.image = REPLICATE_IMAGE.to_string();
+    }
+    r
+}
+
+/// The ConfigMap name holding `replicate.yml` for this service.
+fn replicate_config_name(name: &str) -> String {
+    format!("{}-replicate-config", name)
+}
+
+/// The PVC name for the shared `app-db` working volume.
+fn app_db_pvc_name(name: &str) -> String {
+    format!("{}-app-db", name)
+}
+
+/// Render `replicate.yml`. Single-DB mode emits a `path:`; `dir_mode` emits
+/// `dir:` + `pattern:` + `watch: true` (replicate appends each DB's relative
+/// path to the S3 `path` prefix automatically). Creds + age material are
+/// injected as `${...}` env so the ConfigMap stays secret-free.
+fn render_replicate_yml(p: &PersistenceSpec) -> String {
+    let target = if p.dir_mode {
+        // The glob MUST be quoted — a bare YAML scalar starting with `*`
+        // (e.g. `**/*.db`) is parsed as an alias reference and is invalid.
+        format!(
+            "    dir: {}\n    pattern: \"{}\"\n    watch: true\n",
+            p.data_dir, p.pattern
+        )
+    } else {
+        format!("    path: {}/{}\n", p.data_dir, p.db_path)
+    };
+    format!(
+        "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS), age-encrypted.\n\
+         dbs:\n\
+         \x20 - \n\
+{target}\
+         \x20   replicas:\n\
+         \x20     - type: s3\n\
+         \x20       bucket: {bucket}\n\
+         \x20       path: {s3_path}\n\
+         \x20       endpoint: {endpoint}\n\
+         \x20       region: {region}\n\
+         \x20       force-path-style: {fps}\n\
+         \x20       access-key-id: ${{S3_ACCESS_KEY_ID}}\n\
+         \x20       secret-access-key: ${{S3_SECRET_ACCESS_KEY}}\n\
+         \x20       age:\n\
+         \x20         identities:\n\
+         \x20           - ${{AGE_IDENTITY}}\n\
+         \x20         recipients:\n\
+         \x20           - ${{AGE_RECIPIENT}}\n",
+        target = target,
+        bucket = p.bucket,
+        s3_path = p.s3_path,
+        endpoint = p.s3_endpoint,
+        region = p.s3_region,
+        fps = p.force_path_style,
+    )
+}
+
+/// The pod volume for the live DB file: PVC if `storage` is set, else
+/// emptyDir. Shared by main + init + sidecar.
+fn app_db_volume(name: &str, p: &PersistenceSpec) -> crd_types::Volume {
+    let source = if p.storage.is_some() {
+        serde_json::json!({
+            "persistentVolumeClaim": { "claimName": app_db_pvc_name(name) }
+        })
+    } else {
+        serde_json::json!({ "emptyDir": {} })
+    };
+    crd_types::Volume {
+        name: APP_DB_VOLUME.to_string(),
+        source,
+    }
+}
+
+/// The pod volume that mounts the `replicate.yml` ConfigMap.
+fn replicate_config_volume(name: &str) -> crd_types::Volume {
+    crd_types::Volume {
+        name: REPLICATE_CONFIG_VOLUME.to_string(),
+        source: serde_json::json!({ "configMap": { "name": replicate_config_name(name) } }),
+    }
+}
+
+/// The two volumeMounts every replicate container shares: the live DB dir and
+/// the read-only config.
+fn replicate_volume_mounts(p: &PersistenceSpec) -> Vec<crd_types::VolumeMount> {
+    vec![
+        crd_types::VolumeMount {
+            name: APP_DB_VOLUME.to_string(),
+            mount_path: p.data_dir.clone(),
+            sub_path: String::new(),
+            read_only: None,
+        },
+        crd_types::VolumeMount {
+            name: REPLICATE_CONFIG_VOLUME.to_string(),
+            mount_path: REPLICATE_CONFIG_MOUNT.to_string(),
+            sub_path: String::new(),
+            read_only: Some(true),
+        },
+    ]
+}
+
+/// S3 creds + age keypair as container env, sourced from the configured
+/// Secrets. Shared by the restore init and the replication sidecar.
+fn replicate_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
+    let secret_ref = |secret: &str, key: &str| crd_types::EnvVarSource {
+        secret_key_ref: Some(crd_types::SecretKeySelector {
+            name: secret.to_string(),
+            key: key.to_string(),
+            optional: None,
+        }),
+        ..Default::default()
+    };
+    vec![
+        crd_types::EnvVar {
+            name: "S3_ACCESS_KEY_ID".to_string(),
+            value: None,
+            value_from: Some(secret_ref(&p.credentials_secret, "access-key")),
+        },
+        crd_types::EnvVar {
+            name: "S3_SECRET_ACCESS_KEY".to_string(),
+            value: None,
+            value_from: Some(secret_ref(&p.credentials_secret, "secret-key")),
+        },
+        crd_types::EnvVar {
+            name: "AGE_IDENTITY".to_string(),
+            value: None,
+            value_from: Some(secret_ref(&p.age_secret, "identity")),
+        },
+        crd_types::EnvVar {
+            name: "AGE_RECIPIENT".to_string(),
+            value: None,
+            value_from: Some(secret_ref(&p.age_secret, "recipients")),
+        },
+    ]
+}
+
+/// The `replicate-restore` initContainer (single-DB mode only — see
+/// `dir_mode` handling at the callsite). No-op (exit 0) when `app.db` already
+/// exists on the volume or no snapshot exists yet in the bucket.
+fn replicate_restore_init(p: &PersistenceSpec) -> crd_types::Container {
+    crd_types::Container {
+        name: "replicate-restore".to_string(),
+        image: p.image.clone(),
+        command: vec![REPLICATE_CMD.to_string()],
+        args: vec![
+            "restore".to_string(),
+            "-config".to_string(),
+            format!("{}/replicate.yml", REPLICATE_CONFIG_MOUNT),
+            "-if-db-not-exists".to_string(),
+            "-if-replica-exists".to_string(),
+            format!("{}/{}", p.data_dir, p.db_path),
+        ],
+        env: replicate_env(p),
+        env_from: vec![],
+        volume_mounts: replicate_volume_mounts(p),
+        image_pull_policy: "IfNotPresent".to_string(),
+    }
+}
+
+/// The `replicate` sidecar: continuously stream the SQLite WAL to S3,
+/// age-encrypting client-side. Shares `app-db` with the main container.
+fn replicate_sidecar(p: &PersistenceSpec) -> crd_types::Container {
+    crd_types::Container {
+        name: "replicate".to_string(),
+        image: p.image.clone(),
+        command: vec![REPLICATE_CMD.to_string()],
+        args: vec![
+            "replicate".to_string(),
+            "-config".to_string(),
+            format!("{}/replicate.yml", REPLICATE_CONFIG_MOUNT),
+        ],
+        env: replicate_env(p),
+        env_from: vec![],
+        volume_mounts: replicate_volume_mounts(p),
+        image_pull_policy: "IfNotPresent".to_string(),
+    }
+}
+
+/// The main container's mount of the shared `app-db` volume, so the app
+/// reads/writes the same DB file the sidecar streams.
+fn main_app_db_mount(p: &PersistenceSpec) -> crd_types::VolumeMount {
+    crd_types::VolumeMount {
+        name: APP_DB_VOLUME.to_string(),
+        mount_path: p.data_dir.clone(),
+        sub_path: String::new(),
+        read_only: None,
     }
 }
 
@@ -147,6 +381,14 @@ async fn reconcile_service_inner(
     let extra_labels = spec.labels.clone().unwrap_or_default();
     let all_labels = manifests::merge_labels(&[&std_labels, &extra_labels]);
 
+    // Resolve persistence once (defaults filled in) when enabled. Drives the
+    // auto-injected app-db mount, ConfigMap, restore init, and sidecar below.
+    let persistence = spec
+        .persistence
+        .as_ref()
+        .filter(|p| p.enabled)
+        .map(|p| resolved_persistence(name, p));
+
     // 1. Build the main container honoring spec.env/volumes/volumeMounts.
     let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
     let env_from_k8s: Vec<_> = spec
@@ -154,8 +396,13 @@ async fn reconcile_service_inner(
         .iter()
         .map(crd_types::EnvFromSource::to_k8s)
         .collect();
-    let vm_k8s: Vec<_> = spec
-        .volume_mounts
+    // Honor spec.volume_mounts, then auto-inject the shared app-db mount on
+    // the MAIN container so the app reads/writes the DB the sidecar streams.
+    let mut main_vms: Vec<crd_types::VolumeMount> = spec.volume_mounts.clone();
+    if let Some(p) = &persistence {
+        main_vms.push(main_app_db_mount(p));
+    }
+    let vm_k8s: Vec<_> = main_vms
         .iter()
         .map(crd_types::VolumeMount::to_k8s)
         .collect();
@@ -179,6 +426,10 @@ async fn reconcile_service_inner(
     );
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
+    // Auto-inject the replicate sidecar (streams the WAL to SeaweedFS).
+    if let Some(p) = &persistence {
+        containers.push(replicate_sidecar(p).to_k8s());
+    }
 
     // 2. Build and apply Deployment.
     //
@@ -187,7 +438,13 @@ async fn reconcile_service_inner(
     // Passing `None` here removes the field from the desired state, so the
     // HPA becomes the sole field manager for replicas. The initial scale is
     // then determined by `spec.autoscaling.minReplicas` (the HPA's floor).
-    let volumes_k8s: Vec<_> = spec.volumes.iter().map(crd_types::Volume::to_k8s).collect();
+    let mut all_volumes: Vec<crd_types::Volume> = spec.volumes.clone();
+    if let Some(p) = &persistence {
+        // Shared live-DB volume (PVC or emptyDir) + the replicate.yml mount.
+        all_volumes.push(app_db_volume(name, p));
+        all_volumes.push(replicate_config_volume(name));
+    }
+    let volumes_k8s: Vec<_> = all_volumes.iter().map(crd_types::Volume::to_k8s).collect();
     let ips_k8s: Vec<_> = spec
         .image_pull_secrets
         .iter()
@@ -216,20 +473,45 @@ async fn reconcile_service_inner(
                 meta.annotations = Some(annotations.clone());
             }
         }
-        if !spec.init_containers.is_empty() {
+        // Spec init containers, plus the auto-injected replicate-restore init.
+        // dir_mode omits the restore init — directory restore is best-effort
+        // via the sidecar's restore-on-boot (a single file path can't address
+        // a fan-out of per-org/user DBs).
+        let mut inits: Vec<_> = spec
+            .init_containers
+            .iter()
+            .map(crd_types::Container::to_k8s)
+            .collect();
+        if let Some(p) = &persistence {
+            if !p.dir_mode {
+                inits.push(replicate_restore_init(p).to_k8s());
+            }
+        }
+        if !inits.is_empty() {
             if let Some(pod) = d_spec.template.spec.as_mut() {
-                pod.init_containers = Some(
-                    spec.init_containers
-                        .iter()
-                        .map(crd_types::Container::to_k8s)
-                        .collect(),
-                );
+                pod.init_containers = Some(inits);
             }
         }
     }
     set_owner(&mut deploy.metadata.owner_references, &owner);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
     apply::apply(&deps, &deploy).await?;
+
+    // 2b. Persistence ConfigMap (`replicate.yml`). Owned by the Service so it
+    // is GC'd with the CR.
+    if let Some(p) = &persistence {
+        let mut cm_data = std::collections::BTreeMap::new();
+        cm_data.insert("replicate.yml".to_string(), render_replicate_yml(p));
+        let mut cm = manifests::build_configmap(
+            &replicate_config_name(name),
+            namespace,
+            all_labels.clone(),
+            cm_data,
+        );
+        set_owner(&mut cm.metadata.owner_references, &owner);
+        let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+        apply::apply(&cms, &cm).await?;
+    }
 
     // 3. Service (only if ports are defined).
     if !spec.ports.is_empty() {
@@ -568,5 +850,235 @@ mod tests {
         spec.replicas = None;
         spec.autoscaling = None;
         assert_eq!(replicas_for_deployment(&spec), Some(1));
+    }
+
+    // ---- persistence (SeaweedFS-backed SQLite via hanzoai/replicate) ----
+
+    use crate::crd::{PersistenceSpec, StorageSpec};
+
+    /// Single-DB persistence spec (the console-sqlite shape): only the fields
+    /// a user would set — defaults fill in endpoint/region/secrets/image.
+    fn persistence_spec() -> PersistenceSpec {
+        PersistenceSpec {
+            enabled: true,
+            data_dir: "/var/lib/hanzo/console".to_string(),
+            db_path: "app.db".to_string(),
+            bucket: "console-db".to_string(),
+            s3_path: "console/app".to_string(),
+            // serde default for the field is `true` (see `default = "default_true"`);
+            // set it here so this hand-built spec matches what a CR deserializes to.
+            force_path_style: true,
+            storage: Some(StorageSpec {
+                size: "10Gi".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Assemble the Deployment exactly as `reconcile_service_inner` does for a
+    /// Service with persistence enabled — the same resolution + helper calls,
+    /// fed into the same `build_deployment` (mirrors `deployment_carries_volumes`).
+    fn build_persisted_deployment(
+        name: &str,
+        spec: &ServiceSpec,
+    ) -> k8s_openapi::api::apps::v1::Deployment {
+        let p = spec
+            .persistence
+            .as_ref()
+            .filter(|p| p.enabled)
+            .map(|p| resolved_persistence(name, p));
+
+        let mut main_vms: Vec<crd_types::VolumeMount> = spec.volume_mounts.clone();
+        if let Some(p) = &p {
+            main_vms.push(main_app_db_mount(p));
+        }
+        let vm_k8s: Vec<_> = main_vms
+            .iter()
+            .map(crd_types::VolumeMount::to_k8s)
+            .collect();
+        let main = manifests::build_container(
+            name,
+            &manifests::image_ref(&spec.image.repository, &spec.image.tag),
+            &spec.image.pull_policy,
+            spec.command.clone(),
+            spec.args.clone(),
+            spec.env.iter().map(crd_types::EnvVar::to_k8s).collect(),
+            vec![],
+            vm_k8s,
+            manifests::container_ports(&spec.ports),
+            None,
+            None,
+            None,
+        );
+        let mut containers = vec![main];
+        containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
+        if let Some(p) = &p {
+            containers.push(replicate_sidecar(p).to_k8s());
+        }
+
+        let mut all_volumes: Vec<crd_types::Volume> = spec.volumes.clone();
+        if let Some(p) = &p {
+            all_volumes.push(app_db_volume(name, p));
+            all_volumes.push(replicate_config_volume(name));
+        }
+        let volumes_k8s: Vec<_> = all_volumes.iter().map(crd_types::Volume::to_k8s).collect();
+
+        let mut deploy = manifests::build_deployment(
+            name,
+            "hanzo",
+            manifests::standard_labels(name, "", "", &spec.image.tag),
+            manifests::selector_labels(name),
+            Some(1),
+            containers,
+            volumes_k8s,
+            "Recreate",
+            vec![],
+            "",
+        );
+        if let Some(d_spec) = deploy.spec.as_mut() {
+            let mut inits: Vec<_> = spec
+                .init_containers
+                .iter()
+                .map(crd_types::Container::to_k8s)
+                .collect();
+            if let Some(p) = &p {
+                if !p.dir_mode {
+                    inits.push(replicate_restore_init(p).to_k8s());
+                }
+            }
+            if !inits.is_empty() {
+                if let Some(pod) = d_spec.template.spec.as_mut() {
+                    pod.init_containers = Some(inits);
+                }
+            }
+        }
+        deploy
+    }
+
+    #[test]
+    fn persistence_emits_replicate_restore_init() {
+        let mut spec = base_spec();
+        spec.persistence = Some(persistence_spec());
+        let dep = build_persisted_deployment("console", &spec);
+        let inits = dep
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .init_containers
+            .expect("init containers must be present");
+        assert!(
+            inits.iter().any(|c| c.name == "replicate-restore"),
+            "single-DB persistence must inject a replicate-restore initContainer"
+        );
+    }
+
+    #[test]
+    fn persistence_emits_replicate_sidecar() {
+        let mut spec = base_spec();
+        spec.persistence = Some(persistence_spec());
+        let dep = build_persisted_deployment("console", &spec);
+        let containers = dep.spec.unwrap().template.spec.unwrap().containers;
+        assert!(
+            containers.iter().any(|c| c.name == "replicate"),
+            "persistence must inject a `replicate` sidecar container"
+        );
+    }
+
+    #[test]
+    fn persistence_mounts_app_db_on_main_and_sidecar() {
+        let mut spec = base_spec();
+        spec.persistence = Some(persistence_spec());
+        let dep = build_persisted_deployment("console", &spec);
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+
+        // app-db volume exists on the pod.
+        let vols = pod.volumes.expect("volumes must be on pod spec");
+        assert!(
+            vols.iter().any(|v| v.name == "app-db"),
+            "app-db volume must be on the pod"
+        );
+
+        let data_dir = "/var/lib/hanzo/console";
+        // Mounted at data_dir on the MAIN container (containers[0]).
+        let main = &pod.containers[0];
+        let main_vms = main.volume_mounts.as_ref().expect("main mounts");
+        assert!(
+            main_vms
+                .iter()
+                .any(|m| m.name == "app-db" && m.mount_path == data_dir),
+            "main container must mount app-db at the data_dir"
+        );
+        // Mounted at data_dir on the sidecar.
+        let sidecar = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "replicate")
+            .expect("replicate sidecar");
+        let side_vms = sidecar.volume_mounts.as_ref().expect("sidecar mounts");
+        assert!(
+            side_vms
+                .iter()
+                .any(|m| m.name == "app-db" && m.mount_path == data_dir),
+            "replicate sidecar must mount app-db at the data_dir"
+        );
+    }
+
+    #[test]
+    fn persistence_configmap_has_bucket_and_endpoint() {
+        let p = resolved_persistence("console", &persistence_spec());
+        let yml = render_replicate_yml(&p);
+        assert!(yml.contains("bucket: console-db"), "must carry the bucket");
+        assert!(
+            yml.contains("endpoint: http://s3.hanzo.svc:9000"),
+            "must carry the http:// endpoint (scheme is load-bearing)"
+        );
+        assert!(
+            yml.contains("force-path-style: true"),
+            "must carry force-path-style for SeaweedFS"
+        );
+        assert!(
+            yml.contains("path: /var/lib/hanzo/console/app.db"),
+            "single-DB mode must point at the data_dir/db_path file"
+        );
+    }
+
+    #[test]
+    fn persistence_dir_mode_watches_and_omits_restore_init() {
+        let mut pspec = persistence_spec();
+        pspec.dir_mode = true;
+        pspec.db_path = String::new();
+        let p = resolved_persistence("console", &pspec);
+
+        // ConfigMap uses dir: + watch: true, NOT a single path:.
+        let yml = render_replicate_yml(&p);
+        assert!(
+            yml.contains("dir: /var/lib/hanzo/console"),
+            "dir_mode emits dir:"
+        );
+        assert!(yml.contains("watch: true"), "dir_mode emits watch: true");
+        assert!(
+            yml.contains("pattern: \"**/*.db\""),
+            "dir_mode emits the glob, quoted (a bare `*` scalar is invalid YAML)"
+        );
+        assert!(
+            !yml.contains("\n    path:"),
+            "dir_mode must NOT emit a single path:"
+        );
+
+        // No restore init in dir_mode.
+        let mut spec = base_spec();
+        spec.persistence = Some(pspec);
+        let dep = build_persisted_deployment("console", &spec);
+        let inits = dep.spec.unwrap().template.spec.unwrap().init_containers;
+        let has_restore = inits
+            .map(|v| v.iter().any(|c| c.name == "replicate-restore"))
+            .unwrap_or(false);
+        assert!(
+            !has_restore,
+            "dir_mode must NOT inject a restore initContainer"
+        );
     }
 }
