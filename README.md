@@ -19,8 +19,8 @@ shape must land in both impls.
 
 ## What it manages
 
-Kinds at `<api-group>/v1`, with three legacy `v1alpha1` compat aliases
-for existing CRs in cluster.
+Kinds at `<api-group>/v1`. No compat aliases — the v1 Kinds are the one
+way.
 
 | Kind        | Purpose                                                   | Materializes |
 |-------------|-----------------------------------------------------------|--------------|
@@ -34,11 +34,10 @@ for existing CRs in cluster.
 | NodeFleet   | Pinned node fleet                                         | StatefulSet, Services |
 | Ingress     | Multi-domain routing with cert-manager TLS                | Multiple Ingress resources |
 | DNS         | Multi-tenant CoreDNS deployment                           | Deployment, Service |
-| BaseApp     | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
+| Base        | hanzoai/base-ha cluster (Quasar-pinned writer)            | StatefulSet, headless + ClusterIP Services |
 | IAM / KMS / LLM / Indexer / Explorer | Thin facades over Service          | Same as Service |
 | SPA / Static / Queue / Observability / Function | App-shaped facades            | Service / Datastore facades |
 | Chain / Validator | Sub-resources of Network (NoOp stubs)               | — |
-| HanzoService / HanzoDatastore / HanzoDNS | v1alpha1 legacy aliases (compat) | Delegate to canonical reconcilers |
 
 ## Critical invariant
 
@@ -113,7 +112,7 @@ k8s/crds/               generated CRD YAMLs per universe
 - Never `:latest`, `:main`, `:dev` — semver tags only (`vX.Y.Z`).
 - amd64 only (arm64 paused per global LLM.md 2026-04-27).
 - Honor `spec.env/volumes/volumeMounts` — the load-bearing assertion.
-- Edition `2021`, Rust 1.79+, kube-rs 0.87, k8s-openapi 0.20 (v1_28).
+- Edition `2021`, Rust 1.79+, kube 4, k8s-openapi 0.28 (v1_33), schemars 1, jiff (not chrono).
 
 ## License
 
