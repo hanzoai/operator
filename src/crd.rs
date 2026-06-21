@@ -1,15 +1,14 @@
 //! Custom Resource Definitions for the Hanzo operator.
 //!
-//! All 29 Kinds at `hanzo.ai/v1` (the compile-time default). For other
+//! All 26 Kinds at `hanzo.ai/v1` (the compile-time default). For other
 //! universes (lux.cloud, zoo.cloud, osage.cloud), generate CRD YAMLs with
 //! the `generate-crd-yaml` binary, which rewrites the group at install time.
 //!
-//! ## v0.3.0 schema
+//! ## v0.6.0 schema — compat-free, one way only
 //!
-//! - Legacy `HanzoService`/`HanzoDatastore`/`HanzoDNS` removed (one way only).
-//! - `BaseApp` renamed to `Base`.
-//! - 4 new Kinds: `SPA`, `Queue`, `Observability`, `Function`.
-//! - Run `scripts/migrate-v0.2-to-v0.3.sh` before rolling v0.3.0 to cluster.
+//! - Legacy `v1alpha1` aliases `HanzoService`/`HanzoDatastore`/`HanzoDNS`
+//!   dropped entirely — no compat Kinds, the v1 Kinds are the one way.
+//! - `BaseApp` renamed to the bare `Base` (`bases.hanzo.ai`, kind `Base`).
 //!
 //! ## Schemars + k8s-openapi
 //!
@@ -1073,10 +1072,9 @@ pub struct DNSStatus {
 }
 
 // ============================================================================
-// BaseApp Kind — hanzoai/base-ha cluster (Hanzo Base, IAM-native). Canonical
-// Kind name at `bootno.de/v1` is `BaseApp` (plural `baseapps`, shortname
-// `bapp`); the same Kind is exposed here under the configured white-label
-// group (default `hanzo.ai`).
+// Base Kind — hanzoai/base-ha cluster (Hanzo Base, IAM-native). Bare-named
+// `Base` (plural `bases`, singular `base`, shortname `bapp`); exposed under
+// the configured white-label group (default `hanzo.ai`).
 // ============================================================================
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -1102,14 +1100,15 @@ pub struct BaseGatewaySpec {
 #[kube(
     group = "hanzo.ai",
     version = "v1",
-    kind = "BaseApp",
-    plural = "baseapps",
+    kind = "Base",
+    plural = "bases",
+    singular = "base",
     namespaced,
-    status = "BaseAppStatus",
+    status = "BaseStatus",
     shortname = "bapp"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct BaseAppSpec {
+pub struct BaseSpec {
     pub image: ImageSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i32>,
@@ -1146,7 +1145,7 @@ pub struct BaseAppSpec {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct BaseAppStatus {
+pub struct BaseStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<Phase>,
     #[serde(default)]
@@ -1438,55 +1437,6 @@ pub struct ObservabilityKindSpec(pub ServiceSpec);
 )]
 #[serde(rename_all = "camelCase")]
 pub struct FunctionKindSpec(pub ServiceSpec);
-
-// ============================================================================
-// Backcompat alias Kinds — HanzoService / HanzoDatastore / HanzoDNS
-// ============================================================================
-//
-// These mirror the Go `api/v1alpha1` legacy aliases: distinct Kinds that
-// reuse the canonical Spec/Status verbatim and delegate to the SAME
-// controller logic as their base Kind. Newtype facades over ServiceSpec /
-// DatastoreSpec / DNSSpec — identical shape to `Indexer` above. No
-// duplicated reconcile: their controllers call the base inner handler.
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "HanzoService",
-    plural = "hanzoservices",
-    namespaced,
-    status = "ServiceStatus",
-    shortname = "hzsvc"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoServiceSpec(pub ServiceSpec);
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "HanzoDatastore",
-    plural = "hanzodatastores",
-    namespaced,
-    status = "DatastoreStatus",
-    shortname = "hzds"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoDatastoreSpec(pub DatastoreSpec);
-
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "HanzoDNS",
-    plural = "hanzodnses",
-    namespaced,
-    status = "DNSStatus",
-    shortname = "hzdns"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct HanzoDNSSpec(pub DNSSpec);
 
 // ============================================================================
 // LuxRuntime Kind — luxd validator-set deployment (mirrors Go api/v1
