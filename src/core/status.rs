@@ -6,8 +6,10 @@
 //! ...). This module centralises the condition mint helpers so the wire shape
 //! stays identical across operators.
 
-use chrono::Utc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
+// k8s-openapi 0.28 backs meta/v1 Time with jiff::Timestamp, so condition
+// timestamps are minted with jiff rather than chrono.
+use jiff::Timestamp;
 
 /// Condition messages are truncated to this many chars to keep a misbehaving
 /// reconciler from blowing the etcd object size limit on a hot loop.
@@ -61,7 +63,7 @@ pub fn synced_ok(generation: i64) -> Condition {
         status: "True".to_string(),
         reason: reason::SYNC_OK.to_string(),
         message: "reconcile completed".to_string(),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: Some(generation),
     }
 }
@@ -73,7 +75,7 @@ pub fn synced_failed(generation: i64, why: &str, msg: &str) -> Condition {
         status: "False".to_string(),
         reason: why.to_string(),
         message: truncate_message(msg),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: Some(generation),
     }
 }
@@ -85,7 +87,7 @@ pub fn ready_true(generation: i64, msg: &str) -> Condition {
         status: "True".to_string(),
         reason: reason::SYNC_OK.to_string(),
         message: truncate_message(msg),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: Some(generation),
     }
 }
@@ -97,7 +99,7 @@ pub fn ready_false(generation: i64, why: &str, msg: &str) -> Condition {
         status: "False".to_string(),
         reason: why.to_string(),
         message: truncate_message(msg),
-        last_transition_time: Time(Utc::now()),
+        last_transition_time: Time(Timestamp::now()),
         observed_generation: Some(generation),
     }
 }

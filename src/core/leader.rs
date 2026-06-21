@@ -122,7 +122,10 @@ impl LeaderElection {
     }
 
     async fn try_acquire_or_renew(&self, leases: &Api<Lease>) -> anyhow::Result<bool> {
-        let now = chrono::Utc::now();
+        // k8s-openapi 0.28 backs meta/v1 MicroTime with jiff::Timestamp, so the
+        // lease clock is jiff. Timestamp's Display is RFC3339 — accepted by the
+        // API server for the JSON-merge patch timestamps below.
+        let now = jiff::Timestamp::now();
         let lease_name = self.config.lease_name.as_str();
 
         match leases.get(lease_name).await {
@@ -136,14 +139,14 @@ impl LeaderElection {
                 let transitions = spec.and_then(|s| s.lease_transitions).unwrap_or(0);
 
                 let is_expired = match renew_time {
-                    Some(t) => now.signed_duration_since(t).num_seconds() > duration as i64,
+                    Some(t) => now.duration_since(t).as_secs() > duration as i64,
                     None => true,
                 };
 
                 if holder == Some(self.identity.as_str()) {
                     let patch = serde_json::json!({
                         "spec": {
-                            "renewTime": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                            "renewTime": now.to_string(),
                         }
                     });
                     leases
@@ -155,8 +158,8 @@ impl LeaderElection {
                         "spec": {
                             "holderIdentity": self.identity,
                             "leaseDurationSeconds": LEASE_DURATION_SECONDS,
-                            "acquireTime": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                            "renewTime": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                            "acquireTime": now.to_string(),
+                            "renewTime": now.to_string(),
                             "leaseTransitions": transitions + 1,
                         }
                     });
@@ -187,6 +190,9 @@ impl LeaderElection {
                         acquire_time: Some(MicroTime(now)),
                         renew_time: Some(MicroTime(now)),
                         lease_transitions: Some(0),
+                        // New optional coordinated-lease fields in k8s 1.33's
+                        // LeaseSpec — we don't use coordinated leader election.
+                        ..Default::default()
                     }),
                 };
                 leases.create(&PostParams::default(), &lease).await?;
