@@ -1,6 +1,6 @@
 //! Hanzo Operator — Rust port (canonical for all universes).
 //!
-//! Manages 29 CRD Kinds at a configurable API group (default `hanzo.ai`).
+//! Manages 26 CRD Kinds at a configurable API group (default `hanzo.ai`).
 //! One binary serves Hanzo, Lux, Zoo, and Osage universes (and any
 //! white-label tenant) via
 //! `--api-group` / `OPERATOR_API_GROUP`.
@@ -215,7 +215,7 @@ async fn run_all_controllers(
             api_group.clone()
         ),
         controllers::dns::run_dns_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::baseapp::run_baseapp_controller(
+        controllers::base::run_base_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()
@@ -263,22 +263,7 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        // v0.3.4: union with go/ — Hanzo backcompat aliases + blockchain Kinds.
-        controllers::hanzo_service::run_hanzo_service_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::hanzo_datastore::run_hanzo_datastore_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::hanzo_dns::run_hanzo_dns_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
+        // v0.3.4: union with go/ — blockchain Kinds.
         controllers::luxruntime::run_luxruntime_controller(
             client.clone(),
             namespace.clone(),
