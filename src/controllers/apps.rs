@@ -551,14 +551,11 @@ fn rollout_complete(dep: &Deployment) -> bool {
 /// the apps view at `platform.hanzo.ai/apps` and via `kubectl get events`.
 async fn emit_event(client: &Client, app: &AppView, kind: &str, reason: &str, message: &str) {
     let namespace = app.namespace.as_deref().unwrap_or("default");
-    let now = chrono::Utc::now();
+    // k8s-openapi 0.28 backs meta/v1 Time + MicroTime with jiff::Timestamp.
+    let now = jiff::Timestamp::now();
     // A unique-ish name; the operator is the single writer so a timestamp suffix
     // is enough to avoid 409s within a namespace.
-    let ev_name = format!(
-        "apps-{}-{}",
-        app.app,
-        now.timestamp_nanos_opt().unwrap_or(0)
-    );
+    let ev_name = format!("apps-{}-{}", app.app, now.as_nanosecond());
     let event = Event {
         metadata: ObjectMeta {
             name: Some(ev_name),
