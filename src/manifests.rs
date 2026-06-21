@@ -289,7 +289,8 @@ pub fn build_statefulset(
         spec: Some(StatefulSetSpec {
             replicas,
             min_ready_seconds: Some(10),
-            service_name: service_name.to_string(),
+            // k8s 1.33: StatefulSetSpec.service_name is now Option<String>.
+            service_name: Some(service_name.to_string()),
             update_strategy: Some(StatefulSetUpdateStrategy {
                 type_: Some("RollingUpdate".to_string()),
                 ..Default::default()
@@ -624,10 +625,11 @@ pub fn build_network_policy(
             ..Default::default()
         },
         spec: Some(K8sNetworkPolicySpec {
-            pod_selector: LabelSelector {
+            // k8s 1.33: NetworkPolicySpec.pod_selector is now Option<LabelSelector>.
+            pod_selector: Some(LabelSelector {
                 match_labels: Some(selector_labels_map),
                 ..Default::default()
-            },
+            }),
             policy_types: Some(vec!["Ingress".to_string()]),
             ingress,
             ..Default::default()
@@ -724,7 +726,9 @@ pub fn primary_port(ports: &[CrServicePort]) -> i32 {
 
 /// Build a PersistentVolumeClaim template for a StatefulSet.
 pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> PersistentVolumeClaim {
-    use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, ResourceRequirements as K8sRR};
+    // k8s 1.33: PersistentVolumeClaimSpec.resources is now the dedicated
+    // VolumeResourceRequirements type (requests/limits only, no `claims`).
+    use k8s_openapi::api::core::v1::{PersistentVolumeClaimSpec, VolumeResourceRequirements};
     use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
     PersistentVolumeClaim {
         metadata: ObjectMeta {
@@ -738,14 +742,13 @@ pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> Persis
             } else {
                 Some(storage_class.to_string())
             },
-            resources: Some(K8sRR {
+            resources: Some(VolumeResourceRequirements {
                 requests: Some({
                     let mut m = BTreeMap::new();
                     m.insert("storage".to_string(), Quantity(size.to_string()));
                     m
                 }),
                 limits: None,
-                ..Default::default()
             }),
             ..Default::default()
         }),
