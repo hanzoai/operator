@@ -422,10 +422,12 @@ impl ZapClient {
     }
 
     async fn connect_once(addr: &str, node_id: &[u8]) -> Result<Self> {
-        let mut stream = TcpStream::connect(addr).await.map_err(|e| ZapError::Connect {
-            addr: addr.to_string(),
-            source: e,
-        })?;
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| ZapError::Connect {
+                addr: addr.to_string(),
+                source: e,
+            })?;
         // Cork small writes — the handshake is one frame, the call is another.
         let _ = stream.set_nodelay(true);
 
@@ -473,8 +475,8 @@ impl ZapClient {
         let pt = base64::engine::general_purpose::STANDARD
             .decode(resp.value.as_bytes())
             .map_err(|e| ZapError::DecodeResponse(format!("base64 decode: {e}")))?;
-        let s = String::from_utf8(pt)
-            .map_err(|e| ZapError::DecodeResponse(format!("utf-8: {e}")))?;
+        let s =
+            String::from_utf8(pt).map_err(|e| ZapError::DecodeResponse(format!("utf-8: {e}")))?;
         Ok(s)
     }
 
@@ -491,7 +493,10 @@ impl ZapClient {
         let inner = build_object_with_bytes_field(&payload, 8, op << 8);
 
         // Wrap in the Call correlation header [reqID || reqFlag] and send.
-        let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        let req_id = self
+            .next_req_id
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
         let mut wrapped = Vec::with_capacity(8 + inner.len());
         wrapped.extend_from_slice(&req_id.to_le_bytes());
         wrapped.extend_from_slice(&REQ_FLAG_REQUEST.to_le_bytes());
@@ -669,7 +674,10 @@ mod tests {
         buf[..4].copy_from_slice(MAGIC);
         LittleEndian::write_u16(&mut buf[4..6], 99);
         LittleEndian::write_u32(&mut buf[12..16], HEADER_SIZE as u32);
-        assert!(matches!(parse_header(&buf), Err(ZapError::UnsupportedVersion(99))));
+        assert!(matches!(
+            parse_header(&buf),
+            Err(ZapError::UnsupportedVersion(99))
+        ));
     }
 
     #[test]
@@ -744,7 +752,10 @@ mod tests {
     #[test]
     fn derive_node_id_fits_handshake_field() {
         let id = derive_node_id("anything");
-        assert!(id.len() <= HANDSHAKE_ID_MAX, "derived NodeID must fit handshake");
+        assert!(
+            id.len() <= HANDSHAKE_ID_MAX,
+            "derived NodeID must fit handshake"
+        );
     }
 
     #[test]
