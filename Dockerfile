@@ -3,8 +3,9 @@
 # Build from the repo root: `docker build .`
 # Image: ghcr.io/hanzoai/operator:vX.Y.Z (Go sibling: ghcr.io/luxfi/operator).
 #
-# Builder
-FROM rust:1.79-bookworm AS builder
+# Builder — Rust 1.95: deps (clap_lex 1.1.0 via clap 4.6) require edition2024
+# (stabilized in 1.85); pinned to the toolchain that builds the workspace.
+FROM rust:1.95-bookworm AS builder
 
 WORKDIR /build
 
