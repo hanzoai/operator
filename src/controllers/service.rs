@@ -492,6 +492,17 @@ async fn reconcile_service_inner(
                 pod.init_containers = Some(inits);
             }
         }
+        // Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root
+        // image write a persistence PVC (the kubelet chowns the volume to this
+        // GID + adds it to every container's supplementary groups).
+        if let Some(fsg) = spec.fs_group {
+            if let Some(pod) = d_spec.template.spec.as_mut() {
+                pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
+                    fs_group: Some(fsg),
+                    ..Default::default()
+                });
+            }
+        }
     }
     set_owner(&mut deploy.metadata.owner_references, &owner);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
