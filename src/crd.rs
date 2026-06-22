@@ -378,6 +378,14 @@ pub struct ServiceSpec {
     /// auto-wires the restore init + replication sidecar + ConfigMap + PVC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistence: Option<PersistenceSpec>,
+    /// Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+    /// (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+    /// kubelet chowns the volume to this GID + adds it to every container's
+    /// supplementary groups, so the app can write. Omit for root images
+    /// (e.g. `console`), which already write any volume. Opt-in so changing
+    /// it never restarts unrelated persistence services.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_group: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
