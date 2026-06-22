@@ -30,10 +30,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libssl3 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN useradd -r -g nogroup -s /sbin/nologin operator
+RUN useradd -r -u 65532 -g nogroup -s /sbin/nologin operator
 
 COPY --from=builder /build/target/release/operator /usr/local/bin/operator
 COPY --from=builder /build/target/release/generate-crd-yaml /usr/local/bin/generate-crd-yaml
 
-USER operator
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/operator"]
