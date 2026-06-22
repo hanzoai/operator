@@ -380,3 +380,72 @@ pub fn build_condition(
         observed_generation: Some(generation),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `configMap` volume source (e.g. `status`'s gatus config) must survive
+    /// the CR-JSON → `Volume` deserialize → `to_k8s` round-trip. The flattened
+    /// `serde_json::Value` source field is the load-bearing part: if it drops
+    /// the source, the operator emits a sourceless volume and the app's config
+    /// never mounts (the `status` gatus "configuration file not found" crash).
+    #[test]
+    fn volume_configmap_source_survives_round_trip() {
+        let cr = serde_json::json!({"name": "config", "configMap": {"name": "status-config"}});
+        let v: Volume = serde_json::from_value(cr).expect("deserialize volume");
+        assert_eq!(v.name, "config");
+        assert!(
+            v.source.get("configMap").is_some(),
+            "flattened source must capture the configMap key, got {}",
+            v.source
+        );
+        let k = v.to_k8s();
+        assert_eq!(k.name, "config");
+        let cm = k.config_map.expect("config_map source must survive to_k8s");
+        assert_eq!(cm.name, "status-config");
+    }
+
+    /// A `persistentVolumeClaim` source (e.g. `status`'s data dir) must survive
+    /// the same round-trip.
+    #[test]
+    fn volume_pvc_source_survives_round_trip() {
+        let cr = serde_json::json!({
+            "name": "data",
+            "persistentVolumeClaim": {"claimName": "status-data"}
+        });
+        let v: Volume = serde_json::from_value(cr).expect("deserialize volume");
+        let k = v.to_k8s();
+        let pvc = k
+            .persistent_volume_claim
+            .expect("pvc source must survive to_k8s");
+        assert_eq!(pvc.claim_name, "status-data");
+    }
+
+    /// An env var sourced from a secret (with `optional: true`) must produce a
+    /// `valueFrom` and NO `value` — never both. k8s rejects an EnvVar carrying
+    /// both (`may not be specified when value is not empty`), which is the
+    /// `sign` reconcile failure mode.
+    #[test]
+    fn env_var_secret_ref_has_value_from_not_value() {
+        let e = EnvVar {
+            name: "NEXTAUTH_SECRET".into(),
+            value: None,
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: "sign-secrets".into(),
+                    key: "NEXTAUTH_SECRET".into(),
+                    optional: Some(true),
+                }),
+                ..Default::default()
+            }),
+        };
+        let k = e.to_k8s();
+        assert!(k.value.is_none(), "secret-sourced env must not set value");
+        let vf = k.value_from.expect("value_from must be set");
+        assert_eq!(
+            vf.secret_key_ref.expect("secret_key_ref").optional,
+            Some(true)
+        );
+    }
+}
