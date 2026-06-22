@@ -81,6 +81,13 @@ async fn readyz(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // rustls 0.23 compiles both aws-lc-rs (reqwest) and ring (kube) providers, so
+    // the process-level CryptoProvider is ambiguous and the first TLS handshake
+    // panics. Install aws-lc-rs explicitly before any client is built.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("install rustls aws-lc-rs CryptoProvider");
+
     let args = Args::parse();
 
     // Logging.
