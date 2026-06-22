@@ -123,9 +123,13 @@ impl LeaderElection {
 
     async fn try_acquire_or_renew(&self, leases: &Api<Lease>) -> anyhow::Result<bool> {
         // k8s-openapi 0.28 backs meta/v1 MicroTime with jiff::Timestamp, so the
-        // lease clock is jiff. Timestamp's Display is RFC3339 — accepted by the
-        // API server for the JSON-merge patch timestamps below.
-        let now = jiff::Timestamp::now();
+        // lease clock is jiff. k8s MicroTime is MICROSECOND precision; jiff's
+        // default nanosecond RFC3339 (9 fractional digits) is rejected by the
+        // apiserver's Lease validation ("cannot parse ...Z as Z07:00"), so we
+        // truncate to microseconds for both the JSON-merge patch and typed writes.
+        let now = jiff::Timestamp::now()
+            .round(jiff::Unit::Microsecond)
+            .unwrap_or_else(|_| jiff::Timestamp::now());
         let lease_name = self.config.lease_name.as_str();
 
         match leases.get(lease_name).await {
