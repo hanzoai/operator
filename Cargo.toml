@@ -4,7 +4,7 @@
 
 [package]
 name = "operator"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "BSD-3-Clause"
 repository = "https://github.com/hanzoai/operator"
@@ -59,6 +59,10 @@ sha2 = "0.10"
 # core + the aws-lc-rs provider + rustls-platform-verifier (cert roots), so we
 # no longer carry OpenSSL. `http2` keeps the h2 support 0.12 enabled by default.
 reqwest = { version = "0.13", default-features = false, features = ["json", "http2", "rustls"] }
+# rustls 0.23 compiles both aws-lc-rs (via reqwest) and ring (via kube) providers;
+# install aws-lc-rs explicitly at startup (main.rs) to resolve the otherwise-ambiguous
+# process-level CryptoProvider — rustls panics on first TLS use without this.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 axum = "0.8"
 
 [dev-dependencies]
