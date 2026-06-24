@@ -279,6 +279,21 @@ fn main_app_db_mount(p: &PersistenceSpec) -> crd_types::VolumeMount {
     }
 }
 
+/// Pure policy: map `spec.fsGroup` to a pod-level `securityContext`. `Some(gid)`
+/// emits `securityContext.fsGroup = gid` (kubelet chowns mounted volumes to that
+/// GID + adds it as a supplementary group on every container, so a non-root
+/// image — e.g. distroless uid/gid 65532 — can MkdirAll its data dir on a fresh
+/// PVC attach). `None` emits no securityContext (root images write any volume).
+/// Decomplected from the reconcile body so the property is unit-testable.
+fn pod_security_context(
+    fs_group: Option<i64>,
+) -> Option<k8s_openapi::api::core::v1::PodSecurityContext> {
+    fs_group.map(|fsg| k8s_openapi::api::core::v1::PodSecurityContext {
+        fs_group: Some(fsg),
+        ..Default::default()
+    })
+}
+
 #[derive(Clone)]
 pub struct Ctx {
     pub client: Client,
@@ -493,14 +508,12 @@ async fn reconcile_service_inner(
             }
         }
         // Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root
-        // image write a persistence PVC (the kubelet chowns the volume to this
-        // GID + adds it to every container's supplementary groups).
-        if let Some(fsg) = spec.fs_group {
+        // image write a persistence/RWO PVC (the kubelet chowns the volume to
+        // this GID + adds it to every container's supplementary groups), so the
+        // boot-time MkdirAll under the data dir succeeds on a FRESH attach.
+        if let Some(sc) = pod_security_context(spec.fs_group) {
             if let Some(pod) = d_spec.template.spec.as_mut() {
-                pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
-                    fs_group: Some(fsg),
-                    ..Default::default()
-                });
+                pod.security_context = Some(sc);
             }
         }
     }
@@ -798,6 +811,38 @@ mod tests {
         let vols = pod_spec.volumes.expect("volumes must be on pod spec");
         assert_eq!(vols.len(), 1);
         assert_eq!(vols[0].name, "data");
+    }
+
+    // ---- Pod securityContext.fsGroup ----
+
+    #[test]
+    fn fs_group_renders_pod_security_context() {
+        // A non-root image (e.g. cloud, distroless uid/gid 65532) sets
+        // spec.fsGroup so the kubelet chowns its RWO/persistence PVC to that
+        // GID on every attach — the fix for `mkdir /var/lib: permission denied`
+        // crashloops on a fresh volume attach.
+        let sc = pod_security_context(Some(65532)).expect("fsGroup set => securityContext present");
+        assert_eq!(
+            sc.fs_group,
+            Some(65532),
+            "securityContext.fsGroup must equal spec.fsGroup so the boot MkdirAll succeeds"
+        );
+    }
+
+    #[test]
+    fn no_fs_group_omits_pod_security_context() {
+        // Omitted for root images, which already write any volume; the operator
+        // must not stamp an empty securityContext (keeps SSA churn-free).
+        assert!(
+            pod_security_context(None).is_none(),
+            "no spec.fsGroup => no pod securityContext"
+        );
+    }
+
+    #[test]
+    fn base_spec_has_no_fs_group_by_default() {
+        // Guards the opt-in contract: a Service without fsGroup stays untouched.
+        assert!(base_spec().fs_group.is_none());
     }
 
     // ---- Replicas / HPA interaction ----
