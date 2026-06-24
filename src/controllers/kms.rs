@@ -1,5 +1,5 @@
 //! KMS reconciler — newtype facade over Service. The Hanzo KMS secret-management
-//! service (Infisical) runs as an ordinary Service-shaped workload; the KMS
+//! service runs as an ordinary Service-shaped workload; the KMS
 //! CRD is the semantic marker for "this is the secret manager", letting
 //! platform-side tooling key off the Kind without inspecting the inner spec.
 
