@@ -424,7 +424,9 @@ async fn drive_one(client: &Client, app: &AppView, target_image: &str) -> crate:
             { "name": container_name, "image": target_image }
         ]}}}
     });
-    let pp = PatchParams::apply(FIELD_MANAGER).force();
+    // Strategic-merge (not Apply) patch — `force` is Apply-only and kube-rs
+    // rejects the combination, which would make every real drive patch fail.
+    let pp = PatchParams::apply(FIELD_MANAGER);
     deps.patch(&dep_name, &pp, &Patch::Strategic(&patch))
         .await
         .map_err(crate::core::OperatorError::KubeApi)?;
