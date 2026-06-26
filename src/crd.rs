@@ -388,7 +388,7 @@ pub struct ServiceSpec {
     pub fs_group: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -484,7 +484,7 @@ pub struct DatastoreSpec {
     pub part_of: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DatastoreStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
