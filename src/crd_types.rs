@@ -147,7 +147,7 @@ pub struct Container {
     pub image_pull_policy: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
     #[serde(rename = "type")]
@@ -161,7 +161,7 @@ pub struct Condition {
     pub observed_generation: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
 pub struct Time(pub String);
 
 // ---- Conversion to k8s-openapi types (used inside controllers) ----
@@ -378,6 +378,23 @@ pub fn build_condition(
         // jiff-backed k8s meta/v1 Time at the boundary).
         last_transition_time: Some(Time(jiff::Timestamp::now().to_string())),
         observed_generation: Some(generation),
+    }
+}
+
+/// Carry each new condition's `last_transition_time` over from the matching
+/// existing condition when its `status` is unchanged (k8s convention: the
+/// transition time only moves on an actual transition). Without this the
+/// freshly-stamped `now()` makes the status differ every reconcile, so the
+/// status write bumps `resourceVersion` and re-triggers the controller's watch
+/// in a hot loop.
+pub fn preserve_condition_timestamps(new: &mut [Condition], old: &[Condition]) {
+    for nc in new.iter_mut() {
+        if let Some(oc) = old
+            .iter()
+            .find(|c| c.type_ == nc.type_ && c.status == nc.status)
+        {
+            nc.last_transition_time = oc.last_transition_time.clone();
+        }
     }
 }
 

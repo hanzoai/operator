@@ -305,12 +305,23 @@ async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr
         status.observed_generation,
     );
     upsert_condition(&mut status.conditions, cond);
-    let api: Api<DatastoreCR> = Api::namespaced(client.clone(), namespace);
-    let patch = serde_json::json!({"status": status});
-    // status is a Merge (not Apply) patch; `force` is Apply-only.
-    let pp = PatchParams::apply(apply::FIELD_MANAGER);
-    if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update Datastore status");
+    // Only write status when it actually changed (preserving condition
+    // transition times) — else patch_status bumps resourceVersion every
+    // reconcile and re-triggers the watch in a hot loop.
+    let changed = match cr.status.as_ref() {
+        Some(cur) => {
+            crd_types::preserve_condition_timestamps(&mut status.conditions, &cur.conditions);
+            *cur != status
+        }
+        None => true,
+    };
+    if changed {
+        let api: Api<DatastoreCR> = Api::namespaced(client.clone(), namespace);
+        let patch = serde_json::json!({"status": status});
+        let pp = PatchParams::apply(apply::FIELD_MANAGER);
+        if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
+            warn!(error = %e, "failed to update Datastore status");
+        }
     }
 }
 
