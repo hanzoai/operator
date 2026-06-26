@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::Service as CoreService;
+use k8s_openapi::api::core::v1::{Pod, Service as CoreService};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::Api;
 use kube::runtime::controller::{Action, Controller};
@@ -181,7 +181,8 @@ async fn reconcile_datastore_inner(
     );
     set_owner(&mut sts.metadata.owner_references, &owner);
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&stss, &sts).await?;
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    apply::apply_statefulset(&stss, &pods, &sts).await?;
 
     // ClusterIP Service for clients.
     let svc_ports = manifests::service_ports(&ports);
@@ -194,7 +195,7 @@ async fn reconcile_datastore_inner(
     );
     set_owner(&mut svc.metadata.owner_references, &owner);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &svc).await?;
+    apply::apply_service(&svcs, &svc).await?;
 
     // Headless Service for pod DNS.
     let mut hs = manifests::build_headless_service(
@@ -205,7 +206,7 @@ async fn reconcile_datastore_inner(
         sel_labels.clone(),
     );
     set_owner(&mut hs.metadata.owner_references, &owner);
-    apply::apply(&svcs, &hs).await?;
+    apply::apply_service(&svcs, &hs).await?;
 
     // Service aliases (backward-compatible DNS names).
     for alias in &spec.service_aliases {
@@ -217,7 +218,7 @@ async fn reconcile_datastore_inner(
             sel_labels.clone(),
         );
         set_owner(&mut a.metadata.owner_references, &owner);
-        apply::apply(&svcs, &a).await?;
+        apply::apply_service(&svcs, &a).await?;
     }
 
     info!(name, namespace, type_ = %spec.type_, "Datastore reconciled");
@@ -271,7 +272,8 @@ async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr
     upsert_condition(&mut status.conditions, cond);
     let api: Api<DatastoreCR> = Api::namespaced(client.clone(), namespace);
     let patch = serde_json::json!({"status": status});
-    let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
+    // status is a Merge (not Apply) patch; `force` is Apply-only.
+    let pp = PatchParams::apply(apply::FIELD_MANAGER);
     if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
         warn!(error = %e, "failed to update Datastore status");
     }
