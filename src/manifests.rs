@@ -17,7 +17,8 @@ use k8s_openapi::api::core::v1::{
     ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction, HTTPGetAction,
     Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PodSpec,
     PodTemplateSpec, Probe, ResourceRequirements as K8sResourceRequirements,
-    Service as CoreService, ServicePort, ServiceSpec as CoreServiceSpec, Volume, VolumeMount,
+    Service as CoreService, ServicePort, ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume,
+    VolumeMount,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -124,18 +125,56 @@ pub fn to_k8s_resources(spec: &ResourceRequirements) -> K8sResourceRequirements 
     }
 }
 
-/// Build an HTTP GET probe.
-pub fn build_http_probe(spec: &ProbeSpec) -> Probe {
+/// Build a probe that emits EXACTLY ONE Kubernetes handler.
+///
+/// Kubernetes rejects a probe carrying more than one of
+/// `httpGet`/`tcpSocket`/`exec` with a 422 `FieldValueForbidden` (the
+/// "may not specify more than 1 handler type" union error). This is the
+/// single point that guarantees the one-handler invariant: the handler is
+/// chosen by which optional field the CR set, with a deterministic
+/// precedence (`exec` > `tcpSocket` > `httpGet`) so a CR that over-specifies
+/// still renders one well-defined handler rather than an invalid union.
+pub fn build_probe(spec: &ProbeSpec) -> Probe {
+    let (http_get, tcp_socket, exec) = if let Some(e) = &spec.exec {
+        (
+            None,
+            None,
+            Some(ExecAction {
+                command: if e.command.is_empty() {
+                    None
+                } else {
+                    Some(e.command.clone())
+                },
+            }),
+        )
+    } else if let Some(t) = &spec.tcp_socket {
+        (
+            None,
+            Some(TCPSocketAction {
+                port: IntOrString::Int(t.port),
+                ..Default::default()
+            }),
+            None,
+        )
+    } else {
+        (
+            Some(HTTPGetAction {
+                path: Some(if spec.path.is_empty() {
+                    "/health".to_string()
+                } else {
+                    spec.path.clone()
+                }),
+                port: IntOrString::Int(spec.port),
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
+    };
     Probe {
-        http_get: Some(HTTPGetAction {
-            path: if spec.path.is_empty() {
-                Some("/health".to_string())
-            } else {
-                Some(spec.path.clone())
-            },
-            port: IntOrString::Int(spec.port),
-            ..Default::default()
-        }),
+        http_get,
+        tcp_socket,
+        exec,
         initial_delay_seconds: if spec.initial_delay_seconds > 0 {
             Some(spec.initial_delay_seconds)
         } else {
@@ -753,5 +792,87 @@ pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> Persis
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use crate::crd::{ExecAction as CrExec, ProbeSpec, TcpSocketAction as CrTcp};
+
+    fn http_spec() -> ProbeSpec {
+        ProbeSpec {
+            port: 8090,
+            ..Default::default()
+        }
+    }
+
+    /// Count how many of the three mutually-exclusive handlers a Probe carries.
+    /// Kubernetes 422s on anything other than exactly 1.
+    fn handler_count(p: &Probe) -> u8 {
+        p.http_get.is_some() as u8 + p.tcp_socket.is_some() as u8 + p.exec.is_some() as u8
+    }
+
+    #[test]
+    fn defaults_to_http_get_and_only_http_get() {
+        let p = build_probe(&http_spec());
+        assert_eq!(handler_count(&p), 1, "exactly one handler");
+        assert!(p.http_get.is_some());
+        assert_eq!(p.http_get.unwrap().path.as_deref(), Some("/health"));
+    }
+
+    #[test]
+    fn tcp_socket_is_the_only_handler_when_set() {
+        let p = build_probe(&ProbeSpec {
+            tcp_socket: Some(CrTcp { port: 8090 }),
+            ..ProbeSpec::default()
+        });
+        assert_eq!(handler_count(&p), 1, "exactly one handler — never a union");
+        assert!(p.tcp_socket.is_some());
+        assert!(p.http_get.is_none(), "no httpGet beside tcpSocket (the base 422)");
+        let port = p.tcp_socket.unwrap().port;
+        assert_eq!(port, IntOrString::Int(8090));
+    }
+
+    #[test]
+    fn exec_is_the_only_handler_when_set() {
+        let p = build_probe(&ProbeSpec {
+            exec: Some(CrExec {
+                command: vec!["sh".into(), "-c".into(), "true".into()],
+            }),
+            ..ProbeSpec::default()
+        });
+        assert_eq!(handler_count(&p), 1, "exactly one handler");
+        assert!(p.exec.is_some());
+        assert!(p.http_get.is_none());
+        assert!(p.tcp_socket.is_none());
+    }
+
+    #[test]
+    fn over_specified_probe_still_renders_exactly_one_handler() {
+        // A CR that sets path + tcpSocket + exec must NEVER produce a union
+        // (which is the 422). Precedence is deterministic: exec > tcpSocket > httpGet.
+        let mut s = ProbeSpec {
+            path: "/api/health".into(),
+            port: 8090,
+            tcp_socket: Some(CrTcp { port: 8090 }),
+            exec: Some(CrExec {
+                command: vec!["true".into()],
+            }),
+            ..ProbeSpec::default()
+        };
+        let p = build_probe(&s);
+        assert_eq!(handler_count(&p), 1);
+        assert!(p.exec.is_some(), "exec wins precedence");
+
+        s.exec = None;
+        let p = build_probe(&s);
+        assert_eq!(handler_count(&p), 1);
+        assert!(p.tcp_socket.is_some(), "tcpSocket wins over httpGet");
+
+        s.tcp_socket = None;
+        let p = build_probe(&s);
+        assert_eq!(handler_count(&p), 1);
+        assert!(p.http_get.is_some(), "httpGet is the fallback");
     }
 }

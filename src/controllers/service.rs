@@ -445,12 +445,8 @@ async fn reconcile_service_inner(
         vm_k8s,
         manifests::container_ports(&spec.ports),
         spec.resources.as_ref().map(manifests::to_k8s_resources),
-        spec.liveness_probe
-            .as_ref()
-            .map(manifests::build_http_probe),
-        spec.readiness_probe
-            .as_ref()
-            .map(manifests::build_http_probe),
+        spec.liveness_probe.as_ref().map(manifests::build_probe),
+        spec.readiness_probe.as_ref().map(manifests::build_probe),
     );
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
