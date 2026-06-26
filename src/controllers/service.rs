@@ -362,7 +362,9 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
 
     let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
     let patch = serde_json::json!({"status": status});
-    let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
+    // status is a Merge (not Apply) patch; `force` is Apply-only and kube-rs
+    // rejects the combination, so use a plain field-manager.
+    let pp = PatchParams::apply(apply::FIELD_MANAGER);
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!(error = %e, "failed to update Service status (CRD may not be installed)");
     }
@@ -519,7 +521,7 @@ async fn reconcile_service_inner(
     }
     set_owner(&mut deploy.metadata.owner_references, &owner);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&deps, &deploy).await?;
+    apply::apply_deployment(&deps, &deploy).await?;
 
     // 2b. Persistence ConfigMap (`replicate.yml`). Owned by the Service so it
     // is GC'd with the CR.
@@ -549,7 +551,7 @@ async fn reconcile_service_inner(
         );
         set_owner(&mut svc.metadata.owner_references, &owner);
         let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-        apply::apply(&svcs, &svc).await?;
+        apply::apply_service(&svcs, &svc).await?;
     }
 
     // 4. Ingress.

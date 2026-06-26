@@ -121,13 +121,13 @@ async fn reconcile_inner(
     );
     deploy.metadata.owner_references = Some(vec![owner.clone()]);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&deps, &deploy).await?;
+    apply::apply_deployment(&deps, &deploy).await?;
 
     let svc_ports = manifests::service_ports(&ports);
     let mut svc = manifests::build_service(name, namespace, labels.clone(), svc_ports, sel.clone());
     svc.metadata.owner_references = Some(vec![owner.clone()]);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &svc).await?;
+    apply::apply_service(&svcs, &svc).await?;
 
     if let Some(ing_spec) = &spec.ingress {
         if ing_spec.enabled {
