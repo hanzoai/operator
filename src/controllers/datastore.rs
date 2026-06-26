@@ -132,11 +132,35 @@ async fn reconcile_datastore_inner(
         .iter()
         .map(crd_types::EnvFromSource::to_k8s)
         .collect();
-    let vm_k8s: Vec<_> = spec
+
+    // The data volume. Preserve the LIVE volumeClaimTemplate name (the PVC name
+    // is `<vct>-<sts>-<ordinal>`, so renaming the VCT would bind a fresh empty
+    // PVC and strand the data); default to "data" for a fresh datastore. The
+    // controller MUST mount this VCT into the main container — the facade CRs
+    // (kv/docdb/sql/s3) carry no `volumeMounts`, so without this the engine runs
+    // on the ephemeral container FS while the PVC sits unmounted (data invisible).
+    let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
+    let data_volume_name = stss
+        .get_opt(name)
+        .await?
+        .and_then(|s| s.spec)
+        .and_then(|sp| sp.volume_claim_templates)
+        .and_then(|mut v| v.drain(..).next())
+        .and_then(|pvc| pvc.metadata.name)
+        .unwrap_or_else(|| "data".to_string());
+
+    let mut vm_k8s: Vec<k8s_openapi::api::core::v1::VolumeMount> = spec
         .volume_mounts
         .iter()
         .map(crd_types::VolumeMount::to_k8s)
         .collect();
+    if !vm_k8s.iter().any(|m| m.name == data_volume_name) {
+        vm_k8s.push(k8s_openapi::api::core::v1::VolumeMount {
+            name: data_volume_name.clone(),
+            mount_path: data_dir_for(&spec.type_).to_string(),
+            ..Default::default()
+        });
+    }
     let main = manifests::build_container(
         name,
         &manifests::image_ref(&image.repository, &image.tag),
@@ -155,7 +179,7 @@ async fn reconcile_datastore_inner(
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
 
     let pvc_template = manifests::build_pvc_template(
-        "data",
+        &data_volume_name,
         &spec.storage.storage_class_name,
         spec.storage.size.as_str(),
     );
@@ -180,7 +204,6 @@ async fn reconcile_datastore_inner(
         &format!("{}-hs", name),
     );
     set_owner(&mut sts.metadata.owner_references, &owner);
-    let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
     apply::apply_statefulset(&stss, &pods, &sts).await?;
 
@@ -233,6 +256,18 @@ fn default_port_for(type_: &str) -> i32 {
         "minio" => 9000,
         "nats" => 4222,
         _ => 8080,
+    }
+}
+
+/// Mount point for the data volume per engine. Postgres mounts the volume one
+/// level above `PGDATA` (`PGDATA=/var/lib/postgresql/data/pgdata`), the rest at
+/// their native data dir. Matches the pre-operator (Helm) layout so existing
+/// PVCs are read in place.
+fn data_dir_for(type_: &str) -> &'static str {
+    match type_ {
+        "postgresql" => "/var/lib/postgresql/data",
+        "docdb" => "/data/db",
+        _ => "/data", // valkey, minio, nats, generic
     }
 }
 
@@ -307,4 +342,18 @@ pub async fn run_datastore_controller(client: Client, namespace: String, api_gro
             }
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_matches_pre_operator_layout() {
+        assert_eq!(data_dir_for("postgresql"), "/var/lib/postgresql/data");
+        assert_eq!(data_dir_for("valkey"), "/data");
+        assert_eq!(data_dir_for("docdb"), "/data/db");
+        assert_eq!(data_dir_for("minio"), "/data");
+        assert_eq!(data_dir_for("anything-else"), "/data");
+    }
 }
