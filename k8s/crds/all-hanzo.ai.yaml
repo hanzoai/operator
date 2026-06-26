@@ -155,6 +155,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -4682,6 +4693,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -5512,6 +5534,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -6342,6 +6375,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -7543,6 +7587,525 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: manageddatabases.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    categories: []
+    kind: ManagedDatabase
+    plural: manageddatabases
+    shortNames:
+    - mdb
+    singular: manageddatabase
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ManagedDatabaseSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Per-tenant isolated database. Paid/isolated tenants get a dedicated
+              `Datastore`-family workload (StatefulSet + Service + headless + PVC); the
+              tenant picks the engine via the inner `DatastoreSpec.type` (postgresql /
+              valkey / docdb / minio). Unlike the `SQL`/`KV`/`DocDB`/`S3` facades it does
+              NOT force a fixed engine — the inner type flows through verbatim.
+              Reconciled by `controllers::managed_database`.
+            properties:
+              args:
+                items:
+                  type: string
+                type: array
+              backup:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  retentionDays:
+                    format: int32
+                    nullable: true
+                    type: integer
+                  s3Bucket:
+                    type: string
+                  s3CredentialsSecret:
+                    type: string
+                  s3Endpoint:
+                    type: string
+                  schedule:
+                    type: string
+                type: object
+              command:
+                items:
+                  type: string
+                type: array
+              credentialsSecret:
+                type: string
+              env:
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      nullable: true
+                      type: string
+                    valueFrom:
+                      nullable: true
+                      properties:
+                        configMapKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                        fieldRef:
+                          nullable: true
+                          properties:
+                            apiVersion:
+                              type: string
+                            fieldPath:
+                              type: string
+                          required:
+                          - fieldPath
+                          type: object
+                        secretKeyRef:
+                          nullable: true
+                          properties:
+                            key:
+                              type: string
+                            name:
+                              type: string
+                            optional:
+                              nullable: true
+                              type: boolean
+                          required:
+                          - key
+                          - name
+                          type: object
+                      type: object
+                  required:
+                  - name
+                  type: object
+                type: array
+              envFrom:
+                items:
+                  properties:
+                    configMapRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    prefix:
+                      type: string
+                    secretRef:
+                      nullable: true
+                      properties:
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                  type: object
+                type: array
+              image:
+                nullable: true
+                properties:
+                  pullPolicy:
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              kmsSecrets:
+                items:
+                  properties:
+                    credentialsRef:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    envSlug:
+                      type: string
+                    hostApi:
+                      type: string
+                    managedSecretName:
+                      type: string
+                    projectSlug:
+                      type: string
+                    resyncInterval:
+                      default: 0
+                      format: int32
+                      type: integer
+                    secretsPath:
+                      type: string
+                  required:
+                  - credentialsRef
+                  - envSlug
+                  - managedSecretName
+                  - projectSlug
+                  - secretsPath
+                  type: object
+                type: array
+              networkPolicy:
+                nullable: true
+                properties:
+                  allowFrom:
+                    items:
+                      properties:
+                        namespaceSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                        podSelector:
+                          nullable: true
+                          properties:
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              nullable: true
+                              type: object
+                          type: object
+                      type: object
+                    type: array
+                  allowIngress:
+                    default: false
+                    type: boolean
+                  allowIntraNamespace:
+                    nullable: true
+                    type: boolean
+                  enabled:
+                    nullable: true
+                    type: boolean
+                type: object
+              partOf:
+                type: string
+              ports:
+                items:
+                  properties:
+                    containerPort:
+                      format: int32
+                      type: integer
+                    name:
+                      type: string
+                    protocol:
+                      type: string
+                    servicePort:
+                      format: int32
+                      nullable: true
+                      type: integer
+                  required:
+                  - containerPort
+                  - name
+                  type: object
+                type: array
+              replicas:
+                format: int32
+                nullable: true
+                type: integer
+              resources:
+                nullable: true
+                properties:
+                  limits:
+                    additionalProperties:
+                      type: string
+                    nullable: true
+                    type: object
+                  requests:
+                    additionalProperties:
+                      type: string
+                    description: Map of resource name (e.g. `cpu`, `memory`) to quantity string.
+                    nullable: true
+                    type: object
+                type: object
+              serviceAliases:
+                items:
+                  type: string
+                type: array
+              serviceMonitor:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  interval:
+                    type: string
+                  metricsPath:
+                    type: string
+                  metricsPort:
+                    type: string
+                type: object
+              sidecars:
+                items:
+                  properties:
+                    args:
+                      items:
+                        type: string
+                      type: array
+                    command:
+                      items:
+                        type: string
+                      type: array
+                    env:
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          value:
+                            nullable: true
+                            type: string
+                          valueFrom:
+                            nullable: true
+                            properties:
+                              configMapKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                              fieldRef:
+                                nullable: true
+                                properties:
+                                  apiVersion:
+                                    type: string
+                                  fieldPath:
+                                    type: string
+                                required:
+                                - fieldPath
+                                type: object
+                              secretKeyRef:
+                                nullable: true
+                                properties:
+                                  key:
+                                    type: string
+                                  name:
+                                    type: string
+                                  optional:
+                                    nullable: true
+                                    type: boolean
+                                required:
+                                - key
+                                - name
+                                type: object
+                            type: object
+                        required:
+                        - name
+                        type: object
+                      type: array
+                    envFrom:
+                      items:
+                        properties:
+                          configMapRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                          prefix:
+                            type: string
+                          secretRef:
+                            nullable: true
+                            properties:
+                              name:
+                                type: string
+                              optional:
+                                nullable: true
+                                type: boolean
+                            required:
+                            - name
+                            type: object
+                        type: object
+                      type: array
+                    image:
+                      type: string
+                    imagePullPolicy:
+                      description: Image pull policy (Always / IfNotPresent / Never).
+                      type: string
+                    name:
+                      type: string
+                    volumeMounts:
+                      items:
+                        properties:
+                          mountPath:
+                            type: string
+                          name:
+                            type: string
+                          readOnly:
+                            nullable: true
+                            type: boolean
+                          subPath:
+                            type: string
+                        required:
+                        - mountPath
+                        - name
+                        type: object
+                      type: array
+                  required:
+                  - image
+                  - name
+                  type: object
+                type: array
+              storage:
+                properties:
+                  retentionPolicy:
+                    type: string
+                  size:
+                    description: Quantity string (e.g. `"10Gi"`).
+                    type: string
+                  storageClassName:
+                    type: string
+                required:
+                - size
+                type: object
+              type:
+                type: string
+              volumeMounts:
+                items:
+                  properties:
+                    mountPath:
+                      type: string
+                    name:
+                      type: string
+                    readOnly:
+                      nullable: true
+                      type: boolean
+                    subPath:
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              volumes:
+                items:
+                  properties:
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                type: array
+            required:
+            - storage
+            - type
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              connectionString:
+                type: string
+              lastBackup:
+                nullable: true
+                type: string
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                - null
+                nullable: true
+                type: string
+              readyReplicas:
+                default: 0
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: ManagedDatabase
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: chains.hanzo.ai
 spec:
   group: hanzo.ai
@@ -7955,6 +8518,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -8785,6 +9359,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -10003,6 +10588,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -10833,6 +11429,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:
@@ -11663,6 +12270,17 @@ spec:
                       type: object
                   type: object
                 type: array
+              fsGroup:
+                description: |-
+                  Pod-level `securityContext.fsGroup`. Set this when a NON-root image
+                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
+                  kubelet chowns the volume to this GID + adds it to every container's
+                  supplementary groups, so the app can write. Omit for root images
+                  (e.g. `console`), which already write any volume. Opt-in so changing
+                  it never restarts unrelated persistence services.
+                format: int64
+                nullable: true
+                type: integer
               image:
                 properties:
                   pullPolicy:

@@ -4,6 +4,7 @@
 //! Each type runs as a StatefulSet with a headless Service for pod DNS plus
 //! a ClusterIP Service for client connections.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -84,7 +85,15 @@ pub async fn reconcile_datastore(cr: Arc<DatastoreCR>, ctx: Arc<Ctx>) -> Result<
         .ok_or_else(|| OperatorError::Config("Datastore has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "Datastore");
-    reconcile_datastore_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
+    reconcile_datastore_inner(
+        &ctx.client,
+        &name,
+        &namespace,
+        &cr.spec,
+        owner,
+        &BTreeMap::new(),
+    )
+    .await?;
     write_datastore_status(&ctx.client, &name, &namespace, &cr).await;
     Ok(Action::requeue(Duration::from_secs(60)))
 }
@@ -97,7 +106,22 @@ pub async fn reconcile_datastore_inner_pub(
     spec: &DatastoreSpec,
     owner: OwnerReference,
 ) -> Result<()> {
-    reconcile_datastore_inner(client, name, namespace, spec, owner).await
+    reconcile_datastore_inner(client, name, namespace, spec, owner, &BTreeMap::new()).await
+}
+
+/// Like [`reconcile_datastore_inner_pub`] but stamps `extra_labels` onto the
+/// workload metadata + pod template (never the immutable selector). Used by
+/// the `ManagedDatabase` facade to tag per-tenant workloads so the control
+/// plane can scope discovery to one tenant.
+pub async fn reconcile_datastore_inner_labeled(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &DatastoreSpec,
+    owner: OwnerReference,
+    extra_labels: &BTreeMap<String, String>,
+) -> Result<()> {
+    reconcile_datastore_inner(client, name, namespace, spec, owner, extra_labels).await
 }
 
 async fn reconcile_datastore_inner(
@@ -106,13 +130,21 @@ async fn reconcile_datastore_inner(
     namespace: &str,
     spec: &DatastoreSpec,
     owner: OwnerReference,
+    extra_labels: &BTreeMap<String, String>,
 ) -> Result<()> {
     let image = spec
         .image
         .clone()
         .unwrap_or_else(|| default_image_for(&spec.type_));
 
-    let std_labels = manifests::standard_labels(name, &spec.type_, &spec.part_of, &image.tag);
+    let base_labels = manifests::standard_labels(name, &spec.type_, &spec.part_of, &image.tag);
+    // Merge tenant/extra labels into workload + pod-template metadata only;
+    // `selector_labels` stays minimal and immutable.
+    let std_labels = if extra_labels.is_empty() {
+        base_labels
+    } else {
+        manifests::merge_labels(&[&base_labels, extra_labels])
+    };
     let sel_labels = manifests::selector_labels(name);
 
     let ports = if spec.ports.is_empty() {
@@ -235,7 +267,42 @@ fn default_port_for(type_: &str) -> i32 {
     }
 }
 
-async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr: &DatastoreCR) {
+/// Best-effort, password-free in-cluster DSN for a datastore workload. Carries
+/// the scheme, ClusterIP service DNS, and client port only. The control plane
+/// reads this off `DatastoreStatus.connection_string` to discover tenant
+/// databases.
+pub fn connection_string_for(spec: &DatastoreSpec, name: &str, namespace: &str) -> String {
+    let port = spec
+        .ports
+        .first()
+        .map(|p| p.service_port.unwrap_or(p.container_port))
+        .unwrap_or_else(|| default_port_for(&spec.type_));
+    let host = format!("{name}.{namespace}.svc");
+    match spec.type_.as_str() {
+        "postgresql" => format!("postgresql://{host}:{port}"),
+        "valkey" => format!("redis://{host}:{port}"),
+        "docdb" => format!("mongodb://{host}:{port}"),
+        "minio" => format!("http://{host}:{port}"),
+        "nats" => format!("nats://{host}:{port}"),
+        _ => format!("tcp://{host}:{port}"),
+    }
+}
+
+/// Compute + patch `DatastoreStatus` for any Datastore-family CR `K`. Reads the
+/// backing StatefulSet `name` for readiness and derives the DSN from `spec`.
+/// Best-effort: logs and returns on any API error.
+pub async fn write_status<K>(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &DatastoreSpec,
+    generation: i64,
+) where
+    K: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug,
+{
     use kube::api::{Patch, PatchParams};
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     let sts = match stss.get_opt(name).await {
@@ -246,13 +313,14 @@ async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr
         }
     };
     let mut status = DatastoreStatus {
-        observed_generation: cr.meta().generation.unwrap_or(0),
+        observed_generation: generation,
+        connection_string: connection_string_for(spec, name, namespace),
         ..Default::default()
     };
     if let Some(s) = sts.and_then(|x| x.status) {
         status.ready_replicas = s.ready_replicas.unwrap_or(0);
     }
-    let desired = cr.spec.replicas.unwrap_or(1);
+    let desired = spec.replicas.unwrap_or(1);
     status.phase = Some(if status.ready_replicas >= desired && desired > 0 {
         Phase::Running
     } else if status.ready_replicas > 0 {
@@ -269,12 +337,24 @@ async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr
         status.observed_generation,
     );
     upsert_condition(&mut status.conditions, cond);
-    let api: Api<DatastoreCR> = Api::namespaced(client.clone(), namespace);
+    let api: Api<K> = Api::namespaced(client.clone(), namespace);
     let patch = serde_json::json!({"status": status});
     let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
     if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update Datastore status");
+        warn!(error = %e, kind = %K::kind(&()), "failed to update status");
     }
+}
+
+/// Write status for the canonical `Datastore` CR.
+async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr: &DatastoreCR) {
+    write_status::<DatastoreCR>(
+        client,
+        name,
+        namespace,
+        &cr.spec,
+        cr.meta().generation.unwrap_or(0),
+    )
+    .await;
 }
 
 fn set_owner(refs: &mut Option<Vec<OwnerReference>>, owner: &OwnerReference) {

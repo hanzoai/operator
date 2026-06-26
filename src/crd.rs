@@ -1,6 +1,6 @@
 //! Custom Resource Definitions for the Hanzo operator.
 //!
-//! All 26 Kinds at `hanzo.ai/v1` (the compile-time default). For other
+//! All 27 Kinds at `hanzo.ai/v1` (the compile-time default). For other
 //! universes (lux.cloud, zoo.cloud, osage.cloud), generate CRD YAMLs with
 //! the `generate-crd-yaml` binary, which rewrites the group at install time.
 //!
@@ -1262,6 +1262,25 @@ pub struct LLMSpec(pub ServiceSpec);
 )]
 #[serde(rename_all = "camelCase")]
 pub struct S3Spec(pub DatastoreSpec);
+
+/// Per-tenant isolated database. Paid/isolated tenants get a dedicated
+/// `Datastore`-family workload (StatefulSet + Service + headless + PVC); the
+/// tenant picks the engine via the inner `DatastoreSpec.type` (postgresql /
+/// valkey / docdb / minio). Unlike the `SQL`/`KV`/`DocDB`/`S3` facades it does
+/// NOT force a fixed engine — the inner type flows through verbatim.
+/// Reconciled by `controllers::managed_database`.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "ManagedDatabase",
+    plural = "manageddatabases",
+    namespaced,
+    status = "DatastoreStatus",
+    shortname = "mdb"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ManagedDatabaseSpec(pub DatastoreSpec);
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
