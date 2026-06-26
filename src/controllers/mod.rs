@@ -56,3 +56,6 @@ pub mod nodefleet;
 // module docs for the safety-gate model. Implements PR 5 of the platform's
 // docs/APPS_LIFECYCLE.md.
 pub mod apps;
+
+// ManagedDatabase facade — per-tenant isolated Datastore workload.
+pub mod managed_database;
