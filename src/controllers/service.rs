@@ -360,13 +360,24 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         }
     }
 
-    let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
-    let patch = serde_json::json!({"status": status});
-    // status is a Merge (not Apply) patch; `force` is Apply-only and kube-rs
-    // rejects the combination, so use a plain field-manager.
-    let pp = PatchParams::apply(apply::FIELD_MANAGER);
-    if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update Service status (CRD may not be installed)");
+    // Only write status when it actually changed (preserving condition
+    // transition times). An unconditional patch_status bumps resourceVersion
+    // every reconcile and re-triggers the watch — a CPU/etcd hot loop.
+    let changed = match cr.status.as_ref() {
+        Some(cur) => {
+            crd_types::preserve_condition_timestamps(&mut status.conditions, &cur.conditions);
+            *cur != status
+        }
+        None => true,
+    };
+    if changed {
+        let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
+        let patch = serde_json::json!({"status": status});
+        // status is a Merge (not Apply) patch; `force` is Apply-only.
+        let pp = PatchParams::apply(apply::FIELD_MANAGER);
+        if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
+            warn!(error = %e, "failed to update Service status (CRD may not be installed)");
+        }
     }
 
     Ok(Action::requeue(Duration::from_secs(60)))
