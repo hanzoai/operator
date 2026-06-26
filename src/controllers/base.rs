@@ -99,17 +99,19 @@ async fn reconcile_inner(
         .map(crd_types::EnvFromSource::to_k8s)
         .collect();
 
-    let liveness = manifests::build_http_probe(&crate::crd::ProbeSpec {
+    let liveness = manifests::build_probe(&crate::crd::ProbeSpec {
         path: "/v1/health".to_string(),
         port,
         initial_delay_seconds: 5,
         period_seconds: 10,
+        ..Default::default()
     });
-    let readiness = manifests::build_http_probe(&crate::crd::ProbeSpec {
+    let readiness = manifests::build_probe(&crate::crd::ProbeSpec {
         path: "/v1/health".to_string(),
         port,
         initial_delay_seconds: 5,
         period_seconds: 5,
+        ..Default::default()
     });
 
     let main = manifests::build_container(

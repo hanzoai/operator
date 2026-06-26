@@ -61,16 +61,54 @@ pub struct ResourceRequirements {
     pub limits: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+/// TCP socket probe handler. When set on a [`ProbeSpec`], the probe uses a
+/// `tcpSocket` handler (a successful TCP connection to `port` means healthy)
+/// instead of the default `httpGet`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpSocketAction {
+    pub port: i32,
+}
+
+/// Exec probe handler. When set on a [`ProbeSpec`], the probe runs `command`
+/// inside the container (exit code 0 means healthy) instead of
+/// `httpGet`/`tcpSocket`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecAction {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+}
+
+/// A health probe. Renders to EXACTLY ONE Kubernetes handler — Kubernetes
+/// rejects (422 `FieldValueForbidden`) a probe carrying more than one of
+/// `httpGet`/`tcpSocket`/`exec`. Which handler is emitted is selected by
+/// which optional handler field is set, with a deterministic precedence
+/// (`exec` > `tcpSocket` > `httpGet`). With no handler field set the probe
+/// defaults to `httpGet` on `path` (default `/health`) and `port` — the
+/// historical behavior, so existing CRs are unaffected. See
+/// [`crate::manifests::build_probe`] for the single rendering point.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeSpec {
+    /// httpGet path. Default `/health`. Used only when the probe resolves to
+    /// an `httpGet` handler.
     #[serde(default)]
     pub path: String,
+    /// httpGet/tcpSocket fallback port. Used only when the probe resolves to
+    /// an `httpGet` handler; `tcpSocket` carries its own port.
+    #[serde(default)]
     pub port: i32,
     #[serde(default)]
     pub initial_delay_seconds: i32,
     #[serde(default)]
     pub period_seconds: i32,
+    /// If set, the probe uses a `tcpSocket` handler on `tcpSocket.port`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_socket: Option<TcpSocketAction>,
+    /// If set, the probe uses an `exec` handler running `exec.command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ExecAction>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
