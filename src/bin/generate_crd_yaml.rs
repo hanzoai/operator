@@ -20,16 +20,16 @@
 //! `config/crd/bases/bootno.de_*.yaml`: Service, Datastore, Gateway, MPC,
 //! Network, Ingress, DNS, Base, SQL, KV, DocDB, IAM, KMS, LLM, S3, Chain,
 //! Validator, Indexer, Explorer, SPA, Static, Queue, Observability, Function,
-//! plus the LuxRuntime + NodeFleet blockchain Kinds. No compat aliases — the
-//! v1 Kinds are the one way.
+//! ManagedDatabase, plus the LuxRuntime + NodeFleet blockchain Kinds. No compat
+//! aliases — the v1 Kinds are the one way.
 
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt;
 use operator::api_group::{ApiGroup, DEFAULT_API_GROUP};
 use operator::crd::{
     Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress, LuxRuntime,
-    Network, NodeFleet, Observability, Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM,
-    MPC, S3, SPA, SQL,
+    ManagedDatabase, Network, NodeFleet, Observability, Queue, Service, Static, Validator, DNS, IAM,
+    KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Returns every managed CRD in canonical bundle order, with the group already
@@ -55,6 +55,7 @@ fn bundle(group: &str) -> Vec<CustomResourceDefinition> {
         KMS::crd(),
         LLM::crd(),
         S3::crd(),
+        ManagedDatabase::crd(),
         Chain::crd(),
         Validator::crd(),
         Indexer::crd(),
@@ -121,9 +122,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundle_is_the_canonical_26_kind_set() {
+    fn bundle_is_the_canonical_27_kind_set() {
         let crds = bundle(DEFAULT_API_GROUP);
-        assert_eq!(crds.len(), 26, "managed Kind count must stay at 26");
+        assert_eq!(crds.len(), 27, "managed Kind count must stay at 27");
 
         // Every Kind carries the default group and a well-formed metadata.name.
         for crd in &crds {
