@@ -437,15 +437,21 @@ pub fn build_ingress(
         }
     }
     // hanzoai/ingress (Traefik fork) routes ONLY Ingresses that carry the
-    // legacy `kubernetes.io/ingress.class` annotation; it ignores
-    // spec.ingressClassName (and silently drops spec.tls if the spec form is
-    // used instead). The annotation is therefore REQUIRED on every
-    // operator-generated Ingress, not optional — default it to the platform
-    // class "ingress" when the CR does not override it, matching the Ingress
-    // Kind controller (controllers::ingress) which has always defaulted the
-    // same way. Without this default a Service CR that omits ingressClassName
-    // produces an unrouted Ingress -> 404 (the base.hanzo.ai / cdn.hanzo.ai
-    // outage). Emit the annotation form, never spec.ingressClassName.
+    // legacy `kubernetes.io/ingress.class` annotation, so it is REQUIRED on
+    // every operator-generated Ingress — default it to the platform class
+    // "ingress" when the CR does not override it. Without it a Service CR that
+    // omits ingressClassName produces an unrouted Ingress -> 404 (the
+    // base.hanzo.ai / cdn.hanzo.ai outage).
+    //
+    // We ALSO emit the modern `spec.ingressClassName` with the same value. The
+    // annotation stays authoritative for the controller (and keeps TLS), so the
+    // earlier "spec form drops spec.tls" quirk does not apply when BOTH are
+    // present — proven in prod by operator-managed ingresses already carrying
+    // both and serving TLS (cdn.hanzo.ai, cloud.hanzo.ai, commerce-api.hanzo.ai).
+    // Emitting it (a) stops depending solely on a DEPRECATED annotation k8s will
+    // eventually remove, and (b) makes the field non-null on EVERY managed
+    // Ingress regardless of the DefaultIngressClass admission plugin, which skips
+    // defaulting precisely because the annotation is present.
     let class = if spec.ingress_class_name.is_empty() {
         "ingress"
     } else {
@@ -522,6 +528,11 @@ pub fn build_ingress(
             ..Default::default()
         },
         spec: Some(K8sIngressSpec {
+            // Mirror the class into the modern field too (annotation stays
+            // authoritative for hanzoai/ingress). Keeps the field non-null on
+            // every managed Ingress and removes the dependency on the deprecated
+            // annotation alone.
+            ingress_class_name: Some(class.to_string()),
             rules: Some(rules),
             tls,
             ..Default::default()
@@ -907,9 +918,15 @@ mod probe_tests {
             anns.get("cert-manager.io/cluster-issuer").map(String::as_str),
             Some("letsencrypt-prod"),
         );
-        // Must use the annotation form, never spec.ingressClassName (v1.7.39
-        // quirk drops spec.tls when the spec form is set).
-        assert!(ing.spec.unwrap().ingress_class_name.is_none());
+        // Emit BOTH forms: the annotation (authoritative for hanzoai/ingress,
+        // preserves TLS) AND spec.ingressClassName (k8s convention; non-null on
+        // every managed Ingress so we never depend on the deprecated annotation
+        // alone). Proven safe in prod where managed ingresses carry both.
+        assert_eq!(
+            ing.spec.unwrap().ingress_class_name.as_deref(),
+            Some("ingress"),
+            "spec.ingressClassName must default to 'ingress' alongside the annotation"
+        );
     }
 
     #[test]
@@ -927,6 +944,13 @@ mod probe_tests {
             anns.get("kubernetes.io/ingress.class").map(String::as_str),
             Some("zoo-ingress"),
             "an explicit ingressClassName must override the default"
+        );
+        // The explicit override flows to the spec field too, in lock-step with
+        // the annotation.
+        assert_eq!(
+            ing.spec.unwrap().ingress_class_name.as_deref(),
+            Some("zoo-ingress"),
+            "spec.ingressClassName must mirror the explicit class override"
         );
         // tls=false -> no issuer annotation.
         assert!(!anns.contains_key("cert-manager.io/cluster-issuer"));
