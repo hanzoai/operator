@@ -436,15 +436,22 @@ pub fn build_ingress(
             annotations.insert(k.clone(), v.clone());
         }
     }
-    // hanzoai/ingress (Traefik fork) silently drops spec.tls when the caller
-    // sets spec.ingressClassName instead of the annotation. Emit the
-    // annotation form so TLS stays hooked up.
-    if !spec.ingress_class_name.is_empty() {
-        annotations.insert(
-            "kubernetes.io/ingress.class".to_string(),
-            spec.ingress_class_name.clone(),
-        );
-    }
+    // hanzoai/ingress (Traefik fork) routes ONLY Ingresses that carry the
+    // legacy `kubernetes.io/ingress.class` annotation; it ignores
+    // spec.ingressClassName (and silently drops spec.tls if the spec form is
+    // used instead). The annotation is therefore REQUIRED on every
+    // operator-generated Ingress, not optional — default it to the platform
+    // class "ingress" when the CR does not override it, matching the Ingress
+    // Kind controller (controllers::ingress) which has always defaulted the
+    // same way. Without this default a Service CR that omits ingressClassName
+    // produces an unrouted Ingress -> 404 (the base.hanzo.ai / cdn.hanzo.ai
+    // outage). Emit the annotation form, never spec.ingressClassName.
+    let class = if spec.ingress_class_name.is_empty() {
+        "ingress"
+    } else {
+        &spec.ingress_class_name
+    };
+    annotations.insert("kubernetes.io/ingress.class".to_string(), class.to_string());
 
     let path_type = "Prefix".to_string();
     let mut rules = Vec::new();
@@ -874,5 +881,54 @@ mod probe_tests {
         let p = build_probe(&s);
         assert_eq!(handler_count(&p), 1);
         assert!(p.http_get.is_some(), "httpGet is the fallback");
+    }
+
+    #[test]
+    fn ingress_always_emits_class_annotation_defaulting_to_ingress() {
+        // hanzoai/ingress routes ONLY on the legacy kubernetes.io/ingress.class
+        // annotation, so it is REQUIRED on every generated Ingress. A Service CR
+        // that omits ingressClassName must still get it (the base.hanzo.ai /
+        // cdn.hanzo.ai 404 root cause: previously gated behind a non-empty
+        // ingressClassName, so a bare CR produced an unrouted Ingress).
+        let spec = IngressSpec {
+            enabled: true,
+            hosts: vec!["base.hanzo.ai".into()],
+            tls: true,
+            ..Default::default()
+        };
+        let ing = build_ingress("base", "hanzo", &spec, "base", 80, BTreeMap::new());
+        let anns = ing.metadata.annotations.expect("annotations present");
+        assert_eq!(
+            anns.get("kubernetes.io/ingress.class").map(String::as_str),
+            Some("ingress"),
+            "class annotation must default to 'ingress' when the CR omits ingressClassName"
+        );
+        assert_eq!(
+            anns.get("cert-manager.io/cluster-issuer").map(String::as_str),
+            Some("letsencrypt-prod"),
+        );
+        // Must use the annotation form, never spec.ingressClassName (v1.7.39
+        // quirk drops spec.tls when the spec form is set).
+        assert!(ing.spec.unwrap().ingress_class_name.is_none());
+    }
+
+    #[test]
+    fn ingress_honors_explicit_class_name_override() {
+        let spec = IngressSpec {
+            enabled: true,
+            hosts: vec!["x.zoo.ngo".into()],
+            ingress_class_name: "zoo-ingress".into(),
+            tls: false,
+            ..Default::default()
+        };
+        let ing = build_ingress("x", "zoo", &spec, "x", 80, BTreeMap::new());
+        let anns = ing.metadata.annotations.unwrap();
+        assert_eq!(
+            anns.get("kubernetes.io/ingress.class").map(String::as_str),
+            Some("zoo-ingress"),
+            "an explicit ingressClassName must override the default"
+        );
+        // tls=false -> no issuer annotation.
+        assert!(!anns.contains_key("cert-manager.io/cluster-issuer"));
     }
 }
