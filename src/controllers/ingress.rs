@@ -127,13 +127,10 @@ async fn reconcile_inner(
                 ..Default::default()
             },
             spec: Some(K8sIngressSpec {
-                // Mirror the class into spec.ingressClassName too — the
-                // `kubernetes.io/ingress.class` annotation above stays
-                // authoritative for hanzoai/ingress, but every generated
-                // (`hanzo-domains-*`) Ingress now carries the modern field so it
-                // is never null and never relies on the deprecated annotation
-                // alone. Matches manifests::build_ingress.
-                ingress_class_name: Some(class.to_string()),
+                // Annotation-only (set above): NEVER spec.ingressClassName — the
+                // hanzoai/ingress (Traefik fork) drops the route when the spec
+                // form is set. See manifests::build_ingress for the 2026-06-28
+                // live re-confirmation (base/maxpower/superbase 404'd).
                 rules: Some(vec![IngressRule {
                     host: Some(domain.domain.clone()),
                     http: Some(HTTPIngressRuleValue { paths }),
