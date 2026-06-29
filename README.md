@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="operator" width="880"></p>
+
 # operator
 
 Canonical **Rust** Kubernetes operator for the Hanzo platform — and, per
