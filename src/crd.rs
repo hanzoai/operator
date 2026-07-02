@@ -1931,3 +1931,106 @@ pub struct NodeFleetStatus {
     #[serde(default)]
     pub observed_generation: i64,
 }
+
+// ============================================================================
+// AgentDeployment Kind — the autonomous-bot lifecycle
+// ============================================================================
+
+/// Declarative desired state for a Bot: a cloud Agent (`org/agentName`) run
+/// long-running on a visor-provisioned machine bound to the `@hanzo/bot`
+/// runtime. The controller converges three facts each reconcile:
+///
+/// 1. the cloud Agent exists in `/v1/agents` with `execution_mode=long-running`,
+/// 2. a visor machine is provisioned and bound to it
+///    (`POST /v1/machines/:id/bind-agent`),
+/// 3. desired == running (the binding reconciles to `Bound`).
+///
+/// It reaches TWO external control planes over HTTP (cloud `/v1/agents`, visor
+/// `/v1/machines`); like the apps DRIVE controller it is **opt-in and
+/// provisioning-gated** because launching a machine costs money — see
+/// `controllers::agent_deployment` for the gate model.
+///
+/// `bot` is a shortname because a Bot is exactly what this Kind materializes.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "AgentDeployment",
+    plural = "agentdeployments",
+    namespaced,
+    status = "AgentDeploymentStatus",
+    shortname = "agentdeploy",
+    shortname = "bot",
+    printcolumn = r#"{"name":"Agent","type":"string","jsonPath":".spec.agentName"}"#,
+    printcolumn = r#"{"name":"Org","type":"string","jsonPath":".spec.org"}"#,
+    printcolumn = r#"{"name":"Mode","type":"string","jsonPath":".spec.executionMode"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Binding","type":"string","jsonPath":".status.bindingStatus"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDeploymentSpec {
+    /// The cloud Agent's name in the `/v1/agents` registry. Combined with `org`
+    /// this is the Agent identity (`<org>-<agentName>` service-account naming).
+    pub agent_name: String,
+    /// The cloud/IAM organization that owns the Agent.
+    pub org: String,
+    /// Execution mode of the Agent. A Bot is by definition long-running, so this
+    /// defaults to `long-running`; the controller ensures the cloud Agent
+    /// carries this mode. Kept explicit (not hard-coded) so a future ephemeral
+    /// mode is a spec change, not a code change.
+    #[serde(default = "default_execution_mode")]
+    pub execution_mode: String,
+    /// Optional cron schedule for scheduled (non-continuous) execution. Empty ⇒
+    /// continuously running. Recorded on the Agent and surfaced in status;
+    /// the scheduler that fires runs consumes it (out of this controller's
+    /// scope — this controller owns provisioning + binding, not triggering).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub schedule: String,
+    /// Desired number of bound machines running this bot. Defaults to 1 (a bot
+    /// is normally singleton — one persistent compute holds its brain state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<i32>,
+    /// Optional pinned `@hanzo/bot` npm version for the runtime. Empty ⇒ the
+    /// machine's launch default (cloud-init installs latest).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bot_version: String,
+    /// Optional visor cloud provider to launch the machine on (e.g.
+    /// `DigitalOcean`). Empty ⇒ the controller only binds an already-provisioned
+    /// machine and never launches one (bind-only, zero-cost).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
+    /// Optional explicit machine id (`owner/name`) to bind. When set the
+    /// controller binds THIS machine and never launches; when empty and a
+    /// provider is set + launching is enabled, it launches one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine_id: String,
+}
+
+/// Default execution mode — a Bot is long-running by definition.
+fn default_execution_mode() -> String {
+    "long-running".to_string()
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDeploymentStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    /// True once the cloud Agent exists with the desired execution mode.
+    #[serde(default)]
+    pub agent_ready: bool,
+    /// The visor machine id this bot is bound to, once known.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine_id: String,
+    /// The visor binding's honest status (`Pending`/`Bound`/`Error`), mirrored
+    /// verbatim so `kubectl get bot` shows real convergence.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub binding_status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
