@@ -37,8 +37,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::api::rbac::v1::{RoleBinding, RoleRef, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use k8s_openapi::ByteString;
 use kube::api::Api;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config as WatcherConfig;
@@ -47,7 +49,14 @@ use std::collections::BTreeMap;
 use tracing::{error, info, warn};
 
 use crate::apply::apply;
+use crate::core::secret::{is_operator_managed, validate_secret_value, MANAGED_BY_LABEL};
 use crate::core::{OperatorError, Result};
+
+/// The image-pull Secret the operator projects into each tenant namespace. The
+/// platform Service CR references it BY NAME (imagePullSecrets); cloud-api never
+/// creates it. `managed-by` value distinct from every other operator secret path
+/// so the strict hijack guard only ever adopts THIS controller's Secrets.
+const PULL_SECRET_MANAGER: &str = "hanzo-operator-tenant-rbac";
 
 /// The one namespaced RoleBinding name the operator manages per tenant.
 const BINDING_NAME: &str = "cloud-api-platform";
@@ -66,6 +75,18 @@ pub struct Config {
     pub sa_name: String,
     /// ClusterRole the RoleBinding grants (scoped to the tenant namespace).
     pub cluster_role: String,
+    /// Name of the image-pull Secret projected into each tenant namespace. The
+    /// platform Service CR references this by name so pods can pull the PRIVATE
+    /// per-tenant build image (ghcr.io/<org>/tenant-<org>/*).
+    pub pull_secret_name: String,
+    /// Namespace of the KMS-synced SOURCE dockerconfigjson the per-tenant pull
+    /// Secret is projected from (a Secret a KMSSecret CR syncs from Hanzo KMS).
+    pub pull_source_namespace: String,
+    /// Name of that source Secret.
+    pub pull_source_name: String,
+    /// Key within both the source and the projected Secret holding the docker
+    /// config JSON (standard `.dockerconfigjson`).
+    pub pull_config_key: String,
 }
 
 impl Default for Config {
@@ -75,6 +96,10 @@ impl Default for Config {
             sa_namespace: "hanzo".to_string(),
             sa_name: "cloud-api".to_string(),
             cluster_role: "hanzo-cloud-platform-tenant".to_string(),
+            pull_secret_name: "ghcr-pull".to_string(),
+            pull_source_namespace: "hanzo".to_string(),
+            pull_source_name: "ghcr-secret".to_string(),
+            pull_config_key: ".dockerconfigjson".to_string(),
         }
     }
 }
@@ -88,6 +113,14 @@ impl Config {
             sa_namespace: std::env::var("TENANT_RBAC_SA_NAMESPACE").unwrap_or(d.sa_namespace),
             sa_name: std::env::var("TENANT_RBAC_SA_NAME").unwrap_or(d.sa_name),
             cluster_role: std::env::var("TENANT_RBAC_CLUSTER_ROLE").unwrap_or(d.cluster_role),
+            pull_secret_name: std::env::var("TENANT_RBAC_PULL_SECRET_NAME")
+                .unwrap_or(d.pull_secret_name),
+            pull_source_namespace: std::env::var("TENANT_RBAC_PULL_SOURCE_NAMESPACE")
+                .unwrap_or(d.pull_source_namespace),
+            pull_source_name: std::env::var("TENANT_RBAC_PULL_SOURCE_NAME")
+                .unwrap_or(d.pull_source_name),
+            pull_config_key: std::env::var("TENANT_RBAC_PULL_CONFIG_KEY")
+                .unwrap_or(d.pull_config_key),
         }
     }
 
@@ -153,6 +186,99 @@ pub fn build_rolebinding(ns_name: &str, org: &str, cfg: &Config) -> RoleBinding 
     }
 }
 
+/// Build the desired per-tenant image-pull Secret. Pure — the unit of test.
+/// Always a `kubernetes.io/dockerconfigjson` Secret carrying the operator's
+/// `managed-by` label (so the hijack guard adopts only our own) and the org
+/// label; `dockerconfig` is the raw JSON bytes projected from the KMS-synced
+/// source (k8s-openapi base64-encodes on the wire).
+pub fn build_pull_secret(ns: &str, org: &str, cfg: &Config, dockerconfig: Vec<u8>) -> Secret {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        MANAGED_BY_LABEL.to_string(),
+        PULL_SECRET_MANAGER.to_string(),
+    );
+    labels.insert("hanzo.ai/org".to_string(), org.to_string());
+
+    let mut data = BTreeMap::new();
+    data.insert(cfg.pull_config_key.clone(), ByteString(dockerconfig));
+
+    Secret {
+        metadata: ObjectMeta {
+            name: Some(cfg.pull_secret_name.clone()),
+            namespace: Some(ns.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        type_: Some("kubernetes.io/dockerconfigjson".to_string()),
+        data: Some(data),
+        ..Default::default()
+    }
+}
+
+/// Extract the docker-config bytes from a source Secret under `key`, checking
+/// `data` (base64-decoded by k8s-openapi) then `string_data`. Pure.
+fn pull_config_bytes(src: &Secret, key: &str) -> Option<Vec<u8>> {
+    if let Some(d) = src.data.as_ref().and_then(|m| m.get(key)) {
+        return Some(d.0.clone());
+    }
+    src.string_data
+        .as_ref()
+        .and_then(|m| m.get(key))
+        .map(|s| s.clone().into_bytes())
+}
+
+/// Ensure the per-tenant image-pull Secret exists in `ns`, projected from the
+/// KMS-synced source. The OPERATOR is the designated K8s-secret handler here —
+/// cloud-api holds no `secrets` grant and creates no Secret. Fail-OPEN on a
+/// missing/empty source (log + skip) so a source outage never blocks the deploy
+/// RoleBinding; hijack-guarded so an unmanaged Secret of the same name is never
+/// overwritten; SSA-applied like the RoleBinding.
+async fn ensure_pull_secret(ns: &str, org: &str, ctx: &Ctx) -> Result<()> {
+    let src_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.cfg.pull_source_namespace);
+    let source = match src_api.get_opt(&ctx.cfg.pull_source_name).await? {
+        Some(s) => s,
+        None => {
+            warn!(
+                namespace = %ns,
+                source = %format!("{}/{}", ctx.cfg.pull_source_namespace, ctx.cfg.pull_source_name),
+                "tenant pull-secret source not found — skipping (deploy RoleBinding still applied)"
+            );
+            return Ok(());
+        }
+    };
+    let bytes = match pull_config_bytes(&source, &ctx.cfg.pull_config_key) {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            warn!(
+                namespace = %ns, key = %ctx.cfg.pull_config_key,
+                "tenant pull-secret source missing/empty docker-config key — skipping"
+            );
+            return Ok(());
+        }
+    };
+    validate_secret_value(&bytes)
+        .map_err(|e| OperatorError::Config(format!("pull-secret source value: {e}")))?;
+
+    // Strict hijack guard: never overwrite a same-named Secret we do not own.
+    let dst_api: Api<Secret> = Api::namespaced(ctx.client.clone(), ns);
+    if let Some(existing) = dst_api.get_opt(&ctx.cfg.pull_secret_name).await? {
+        if !is_operator_managed(&existing, PULL_SECRET_MANAGER, "") {
+            return Err(OperatorError::Config(format!(
+                "refuse to overwrite unmanaged Secret {ns}/{}",
+                ctx.cfg.pull_secret_name
+            )));
+        }
+    }
+
+    let secret = build_pull_secret(ns, org, &ctx.cfg, bytes);
+    apply(&dst_api, &secret).await?;
+    info!(
+        namespace = %ns, org = %org, secret = %ctx.cfg.pull_secret_name,
+        "ensured tenant image-pull Secret (KMS-synced source)"
+    );
+    Ok(())
+}
+
 pub async fn reconcile(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action> {
     let ns_name = ns.name_any();
 
@@ -179,6 +305,16 @@ pub async fn reconcile(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action> {
         subject = %format!("{}/{}", ctx.cfg.sa_namespace, ctx.cfg.sa_name),
         "ensured tenant deploy RoleBinding (namespace-scoped)"
     );
+
+    // Also project the per-tenant image-pull Secret from the KMS-synced source so
+    // pods can pull the PRIVATE per-tenant build image. Fail-open: a provisioning
+    // error (source outage, hijack-guard refusal, apiserver hiccup) is logged and
+    // retried next tick — the deploy RoleBinding above already applied, so deploy
+    // AUTHZ is never blocked by pull-secret trouble.
+    if let Err(e) = ensure_pull_secret(&ns_name, &org, &ctx).await {
+        warn!(namespace = %ns_name, error = %e, "tenant image-pull Secret provisioning failed (RoleBinding applied; retry next tick)");
+    }
+
     Ok(Action::requeue(Duration::from_secs(300)))
 }
 
@@ -279,6 +415,7 @@ mod tests {
             sa_namespace: "lux".to_string(),
             sa_name: "cloud-api".to_string(),
             cluster_role: "lux-cloud-platform-tenant".to_string(),
+            ..Config::default()
         };
         assert_eq!(cfg.label_key(), "lux.cloud/managed-by");
         let rb = build_rolebinding("tenant-foo", "foo", &cfg);
@@ -290,5 +427,91 @@ mod tests {
     fn label_key_splits_on_equals() {
         let cfg = Config::default();
         assert_eq!(cfg.label_key(), "hanzo.ai/managed-by");
+    }
+
+    #[test]
+    fn pull_secret_defaults_are_ghcr_pull_from_hanzo_source() {
+        let d = Config::default();
+        assert_eq!(d.pull_secret_name, "ghcr-pull");
+        assert_eq!(d.pull_source_namespace, "hanzo");
+        assert_eq!(d.pull_source_name, "ghcr-secret");
+        assert_eq!(d.pull_config_key, ".dockerconfigjson");
+    }
+
+    #[test]
+    fn pull_secret_is_dockerconfigjson_typed_and_confined_to_tenant() {
+        let cfg = Config::default();
+        let s = build_pull_secret("tenant-acme", "acme", &cfg, b"{\"auths\":{}}".to_vec());
+        // Correct Secret TYPE — an Opaque secret is ignored as an imagePullSecret.
+        assert_eq!(s.type_.as_deref(), Some("kubernetes.io/dockerconfigjson"));
+        // Lives in the tenant namespace under the CR-referenced name.
+        assert_eq!(s.metadata.namespace.as_deref(), Some("tenant-acme"));
+        assert_eq!(s.metadata.name.as_deref(), Some("ghcr-pull"));
+        // Carries the docker-config under the standard key with the source bytes.
+        let data = s.data.as_ref().unwrap();
+        assert_eq!(data.get(".dockerconfigjson").unwrap().0, b"{\"auths\":{}}");
+        // Org label for attribution.
+        let labels = s.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels.get("hanzo.ai/org").map(String::as_str), Some("acme"));
+    }
+
+    #[test]
+    fn pull_secret_managed_by_a_distinct_manager_no_cross_adoption() {
+        // The projected pull Secret is adopted by the pull-secret manager, and
+        // NOT by the RoleBinding/KMS-zap managers — the strict hijack guard keeps
+        // the three operator secret paths from ever overwriting each other.
+        let cfg = Config::default();
+        let s = build_pull_secret("tenant-acme", "acme", &cfg, b"x".to_vec());
+        assert!(is_operator_managed(&s, PULL_SECRET_MANAGER, ""));
+        assert!(!is_operator_managed(&s, "hanzo-operator", ""));
+        assert!(!is_operator_managed(&s, "hanzo-operator-kms-zap", ""));
+    }
+
+    #[test]
+    fn pull_config_bytes_reads_data_then_string_data() {
+        // data (base64-decoded by k8s-openapi into ByteString) is preferred.
+        let mut data = BTreeMap::new();
+        data.insert(
+            ".dockerconfigjson".to_string(),
+            ByteString(b"from-data".to_vec()),
+        );
+        let s = Secret {
+            data: Some(data),
+            ..Default::default()
+        };
+        assert_eq!(
+            pull_config_bytes(&s, ".dockerconfigjson"),
+            Some(b"from-data".to_vec())
+        );
+        // string_data fallback.
+        let mut sd = BTreeMap::new();
+        sd.insert(".dockerconfigjson".to_string(), "from-string".to_string());
+        let s2 = Secret {
+            string_data: Some(sd),
+            ..Default::default()
+        };
+        assert_eq!(
+            pull_config_bytes(&s2, ".dockerconfigjson"),
+            Some(b"from-string".to_vec())
+        );
+        // Missing key → None (caller fails open).
+        assert_eq!(
+            pull_config_bytes(&Secret::default(), ".dockerconfigjson"),
+            None
+        );
+    }
+
+    #[test]
+    fn pull_secret_honors_white_label_config() {
+        // A white-label universe points at its own source + secret names.
+        let cfg = Config {
+            pull_secret_name: "lux-pull".to_string(),
+            pull_source_namespace: "lux".to_string(),
+            pull_source_name: "lux-ghcr".to_string(),
+            pull_config_key: ".dockerconfigjson".to_string(),
+            ..Config::default()
+        };
+        let s = build_pull_secret("tenant-foo", "foo", &cfg, b"y".to_vec());
+        assert_eq!(s.metadata.name.as_deref(), Some("lux-pull"));
     }
 }
