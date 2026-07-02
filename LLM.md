@@ -262,3 +262,42 @@ the operator.
 
 Test count: 94 → 103 lib tests (+9 apps controller gate/rollout, plus the
 apps_client semver/image-ref/wire-shape suite; 0 regressions).
+
+## v0.6.11 — tenant-RBAC controller (per-tenant one-click deploy)
+
+`src/controllers/tenant_rbac.rs`. Not a CRD Kind — its reconcile source is the
+set of platform-managed tenant namespaces (`tenant-<org>`, labeled
+`hanzo.ai/managed-by=platform`, created by cloud-api on org onboarding). For each
+it server-side-applies a NAMESPACED RoleBinding `cloud-api-platform` binding
+ClusterRole `hanzo-cloud-platform-tenant` to ServiceAccount `hanzo/cloud-api`,
+so the cloud-api SA can `/v1/platform` deploy Hanzo `Service` CRs INTO that one
+tenant namespace — and nowhere else.
+
+CRITICAL (RED): it is a RoleBinding, NEVER a ClusterRoleBinding. A
+ClusterRoleBinding of the tenant role would let cloud-api deploy into EVERY
+namespace (a cross-tenant deploy hole). The namespaced RoleBinding confines the
+grant; cloud-api can write only to namespaces that have been onboarded, and each
+grant is independently revocable. Verified live: `can-i create services.hanzo.ai`
+as `hanzo/cloud-api` = yes in tenant-<org>, NO in `default`/`kube-system`; the SA
+cannot create ClusterRoleBindings at all.
+
+Gate: master enable `TENANT_RBAC_CONTROLLER` (default `true`, opt-out). Config
+overrides for white-label: `TENANT_RBAC_LABEL`, `TENANT_RBAC_SA_NAMESPACE`,
+`TENANT_RBAC_SA_NAME`, `TENANT_RBAC_CLUSTER_ROLE` (Hanzo defaults baked in).
+
+New RBAC the operator ClusterRole needs (declared in
+`hanzoai/universe infra/k8s/operator/deployment.yaml`): `namespaces`
+get/list/watch, `rolebindings` CRUD, and `bind` on ClusterRole
+`hanzo-cloud-platform-tenant` (RBAC escalation guard — narrowly scoped so the
+operator can never be leveraged to bind a broader role). The two cloud-api
+platform ClusterRoles + the static build-ns RoleBinding are declared in
+`infra/k8s/operator/rbac/cloud-platform-rbac.yaml`.
+
+Deploy note: the operator is a leader-elected SINGLE replica whose readiness is
+gated on holding the lease. A default rollingUpdate deadlocks (maxUnavailable
+rounds to 0 for 1 replica; new pod can't become leader while old renews the
+lease). The Deployment now uses `strategy: Recreate`.
+
+Test count: 103 → 108 lib tests (+5 tenant_rbac: namespaced-not-cluster-wide,
+roleRef+subject shape, org label/prefix extraction, white-label env overrides,
+label-key split; total suite 131; 0 regressions).
