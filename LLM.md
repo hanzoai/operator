@@ -301,3 +301,31 @@ lease). The Deployment now uses `strategy: Recreate`.
 Test count: 103 → 108 lib tests (+5 tenant_rbac: namespaced-not-cluster-wide,
 roleRef+subject shape, org label/prefix extraction, white-label env overrides,
 label-key split; total suite 131; 0 regressions).
+
+## v0.6.12 — tenant-RBAC controller also provisions the per-tenant ghcr-pull Secret (RED HIGH-2)
+
+Alongside the `cloud-api-platform` RoleBinding, `tenant_rbac.rs` now projects the
+`ghcr-pull` image-pull Secret into each tenant namespace so pods can pull the
+PRIVATE per-tenant build image (`ghcr.io/<org>/tenant-<org>/*`). This closes RED
+HIGH-2: cloud-api must NOT touch K8s Secrets (KMS-only model — devs/services never
+touch secrets, the operator does). The prior code had cloud-api's `ensurePullSecret`
+creating the Secret (wrong SA); that is DELETED from cloud and moved HERE.
+
+- `build_pull_secret` (pure): a `kubernetes.io/dockerconfigjson` Secret with a
+  DISTINCT `managed-by` (`hanzo-operator-tenant-rbac`) so the `core::secret`
+  hijack guard never cross-adopts the RoleBinding or KMS-zap Secrets.
+  `pull_config_bytes` reads `data` (base64-decoded) then `string_data`.
+- `ensure_pull_secret` (async): read the KMS-synced SOURCE (`hanzo/ghcr-secret`,
+  `.dockerconfigjson`) → `validate_secret_value` → hijack-guard the destination
+  (`is_operator_managed`, refuse overwriting an unmanaged same-named Secret) → SSA
+  `apply`. FAIL-OPEN: a missing source / error is logged + retried; the deploy
+  RoleBinding always applies, so deploy authz is never blocked by pull-secret trouble.
+- Config gains `pull_secret_name`/`pull_source_namespace`/`pull_source_name`/
+  `pull_config_key` (env `TENANT_RBAC_PULL_*`). Defaults `ghcr-pull` / `hanzo` /
+  `ghcr-secret` / `.dockerconfigjson`.
+
+New RBAC (universe `infra/k8s/operator/deployment.yaml`): operator-manager-role
+gains `secrets [get, create, patch]` (least privilege — no delete/list/watch).
+cloud-api's two platform ClusterRoles are UNCHANGED and hold NO `secrets` verb.
+
+Test count: 131 → 136 lib tests (+5 tenant_rbac pull-secret; 0 regressions).
