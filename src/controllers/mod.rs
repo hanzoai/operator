@@ -56,3 +56,11 @@ pub mod nodefleet;
 // module docs for the safety-gate model. Implements PR 5 of the platform's
 // docs/APPS_LIFECYCLE.md.
 pub mod apps;
+
+// v0.6.x: tenant-RBAC controller. Not a CRD Kind — its reconcile source is the
+// set of platform-managed tenant namespaces (`tenant-<org>`, labeled
+// `hanzo.ai/managed-by=platform`). For each it ensures the namespace-scoped
+// `cloud-api-platform` RoleBinding that grants the cloud-api ServiceAccount
+// one-click `/v1/platform` deploy INTO that tenant — and nowhere else. Enabled
+// by default (TENANT_RBAC_CONTROLLER); see the module docs.
+pub mod tenant_rbac;

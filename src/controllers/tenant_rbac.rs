@@ -1,0 +1,294 @@
+//! Tenant-RBAC reconciler — per-tenant one-click-deploy authorization.
+//!
+//! When the platform (cloud-api) onboards an org it creates the tenant
+//! namespace `tenant-<org>` labeled `hanzo.ai/managed-by=platform`. For the
+//! cloud-api ServiceAccount to deploy Hanzo `Service` CRs INTO that namespace
+//! (the `/v1/platform` deploy path) it needs an authorization grant scoped to
+//! exactly that one namespace.
+//!
+//! This controller watches those tenant namespaces and, for each, server-side
+//! applies a NAMESPACED [`RoleBinding`] named `cloud-api-platform` that binds
+//! the cluster-wide `hanzo-cloud-platform-tenant` ClusterRole to the
+//! `hanzo/cloud-api` ServiceAccount — but only within that tenant namespace.
+//!
+//! ## CRITICAL — RoleBinding, never ClusterRoleBinding
+//!
+//! A ClusterRoleBinding would grant cloud-api deploy rights in EVERY namespace:
+//! a cross-tenant deploy hole where onboarding org A could deploy into org B's
+//! namespace. The NAMESPACED RoleBinding confines the grant to the single
+//! tenant namespace it lives in, so the blast radius of the cloud-api SA is
+//! exactly the set of tenants that have been onboarded — and each grant is
+//! independently revocable by deleting one RoleBinding.
+//!
+//! Automating it here (vs. the hand-created binding that unblocked the first
+//! tenant) means every onboarded org gets one-click deploy the moment its
+//! namespace appears — no operator toil, self-healing if a binding is deleted.
+//!
+//! ## Gate
+//!
+//! Master enable `TENANT_RBAC_CONTROLLER` (default `true`; set `false` to
+//! disable). Unlike the fleet-mutating apps/kms_zap controllers this one only
+//! ADDS a single narrowly-scoped RoleBinding to namespaces already marked as
+//! platform-managed tenants, so it is safe to run by default and IS the
+//! one-click-deploy mechanism.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use k8s_openapi::api::core::v1::Namespace;
+use k8s_openapi::api::rbac::v1::{RoleBinding, RoleRef, Subject};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::api::Api;
+use kube::runtime::controller::{Action, Controller};
+use kube::runtime::watcher::Config as WatcherConfig;
+use kube::{Client, Resource, ResourceExt};
+use std::collections::BTreeMap;
+use tracing::{error, info, warn};
+
+use crate::apply::apply;
+use crate::core::{OperatorError, Result};
+
+/// The one namespaced RoleBinding name the operator manages per tenant.
+const BINDING_NAME: &str = "cloud-api-platform";
+
+/// Resolved tenant-RBAC configuration. Hanzo defaults; env overrides let the
+/// same operator binary serve a white-label universe whose platform SA lives in
+/// a different namespace or whose tenant ClusterRole is named differently.
+#[derive(Clone, Debug)]
+pub struct Config {
+    /// `key=value` label that marks a namespace as a platform-managed tenant.
+    pub tenant_label: String,
+    /// Namespace of the ServiceAccount that deploys into tenants (cloud-api's
+    /// home namespace).
+    pub sa_namespace: String,
+    /// Name of that ServiceAccount.
+    pub sa_name: String,
+    /// ClusterRole the RoleBinding grants (scoped to the tenant namespace).
+    pub cluster_role: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            tenant_label: "hanzo.ai/managed-by=platform".to_string(),
+            sa_namespace: "hanzo".to_string(),
+            sa_name: "cloud-api".to_string(),
+            cluster_role: "hanzo-cloud-platform-tenant".to_string(),
+        }
+    }
+}
+
+impl Config {
+    /// Read overrides from the environment, falling back to the Hanzo defaults.
+    pub fn from_env() -> Self {
+        let d = Config::default();
+        Config {
+            tenant_label: std::env::var("TENANT_RBAC_LABEL").unwrap_or(d.tenant_label),
+            sa_namespace: std::env::var("TENANT_RBAC_SA_NAMESPACE").unwrap_or(d.sa_namespace),
+            sa_name: std::env::var("TENANT_RBAC_SA_NAME").unwrap_or(d.sa_name),
+            cluster_role: std::env::var("TENANT_RBAC_CLUSTER_ROLE").unwrap_or(d.cluster_role),
+        }
+    }
+
+    /// The label KEY (left of `=`) — what the reconcile guard checks presence of.
+    fn label_key(&self) -> &str {
+        self.tenant_label
+            .split('=')
+            .next()
+            .unwrap_or(&self.tenant_label)
+    }
+}
+
+#[derive(Clone)]
+pub struct Ctx {
+    pub client: Client,
+    pub cfg: Config,
+}
+
+/// Extract the org slug for a tenant namespace: prefer the explicit
+/// `hanzo.ai/org` label the platform stamps, else strip the `tenant-` prefix.
+fn org_of(ns: &Namespace) -> String {
+    if let Some(org) = ns.labels().get("hanzo.ai/org") {
+        if !org.is_empty() {
+            return org.clone();
+        }
+    }
+    ns.name_any()
+        .strip_prefix("tenant-")
+        .unwrap_or(&ns.name_any())
+        .to_string()
+}
+
+/// Build the desired namespaced RoleBinding for a tenant namespace. Pure — the
+/// unit of test. Always a `RoleBinding` (namespaced), never a ClusterRoleBinding.
+pub fn build_rolebinding(ns_name: &str, org: &str, cfg: &Config) -> RoleBinding {
+    let mut labels = BTreeMap::new();
+    labels.insert(
+        "app.kubernetes.io/managed-by".to_string(),
+        "hanzo-operator".to_string(),
+    );
+    labels.insert("hanzo.ai/org".to_string(), org.to_string());
+
+    RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(BINDING_NAME.to_string()),
+            namespace: Some(ns_name.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
+        role_ref: RoleRef {
+            api_group: "rbac.authorization.k8s.io".to_string(),
+            kind: "ClusterRole".to_string(),
+            name: cfg.cluster_role.clone(),
+        },
+        subjects: Some(vec![Subject {
+            kind: "ServiceAccount".to_string(),
+            name: cfg.sa_name.clone(),
+            namespace: Some(cfg.sa_namespace.clone()),
+            // ServiceAccount subjects carry the core ("") API group; omitting it
+            // defaults to "" per the RBAC contract.
+            api_group: None,
+        }]),
+    }
+}
+
+pub async fn reconcile(ns: Arc<Namespace>, ctx: Arc<Ctx>) -> Result<Action> {
+    let ns_name = ns.name_any();
+
+    // Defense in depth: the watcher already label-filters, but never bind a
+    // namespace that isn't a platform-managed tenant. `roleRef` is immutable, so
+    // a mistaken bind would need manual deletion — refuse up front instead.
+    let is_tenant = ns.labels().contains_key(ctx.cfg.label_key());
+    if !is_tenant {
+        return Ok(Action::requeue(Duration::from_secs(300)));
+    }
+
+    // A namespace being deleted must not have work re-applied against it.
+    if ns.meta().deletion_timestamp.is_some() {
+        return Ok(Action::await_change());
+    }
+
+    let org = org_of(&ns);
+    let rb = build_rolebinding(&ns_name, &org, &ctx.cfg);
+    let api: Api<RoleBinding> = Api::namespaced(ctx.client.clone(), &ns_name);
+    apply(&api, &rb).await?;
+    info!(
+        namespace = %ns_name, org = %org, binding = BINDING_NAME,
+        cluster_role = %ctx.cfg.cluster_role,
+        subject = %format!("{}/{}", ctx.cfg.sa_namespace, ctx.cfg.sa_name),
+        "ensured tenant deploy RoleBinding (namespace-scoped)"
+    );
+    Ok(Action::requeue(Duration::from_secs(300)))
+}
+
+pub fn on_error(_obj: Arc<Namespace>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "tenant-RBAC reconcile failed");
+    Action::requeue(Duration::from_secs(30))
+}
+
+/// Watch platform-managed tenant namespaces and ensure the per-tenant deploy
+/// RoleBinding. `enabled` is the master gate (`TENANT_RBAC_CONTROLLER`).
+pub async fn run_tenant_rbac_controller(client: Client, enabled: bool) {
+    if !enabled {
+        info!("Tenant-RBAC controller disabled (TENANT_RBAC_CONTROLLER=false)");
+        return;
+    }
+    let cfg = Config::from_env();
+    info!(
+        tenant_label = %cfg.tenant_label,
+        subject = %format!("{}/{}", cfg.sa_namespace, cfg.sa_name),
+        cluster_role = %cfg.cluster_role,
+        "Starting Tenant-RBAC controller (namespace-scoped RoleBindings)"
+    );
+
+    // Tenant RoleBindings are cluster-wide by their namespaces, so watch all
+    // namespaces — but only those carrying the tenant marker label. The
+    // controller never touches a namespace the platform didn't mark.
+    let api: Api<Namespace> = Api::all(client.clone());
+    let watch = WatcherConfig::default().labels(&cfg.tenant_label);
+    if watch.label_selector.is_none() {
+        warn!("empty tenant label selector — refusing to watch ALL namespaces");
+        return;
+    }
+
+    let ctx = Arc::new(Ctx { client, cfg });
+    Controller::new(api, watch)
+        .run(reconcile, on_error, ctx)
+        .for_each(|_| async {})
+        .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ns_with(name: &str, labels: &[(&str, &str)]) -> Namespace {
+        let mut m = BTreeMap::new();
+        for (k, v) in labels {
+            m.insert(k.to_string(), v.to_string());
+        }
+        Namespace {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                labels: Some(m),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn binding_is_namespaced_and_confined_to_the_tenant() {
+        let cfg = Config::default();
+        let rb = build_rolebinding("tenant-acme", "acme", &cfg);
+        // NAMESPACED: the binding lives in the tenant namespace — this is the
+        // single control that keeps cloud-api out of every other tenant.
+        assert_eq!(rb.metadata.namespace.as_deref(), Some("tenant-acme"));
+        assert_eq!(rb.metadata.name.as_deref(), Some(BINDING_NAME));
+    }
+
+    #[test]
+    fn binding_targets_the_tenant_clusterrole_and_cloud_api_sa() {
+        let cfg = Config::default();
+        let rb = build_rolebinding("tenant-acme", "acme", &cfg);
+        assert_eq!(rb.role_ref.kind, "ClusterRole");
+        assert_eq!(rb.role_ref.name, "hanzo-cloud-platform-tenant");
+        assert_eq!(rb.role_ref.api_group, "rbac.authorization.k8s.io");
+        let s = rb.subjects.unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].kind, "ServiceAccount");
+        assert_eq!(s[0].name, "cloud-api");
+        assert_eq!(s[0].namespace.as_deref(), Some("hanzo"));
+    }
+
+    #[test]
+    fn org_prefers_label_then_falls_back_to_name_prefix() {
+        // Explicit label wins.
+        let ns = ns_with("tenant-maxpower", &[("hanzo.ai/org", "maxpower")]);
+        assert_eq!(org_of(&ns), "maxpower");
+        // Fallback: strip the tenant- prefix.
+        let ns = ns_with("tenant-hanzo", &[]);
+        assert_eq!(org_of(&ns), "hanzo");
+    }
+
+    #[test]
+    fn env_overrides_apply_for_white_label() {
+        let cfg = Config {
+            tenant_label: "lux.cloud/managed-by=platform".to_string(),
+            sa_namespace: "lux".to_string(),
+            sa_name: "cloud-api".to_string(),
+            cluster_role: "lux-cloud-platform-tenant".to_string(),
+        };
+        assert_eq!(cfg.label_key(), "lux.cloud/managed-by");
+        let rb = build_rolebinding("tenant-foo", "foo", &cfg);
+        assert_eq!(rb.role_ref.name, "lux-cloud-platform-tenant");
+        assert_eq!(rb.subjects.unwrap()[0].namespace.as_deref(), Some("lux"));
+    }
+
+    #[test]
+    fn label_key_splits_on_equals() {
+        let cfg = Config::default();
+        assert_eq!(cfg.label_key(), "hanzo.ai/managed-by");
+    }
+}

@@ -305,5 +305,16 @@ async fn run_all_controllers(
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ),
+        // Tenant-RBAC controller — ensures the namespace-scoped
+        // `cloud-api-platform` RoleBinding in every platform-managed tenant
+        // namespace so any onboarded org gets one-click `/v1/platform` deploy
+        // scoped to ITS OWN namespace (never a ClusterRoleBinding). Enabled by
+        // default; set TENANT_RBAC_CONTROLLER=false to disable.
+        controllers::tenant_rbac::run_tenant_rbac_controller(
+            client.clone(),
+            std::env::var("TENANT_RBAC_CONTROLLER")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+        ),
     );
 }
