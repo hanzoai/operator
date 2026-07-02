@@ -4,7 +4,7 @@
 Canonical Kubernetes operator for the Hanzo platform. Rust implementation,
 shared by Hanzo, Lux, Zoo, and Osage universes.
 
-One binary. 26 CRD Kinds. No compat aliases — the v1 Kinds are the one
+One binary. 28 CRD Kinds. No compat aliases — the v1 Kinds are the one
 way. API group configurable at install time via `--api-group` /
 `OPERATOR_API_GROUP` (default `hanzo.ai`).
 
@@ -17,7 +17,7 @@ way. API group configurable at install time via `--api-group` /
 - Image: `ghcr.io/hanzoai/operator:vX.Y.Z` (semver only, no `:latest`).
 - Runs in `hanzo-operator-system` namespace.
 
-## CRD Kinds (26 total)
+## CRD Kinds (28 total)
 
 ### Canonical (v1)
 | Kind        | Short  | Materializes |
@@ -65,12 +65,17 @@ way. API group configurable at install time via `--api-group` /
 | LuxRuntime | lrt   | StatefulSet (luxd validators) + Services + PVC + CronJob/Jobs |
 | NodeFleet  | nf    | StatefulSet + Services (pinned node fleet) |
 
+### Autonomous-bot (v1)
+| Kind            | Short | Converges (HTTP, not in-cluster objects) |
+|-----------------|-------|------------------------------------------|
+| AgentDeployment | bot   | cloud `/v1/agents` Agent + visor `/v1/machines` bound `@hanzo/bot` machine |
+
 ## Layout
 ```
 src/
   main.rs           Entrypoint — clap args, leader election, controller spawn.
   lib.rs            Library facade.
-  crd.rs            All 26 CRD types.
+  crd.rs            All 28 CRD types.
   crd_types.rs      JsonSchema wrappers for k8s-openapi types.
   manifests.rs      Pure K8s object builders.
   apply.rs          Server-side apply (typed + DynamicObject).
@@ -262,3 +267,54 @@ the operator.
 
 Test count: 94 → 103 lib tests (+9 apps controller gate/rollout, plus the
 apps_client semver/image-ref/wire-shape suite; 0 regressions).
+
+## AgentDeployment — the autonomous-bot lifecycle Kind
+
+`AgentDeployment` (`agentdeployments.hanzo.ai`, short `bot`/`agentdeploy`) is
+the 28th Kind: the declarative desired state of a **Bot** = Agent
+(`execution_mode=long-running`) + a visor-provisioned machine running the
+`@hanzo/bot` runtime. Spec: `{agentName, org, executionMode(=long-running),
+schedule?, replicas?, botVersion?, provider?, machineId?}`.
+
+Unlike the other CRD controllers (which materialize in-cluster K8s objects),
+its reconcile ACTIONS reach TWO external control planes over HTTP — it
+composes the `managed_database` watch pattern with the `apps` HTTP-client
+pattern rather than inventing a third:
+
+1. **cloud `/v1/agents`** (`core::agents_client`) — ensure the Agent exists
+   with the desired execution mode (get-then-create).
+2. **visor `/v1/machines`** (`core::visor_client`) — bind (or launch+bind) a
+   machine to the `@hanzo/bot` runtime via `POST /v1/machines/:id/bind-agent`.
+
+`status.phase` mirrors the honest visor binding status (`Pending`/`Bound`/
+`Error`) — `Running` only when the Agent is ready AND the binding is `Bound`.
+
+### Safety — provisioning is opt-in + fail-safe (mirrors the apps controller)
+
+This controller can create cloud Agents and LAUNCH cloud machines (which cost
+money), so mutation is gated:
+
+- **`AGENT_DEPLOY_MODE`** ∈ {`off` (default), `bind-only`, `on`}:
+  - `off` — read-only: report status, never create/launch/bind.
+  - `bind-only` — may create the Agent + bind an EXISTING `spec.machineId`,
+    but NEVER launches (zero-cost).
+  - `on` — may additionally launch a machine when `spec.provider` is set and
+    no `spec.machineId` is given.
+- Without `AGENT_DEPLOY_CLOUD_URL` / `AGENT_DEPLOY_VISOR_URL` + a service
+  token (`AGENT_DEPLOY_SERVICE_TOKEN` | `PLATFORM_SERVICE_TOKEN` |
+  `HANZO_API_KEY`), the controller runs READ-ONLY regardless of mode.
+
+`ProvisionPlan::for_spec(mode, spec) -> ReadOnly | BindExisting |
+LaunchThenBind | NoTarget` is pure and the unit of test; `machineId` always
+wins over `provider` (cheapest safe path), and `bind-only` refuses to launch
+even with a `provider`.
+
+Files: `src/crd.rs` (AgentDeploymentSpec/Status), `src/core/agents_client.rs`,
+`src/core/visor_client.rs`, `src/controllers/agent_deployment.rs`. Wired into
+`main.rs` `tokio::join!` + the `generate-crd-yaml` bundle + the four
+`k8s/crds/all-*.yaml` bundles.
+
+Test count: 110 → 132 lib tests (+9 agent_deployment gate/condition, +7
+agents_client envelope/mode, +6 visor_client envelope/spec; bundle test
+27→28; 0 regressions). `cargo build`/`clippy -D warnings`/`fmt --check`/`test`
+all clean.

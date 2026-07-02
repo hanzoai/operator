@@ -83,11 +83,7 @@ pub fn on_error(_obj: Arc<ManagedDatabase>, err: &OperatorError, _ctx: Arc<Ctx>)
     Action::requeue(Duration::from_secs(30))
 }
 
-pub async fn run_managed_database_controller(
-    client: Client,
-    namespace: String,
-    api_group: String,
-) {
+pub async fn run_managed_database_controller(client: Client, namespace: String, api_group: String) {
     let api: Api<ManagedDatabase> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {

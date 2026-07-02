@@ -20,16 +20,17 @@
 //! `config/crd/bases/bootno.de_*.yaml`: Service, Datastore, Gateway, MPC,
 //! Network, Ingress, DNS, Base, SQL, KV, DocDB, IAM, KMS, LLM, S3, Chain,
 //! Validator, Indexer, Explorer, SPA, Static, Queue, Observability, Function,
-//! ManagedDatabase, plus the LuxRuntime + NodeFleet blockchain Kinds. No compat
-//! aliases — the v1 Kinds are the one way.
+//! ManagedDatabase, the LuxRuntime + NodeFleet blockchain Kinds, plus the
+//! AgentDeployment (autonomous-bot) Kind. No compat aliases — the v1 Kinds are
+//! the one way.
 
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::CustomResourceExt;
 use operator::api_group::{ApiGroup, DEFAULT_API_GROUP};
 use operator::crd::{
-    Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress, LuxRuntime,
-    ManagedDatabase, Network, NodeFleet, Observability, Queue, Service, Static, Validator, DNS, IAM,
-    KMS, KV, LLM, MPC, S3, SPA, SQL,
+    AgentDeployment, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress,
+    LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue, Service, Static,
+    Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Returns every managed CRD in canonical bundle order, with the group already
@@ -67,6 +68,7 @@ fn bundle(group: &str) -> Vec<CustomResourceDefinition> {
         Function::crd(),
         LuxRuntime::crd(),
         NodeFleet::crd(),
+        AgentDeployment::crd(),
     ];
 
     if group != DEFAULT_API_GROUP {
@@ -122,9 +124,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundle_is_the_canonical_27_kind_set() {
+    fn bundle_is_the_canonical_28_kind_set() {
         let crds = bundle(DEFAULT_API_GROUP);
-        assert_eq!(crds.len(), 27, "managed Kind count must stay at 27");
+        assert_eq!(crds.len(), 28, "managed Kind count must stay at 28");
+
+        // AgentDeployment (the autonomous-bot Kind) is in the bundle.
+        let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"AgentDeployment"),
+            "AgentDeployment Kind must be present",
+        );
+        let ad = crds
+            .iter()
+            .find(|c| c.spec.names.kind == "AgentDeployment")
+            .expect("AgentDeployment CRD");
+        assert_eq!(ad.spec.names.plural, "agentdeployments");
+        assert_eq!(
+            ad.metadata.name.as_deref(),
+            Some("agentdeployments.hanzo.ai")
+        );
+        // `bot` shortname — a Bot is what it materializes.
+        assert!(ad
+            .spec
+            .names
+            .short_names
+            .as_deref()
+            .map(|s| s.contains(&"bot".to_string()))
+            .unwrap_or(false));
 
         // Every Kind carries the default group and a well-formed metadata.name.
         for crd in &crds {

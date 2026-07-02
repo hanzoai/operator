@@ -1,6 +1,6 @@
 //! Hanzo Operator — Rust port (canonical for all universes).
 //!
-//! Manages 27 CRD Kinds at a configurable API group (default `hanzo.ai`).
+//! Manages 28 CRD Kinds at a configurable API group (default `hanzo.ai`).
 //! One binary serves Hanzo, Lux, Zoo, and Osage universes (and any
 //! white-label tenant) via
 //! `--api-group` / `OPERATOR_API_GROUP`.
@@ -283,6 +283,16 @@ async fn run_all_controllers(
         ),
         // ManagedDatabase facade — per-tenant isolated Datastore workload.
         controllers::managed_database::run_managed_database_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        // AgentDeployment — autonomous-bot lifecycle. Watches the CRD; its
+        // reconcile ACTIONS reach cloud /v1/agents + visor /v1/machines over
+        // HTTP. Provisioning is opt-in + fail-safe: without AGENT_DEPLOY_CLOUD_URL
+        // / AGENT_DEPLOY_VISOR_URL / token it runs READ-ONLY, and even configured
+        // it never launches a machine unless AGENT_DEPLOY_MODE=on.
+        controllers::agent_deployment::run_agent_deployment_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()
