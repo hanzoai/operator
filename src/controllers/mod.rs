@@ -59,3 +59,8 @@ pub mod apps;
 
 // ManagedDatabase facade — per-tenant isolated Datastore workload.
 pub mod managed_database;
+
+// AgentDeployment — the autonomous-bot lifecycle (cloud Agent + visor-bound
+// @hanzo/bot machine). Reconcile ACTIONS reach cloud /v1/agents + visor
+// /v1/machines over HTTP; provisioning is opt-in + fail-safe (AGENT_DEPLOY_MODE).
+pub mod agent_deployment;

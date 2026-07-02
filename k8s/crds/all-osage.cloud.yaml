@@ -13728,3 +13728,178 @@ spec:
     storage: true
     subresources:
       status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agentdeployments.osage.cloud
+spec:
+  group: osage.cloud
+  names:
+    categories: []
+    kind: AgentDeployment
+    plural: agentdeployments
+    shortNames:
+    - agentdeploy
+    - bot
+    singular: agentdeployment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.agentName
+      name: Agent
+      type: string
+    - jsonPath: .spec.org
+      name: Org
+      type: string
+    - jsonPath: .spec.executionMode
+      name: Mode
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.bindingStatus
+      name: Binding
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for AgentDeploymentSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              Declarative desired state for a Bot: a cloud Agent (`org/agentName`) run
+              long-running on a visor-provisioned machine bound to the `@hanzo/bot`
+              runtime. The controller converges three facts each reconcile:
+
+              1. the cloud Agent exists in `/v1/agents` with `execution_mode=long-running`,
+              2. a visor machine is provisioned and bound to it
+                 (`POST /v1/machines/:id/bind-agent`),
+              3. desired == running (the binding reconciles to `Bound`).
+
+              It reaches TWO external control planes over HTTP (cloud `/v1/agents`, visor
+              `/v1/machines`); like the apps DRIVE controller it is **opt-in and
+              provisioning-gated** because launching a machine costs money — see
+              `controllers::agent_deployment` for the gate model.
+
+              `bot` is a shortname because a Bot is exactly what this Kind materializes.
+            properties:
+              agentName:
+                description: |-
+                  The cloud Agent's name in the `/v1/agents` registry. Combined with `org`
+                  this is the Agent identity (`<org>-<agentName>` service-account naming).
+                type: string
+              botVersion:
+                description: |-
+                  Optional pinned `@hanzo/bot` npm version for the runtime. Empty ⇒ the
+                  machine's launch default (cloud-init installs latest).
+                type: string
+              executionMode:
+                default: long-running
+                description: |-
+                  Execution mode of the Agent. A Bot is by definition long-running, so this
+                  defaults to `long-running`; the controller ensures the cloud Agent
+                  carries this mode. Kept explicit (not hard-coded) so a future ephemeral
+                  mode is a spec change, not a code change.
+                type: string
+              machineId:
+                description: |-
+                  Optional explicit machine id (`owner/name`) to bind. When set the
+                  controller binds THIS machine and never launches; when empty and a
+                  provider is set + launching is enabled, it launches one.
+                type: string
+              org:
+                description: The cloud/IAM organization that owns the Agent.
+                type: string
+              provider:
+                description: |-
+                  Optional visor cloud provider to launch the machine on (e.g.
+                  `DigitalOcean`). Empty ⇒ the controller only binds an already-provisioned
+                  machine and never launches one (bind-only, zero-cost).
+                type: string
+              replicas:
+                description: |-
+                  Desired number of bound machines running this bot. Defaults to 1 (a bot
+                  is normally singleton — one persistent compute holds its brain state).
+                format: int32
+                nullable: true
+                type: integer
+              schedule:
+                description: |-
+                  Optional cron schedule for scheduled (non-continuous) execution. Empty ⇒
+                  continuously running. Recorded on the Agent and surfaced in status;
+                  the scheduler that fires runs consumes it (out of this controller's
+                  scope — this controller owns provisioning + binding, not triggering).
+                type: string
+            required:
+            - agentName
+            - org
+            type: object
+          status:
+            nullable: true
+            properties:
+              agentReady:
+                default: false
+                description: True once the cloud Agent exists with the desired execution mode.
+                type: boolean
+              bindingStatus:
+                description: |-
+                  The visor binding's honest status (`Pending`/`Bound`/`Error`), mirrored
+                  verbatim so `kubectl get bot` shows real convergence.
+                type: string
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              machineId:
+                description: The visor machine id this bot is bound to, once known.
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                - null
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: AgentDeployment
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
