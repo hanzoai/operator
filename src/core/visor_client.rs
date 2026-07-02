@@ -14,7 +14,14 @@
 //!
 //! ## Trust model
 //!
-//! Same as `core::agents_client`: one service token, `Authorization: Bearer`.
+//! Visor authenticates a caller as the trusted `app` subject via its IAM
+//! application **clientId/clientSecret**, presented as HTTP Basic auth (visor's
+//! `getUsernameByClientIdSecret` reads `Request.BasicAuth()`; it does NOT parse
+//! `Authorization: Bearer`). So the client sends Basic(clientId, clientSecret)
+//! when configured — that is what makes visor authorize the operator's
+//! path-scoped `/v1/machines/:id/...` calls (subject `app/<app>`). The service
+//! token is still sent as `Authorization: Bearer` for forward-compat / any
+//! bearer-aware surface, but Basic is the load-bearing credential for visor.
 //!
 //! ## Envelope
 //!
@@ -108,6 +115,30 @@ pub struct VisorClientConfig {
     /// `http://visor.hanzo-system.svc.cluster.local:8000`.
     pub base_url: String,
     pub token: String,
+    /// IAM application clientId/clientSecret — the credential visor authorizes as
+    /// the `app` subject (HTTP Basic auth). When both are set, requests carry
+    /// Basic auth; visor requires this to allow the path-scoped binding routes.
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl VisorClientConfig {
+    /// Apply visor auth to a request builder. Emits exactly ONE `Authorization`
+    /// header: Basic(clientId,clientSecret) when configured (the credential visor
+    /// authorizes as the `app` subject), otherwise Bearer(token) as a fallback.
+    ///
+    /// Both must never be set at once — reqwest APPENDS Authorization headers, so
+    /// sending Bearer + Basic yields two headers and Go's `Request.BasicAuth()`
+    /// (which reads the first `Authorization` value) would parse the Bearer one
+    /// and fail, silently downgrading the operator to an anonymous, denied
+    /// caller. Choosing one header keeps auth deterministic.
+    fn authenticate(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if !self.client_id.is_empty() && !self.client_secret.is_empty() {
+            req.basic_auth(&self.client_id, Some(&self.client_secret))
+        } else {
+            req.bearer_auth(&self.token)
+        }
+    }
 }
 
 fn http_client() -> Result<reqwest::Client> {
@@ -174,9 +205,8 @@ pub async fn bind_agent(
         "agentName": agent_name,
         "botVersion": bot_version,
     });
-    let resp = http
-        .post(&url)
-        .bearer_auth(&config.token)
+    let resp = config
+        .authenticate(http.post(&url))
         .json(&payload)
         .send()
         .await
@@ -199,9 +229,8 @@ pub async fn get_binding(
         config.base_url.trim_end_matches('/'),
         machine_id
     );
-    let resp = http
-        .get(&url)
-        .bearer_auth(&config.token)
+    let resp = config
+        .authenticate(http.get(&url))
         .send()
         .await
         .map_err(OperatorError::Http)?;
@@ -243,9 +272,8 @@ pub async fn launch_machine(
         owner,
         provider
     );
-    let resp = http
-        .post(&url)
-        .bearer_auth(&config.token)
+    let resp = config
+        .authenticate(http.post(&url))
         .json(spec)
         .send()
         .await
@@ -316,7 +344,59 @@ mod tests {
         let cfg = VisorClientConfig {
             base_url: "http://x".into(),
             token: String::new(),
+            client_id: String::new(),
+            client_secret: String::new(),
         };
         assert!(require_token(&cfg).is_err());
+    }
+
+    #[test]
+    fn authenticate_adds_basic_when_client_creds_present() {
+        // With client creds, the request must carry HTTP Basic (what visor reads).
+        let cfg = VisorClientConfig {
+            base_url: "http://x".into(),
+            token: "tok".into(),
+            client_id: "app-hanzo-visor".into(),
+            client_secret: "s3cr3t".into(),
+        };
+        let http = reqwest::Client::new();
+        let req = cfg.authenticate(http.get("http://x/v1/machines/a%2Fb/agent-binding"));
+        let built = req.build().unwrap();
+        // EXACTLY one Authorization header (reqwest appends — two would break
+        // Go's Request.BasicAuth() which reads only the first value).
+        let auths: Vec<&str> = built
+            .headers()
+            .get_all(reqwest::header::AUTHORIZATION)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(auths.len(), 1, "must send exactly one Authorization header");
+        assert!(
+            auths[0].starts_with("Basic "),
+            "expected Basic auth for visor, got {:?}",
+            auths[0]
+        );
+    }
+
+    #[test]
+    fn authenticate_falls_back_to_bearer_without_client_creds() {
+        let cfg = VisorClientConfig {
+            base_url: "http://x".into(),
+            token: "tok".into(),
+            client_id: String::new(),
+            client_secret: String::new(),
+        };
+        let http = reqwest::Client::new();
+        let req = cfg.authenticate(http.get("http://x/v1/machines/a%2Fb/agent-binding"));
+        let built = req.build().unwrap();
+        let auth = built
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            auth.starts_with("Bearer "),
+            "expected Bearer auth fallback, got {auth:?}"
+        );
     }
 }

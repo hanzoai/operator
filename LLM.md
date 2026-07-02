@@ -304,6 +304,16 @@ money), so mutation is gated:
   token (`AGENT_DEPLOY_SERVICE_TOKEN` | `PLATFORM_SERVICE_TOKEN` |
   `HANZO_API_KEY`), the controller runs READ-ONLY regardless of mode.
 
+Visor auth: visor authorizes the operator as the `app` subject via its IAM
+application **clientId/clientSecret** presented as HTTP **Basic** auth — it does
+NOT parse `Authorization: Bearer`. Set `AGENT_DEPLOY_VISOR_CLIENT_ID` /
+`AGENT_DEPLOY_VISOR_CLIENT_SECRET` (fallback `IAM_CLIENT_ID` /
+`IAM_CLIENT_SECRET`); without them visor denies the path-scoped
+`/v1/machines/:id/...` binding routes (403) and provisioning silently no-ops.
+`visor_client` sends exactly ONE `Authorization` header (Basic when creds are
+set, else Bearer) — reqwest appends, and two headers would break visor's
+`Request.BasicAuth()`. Cloud `/v1/agents` still uses Bearer (it is bearer-aware).
+
 `ProvisionPlan::for_spec(mode, spec) -> ReadOnly | BindExisting |
 LaunchThenBind | NoTarget` is pure and the unit of test; `machineId` always
 wins over `provider` (cheapest safe path), and `bind-only` refuses to launch
@@ -314,7 +324,7 @@ Files: `src/crd.rs` (AgentDeploymentSpec/Status), `src/core/agents_client.rs`,
 `main.rs` `tokio::join!` + the `generate-crd-yaml` bundle + the four
 `k8s/crds/all-*.yaml` bundles.
 
-Test count: 110 → 132 lib tests (+9 agent_deployment gate/condition, +7
-agents_client envelope/mode, +6 visor_client envelope/spec; bundle test
-27→28; 0 regressions). `cargo build`/`clippy -D warnings`/`fmt --check`/`test`
-all clean.
+Test count: 110 → 136 lib tests (+9 agent_deployment gate/condition, +9
+agents_client envelope/mode incl. `"data"`-substring regression, +8
+visor_client envelope/spec/auth-header; bundle test 27→28; 0 regressions).
+`cargo build`/`clippy -D warnings`/`fmt --check`/`test` all clean.
