@@ -115,32 +115,36 @@ pub async fn get_agent(config: &AgentsClientConfig, name: &str) -> Result<Option
 /// `{status,data}` envelope, or `{status:"ok",data:null}` for not-found. All
 /// three collapse to `Option<AgentView>` here so the caller sees one shape.
 fn parse_agent_body(body: &str) -> Result<Option<AgentView>> {
-    // Envelope first: `{ "status": "ok", "data": <agent|null> }`.
-    #[derive(Deserialize)]
-    struct Envelope {
-        #[serde(default)]
-        data: serde_json::Value,
-    }
-    if let Ok(env) = serde_json::from_str::<Envelope>(body) {
-        if !env.data.is_null() {
-            let agent: AgentView = serde_json::from_value(env.data)
-                .map_err(|e| OperatorError::Other(format!("agent envelope data parse: {e}")))?;
-            return Ok(Some(agent));
-        }
-        // status=ok data=null → not found. But a bare agent object also has no
-        // top-level `data`, so only treat as not-found when the body actually
-        // carried a null `data` key — fall through to the bare parse otherwise.
-        if body.contains("\"data\"") {
-            return Ok(None);
-        }
-    }
-    // Bare agent object.
-    let agent: AgentView = serde_json::from_str(body).map_err(|e| {
+    // Parse once into a generic JSON value, then decide envelope vs bare
+    // STRUCTURALLY. The prior code sniffed the raw text for the substring
+    // `"data"` to disambiguate — but a bare agent whose own fields contain that
+    // substring (an agent named `metadata`, instructions mentioning `"data"`,
+    // etc.) was then falsely read as not-found, triggering a spurious re-create
+    // and breaking get-then-create idempotency. Key presence is a property of
+    // the parsed object, not of its serialized bytes.
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|e| {
         OperatorError::Other(format!(
             "agent body parse: {e}; body={}",
             &body[..body.len().min(400)]
         ))
     })?;
+
+    // Envelope: a JSON object carrying a top-level `data` key.
+    // `{status,data:<agent|null>}` — null data means not-found.
+    if let Some(obj) = value.as_object() {
+        if let Some(data) = obj.get("data") {
+            if data.is_null() {
+                return Ok(None);
+            }
+            let agent: AgentView = serde_json::from_value(data.clone())
+                .map_err(|e| OperatorError::Other(format!("agent envelope data parse: {e}")))?;
+            return Ok(Some(agent));
+        }
+    }
+
+    // Bare agent object (no top-level `data` key).
+    let agent: AgentView = serde_json::from_value(value)
+        .map_err(|e| OperatorError::Other(format!("agent body parse (bare): {e}")))?;
     if agent.name.is_empty() {
         return Ok(None);
     }
@@ -215,6 +219,31 @@ mod tests {
     fn bare_object_without_name_is_none() {
         let body = r#"{"org":"hanzoai"}"#;
         assert!(parse_agent_body(body).unwrap().is_none());
+    }
+
+    #[test]
+    fn bare_agent_containing_data_substring_still_parses() {
+        // Regression: a bare agent whose NAME is `metadata` (contains the
+        // substring "data") must NOT be misread as an envelope not-found. The
+        // old raw-text `body.contains("\"data\"")` sniff broke this and would
+        // spuriously re-create the agent.
+        let body = r#"{"name":"metadata","org":"hanzoai","executionMode":"long-running"}"#;
+        let a = parse_agent_body(body)
+            .unwrap()
+            .expect("agent must be found");
+        assert_eq!(a.name, "metadata");
+        assert_eq!(a.execution_mode.as_deref(), Some("long-running"));
+    }
+
+    #[test]
+    fn bare_agent_with_data_valued_field_still_parses() {
+        // A field VALUE containing the literal `"data"` substring must also not
+        // trip the envelope path. (status is a decoded field; use it as carrier.)
+        let body = r#"{"name":"r","org":"hanzoai","executionMode":"long-running","status":"has \"data\" inside"}"#;
+        let a = parse_agent_body(body)
+            .unwrap()
+            .expect("agent must be found");
+        assert_eq!(a.name, "r");
     }
 
     #[test]

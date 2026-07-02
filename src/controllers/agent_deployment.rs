@@ -177,6 +177,15 @@ impl AgentDeployConfig {
         let org_id = std::env::var("AGENT_DEPLOY_ORG_ID")
             .ok()
             .filter(|s| !s.is_empty());
+        // Visor authorizes the operator as the `app` subject via its IAM
+        // application clientId/clientSecret (HTTP Basic). Without these, visor
+        // sees an anonymous caller and denies the path-scoped binding routes, so
+        // provisioning silently no-ops behind 403s — surface that loudly.
+        let visor_client_id =
+            first_env(&["AGENT_DEPLOY_VISOR_CLIENT_ID", "IAM_CLIENT_ID"]).unwrap_or_default();
+        let visor_client_secret =
+            first_env(&["AGENT_DEPLOY_VISOR_CLIENT_SECRET", "IAM_CLIENT_SECRET"])
+                .unwrap_or_default();
         let mode =
             DeployMode::from_env_str(&std::env::var("AGENT_DEPLOY_MODE").unwrap_or_default());
         let machine_owner = std::env::var("AGENT_DEPLOY_MACHINE_OWNER")
@@ -207,6 +216,8 @@ impl AgentDeployConfig {
             visor: VisorClientConfig {
                 base_url: visor_url,
                 token,
+                client_id: visor_client_id,
+                client_secret: visor_client_secret,
             },
             mode,
             machine_owner,
@@ -535,11 +546,24 @@ pub async fn run_agent_deployment_controller(client: Client, namespace: String, 
         .map(|c| c.requeue)
         .unwrap_or(Duration::from_secs(60));
     match &config {
-        Some(c) => info!(
-            group = %api_group,
-            mode = ?c.mode,
-            "Starting AgentDeployment controller (cloud + visor configured)"
-        ),
+        Some(c) => {
+            if c.mode.may_mutate()
+                && (c.visor.client_id.is_empty() || c.visor.client_secret.is_empty())
+            {
+                warn!(
+                    "AGENT_DEPLOY_MODE={:?} but no visor clientId/clientSecret \
+                     (AGENT_DEPLOY_VISOR_CLIENT_ID/SECRET or IAM_CLIENT_ID/SECRET) — \
+                     visor authorizes the operator via Basic auth; binding/launch calls \
+                     will be denied (403) without it",
+                    c.mode
+                );
+            }
+            info!(
+                group = %api_group,
+                mode = ?c.mode,
+                "Starting AgentDeployment controller (cloud + visor configured)"
+            )
+        }
         None => info!(
             group = %api_group,
             "Starting AgentDeployment controller (READ-ONLY — set AGENT_DEPLOY_CLOUD_URL, \
