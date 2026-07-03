@@ -85,17 +85,36 @@ pub async fn reconcile_datastore(cr: Arc<DatastoreCR>, ctx: Arc<Ctx>) -> Result<
         .ok_or_else(|| OperatorError::Config("Datastore has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "Datastore");
+    // Stamp the ownership / cost-attribution labels the control plane put on the
+    // CR onto the materialized workload + pods, so a per-org cost dashboard can
+    // attribute a dedicated tenant instance's footprint by label (the namespace
+    // is the isolation boundary; these are the attribution key). Never the
+    // immutable selector.
     reconcile_datastore_inner(
         &ctx.client,
         &name,
         &namespace,
         &cr.spec,
         owner,
-        &BTreeMap::new(),
+        &attribution_labels(&cr),
     )
     .await?;
     write_datastore_status(&ctx.client, &name, &namespace, &cr).await;
     Ok(Action::requeue(Duration::from_secs(60)))
+}
+
+/// Copy the well-known `hanzo.ai/*` ownership labels (org, resource id,
+/// managed-by) from a `Datastore` CR onto its workload. Only these fixed keys
+/// are propagated — arbitrary CR labels are not, and the selector is untouched.
+fn attribution_labels(cr: &DatastoreCR) -> BTreeMap<String, String> {
+    let src = cr.labels();
+    let mut out = BTreeMap::new();
+    for k in ["hanzo.ai/org", "hanzo.ai/resource", "hanzo.ai/managed-by"] {
+        if let Some(v) = src.get(k) {
+            out.insert(k.to_string(), v.clone());
+        }
+    }
+    out
 }
 
 /// Public alias for use by compat facades.
@@ -385,4 +404,54 @@ pub async fn run_datastore_controller(client: Client, namespace: String, api_gro
             }
         })
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crd::StorageSpec;
+
+    fn ds(labels: &[(&str, &str)]) -> DatastoreCR {
+        let mut cr = DatastoreCR::new(
+            "ds-x",
+            DatastoreSpec {
+                type_: "datastore".to_string(),
+                storage: StorageSpec {
+                    size: "10Gi".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        cr.metadata.labels = Some(
+            labels
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        cr
+    }
+
+    // The org/resource ownership labels the control plane stamps on a dedicated
+    // Datastore CR propagate to the workload for per-org cost attribution; an
+    // unrelated label does not.
+    #[test]
+    fn attribution_labels_propagates_only_well_known_keys() {
+        let cr = ds(&[
+            ("hanzo.ai/org", "acme"),
+            ("hanzo.ai/resource", "rs_123"),
+            ("hanzo.ai/managed-by", "provisioning"),
+            ("unrelated", "x"),
+        ]);
+        let got = attribution_labels(&cr);
+        assert_eq!(got.get("hanzo.ai/org"), Some(&"acme".to_string()));
+        assert_eq!(got.get("hanzo.ai/resource"), Some(&"rs_123".to_string()));
+        assert_eq!(got.get("hanzo.ai/managed-by"), Some(&"provisioning".to_string()));
+        assert!(!got.contains_key("unrelated"));
+    }
+
+    #[test]
+    fn attribution_labels_empty_when_unlabeled() {
+        assert!(attribution_labels(&ds(&[])).is_empty());
+    }
 }
