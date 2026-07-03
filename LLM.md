@@ -329,3 +329,35 @@ gains `secrets [get, create, patch]` (least privilege — no delete/list/watch).
 cloud-api's two platform ClusterRoles are UNCHANGED and hold NO `secrets` verb.
 
 Test count: 131 → 136 lib tests (+5 tenant_rbac pull-secret; 0 regressions).
+
+## v0.6.13 — zero-downtime rolling handoff for single-writer PVC services
+
+`manifests::build_deployment` now injects a **soft (preferred) self-podAffinity**
+(`weight 100`, `topologyKey kubernetes.io/hostname`, `labelSelector = the app's
+own selector labels`) whenever a Deployment BOTH uses `strategy != Recreate`
+(i.e. RollingUpdate, which the operator already renders as
+`maxSurge:1 / maxUnavailable:0`) AND mounts a `persistentVolumeClaim` volume.
+
+Why: a RollingUpdate over a **ReadWriteOnce** PVC (DO block storage is
+single-attach) deadlocks if the surge pod lands on a different node than the
+volume's current holder — a "Multi-Attach" error. Co-locating the surge pod on
+the SAME node as the running pod (RWO permits multiple pods per NODE) makes the
+new pod bind-mount the already-attached volume with **no detach/reattach gap**,
+so the roll is genuinely zero-downtime. It is also the ONLY node topology under
+which a per-tenant SQLite writer stays safe during the brief two-pod overlap:
+WAL's `-shm` index is an mmap shared only within one host, and POSIX file locks +
+`busy_timeout` serialize the overlap → no corruption, no cross-node split brain.
+
+The affinity is **soft, never required**: with no anchor pod (cold start / node
+loss) the surge schedules anywhere and recovers; a rare failure to co-locate
+degrades to a fail-SAFE stalled roll (old pod keeps serving under
+`maxUnavailable:0`), never an outage. `Recreate` services and volume-less
+services are untouched (affinity stays `None`) — so this is a **no-op for the
+entire fleet until a CR opts in with `strategy: RollingUpdate` on a PVC-backed
+service** (first consumer: `cloud`, the api.cloud.hanzo.ai backend, whose unified
+binary opens every per-tenant store WAL + `busy_timeout` and runs idempotent
+migrations, making the same-host overlap safe).
+
+Test count: 136 → 139 lib tests (+3 `manifests::deployment_tests`:
+rolling+PVC co-locates soft/self/hostname, Recreate+PVC has no affinity,
+rolling+no-PVC has no affinity; 0 regressions).

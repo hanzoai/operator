@@ -14,11 +14,11 @@ use k8s_openapi::api::autoscaling::v2::{
     MetricTarget, ResourceMetricSource,
 };
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction, HTTPGetAction,
-    Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PodSpec,
-    PodTemplateSpec, Probe, ResourceRequirements as K8sResourceRequirements,
-    Service as CoreService, ServicePort, ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume,
-    VolumeMount,
+    Affinity, ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction,
+    HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
+    PodAffinity, PodAffinityTerm, PodSpec, PodTemplateSpec, Probe,
+    ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
+    ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume, VolumeMount, WeightedPodAffinityTerm,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -253,6 +253,49 @@ pub fn build_deployment(
         }
     };
 
+    // Zero-downtime rolling handoff for single-writer, PVC-backed services.
+    //
+    // A RollingUpdate that mounts a ReadWriteOnce PVC deadlocks when the surge
+    // pod lands on a different node than the volume's current holder — DO block
+    // storage is single-attach, so the new pod hangs on a "Multi-Attach" error.
+    // Co-locating the surge pod on the SAME node as the running pod fixes both
+    // halves of the problem: RWO permits multiple pods per NODE, so the new pod
+    // bind-mounts the already-attached volume with no detach/reattach gap, AND
+    // same-host SQLite stays safe (WAL shares an mmap'd `-shm` index that only
+    // works within one host, and POSIX file locks + busy_timeout serialize the
+    // brief two-writer overlap → no corruption). Paired with maxUnavailable=0
+    // (below), the old pod serves until the new one is Ready → no request gap.
+    //
+    // SOFT (preferred), never required: with no anchor pod (cold start / node
+    // loss) the surge schedules anywhere and recovers; a rare failure to
+    // co-locate degrades to a fail-SAFE stalled roll (old pod keeps serving),
+    // never an outage or a cross-node split-brain writer. Recreate services and
+    // volume-less services are untouched (affinity stays None).
+    let affinity =
+        if strategy != "Recreate" && volumes.iter().any(|v| v.persistent_volume_claim.is_some()) {
+            Some(Affinity {
+                pod_affinity: Some(PodAffinity {
+                    preferred_during_scheduling_ignored_during_execution: Some(vec![
+                        WeightedPodAffinityTerm {
+                            weight: 100,
+                            pod_affinity_term: PodAffinityTerm {
+                                label_selector: Some(LabelSelector {
+                                    match_labels: Some(selector_labels_map.clone()),
+                                    ..Default::default()
+                                }),
+                                topology_key: "kubernetes.io/hostname".to_string(),
+                                ..Default::default()
+                            },
+                        },
+                    ]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
     let containers = inject_pre_stop(containers);
 
     Deployment {
@@ -276,6 +319,7 @@ pub fn build_deployment(
                     ..Default::default()
                 }),
                 spec: Some(PodSpec {
+                    affinity,
                     containers,
                     volumes: if volumes.is_empty() {
                         None
@@ -842,7 +886,10 @@ mod probe_tests {
         });
         assert_eq!(handler_count(&p), 1, "exactly one handler — never a union");
         assert!(p.tcp_socket.is_some());
-        assert!(p.http_get.is_none(), "no httpGet beside tcpSocket (the base 422)");
+        assert!(
+            p.http_get.is_none(),
+            "no httpGet beside tcpSocket (the base 422)"
+        );
         let port = p.tcp_socket.unwrap().port;
         assert_eq!(port, IntOrString::Int(8090));
     }
@@ -910,7 +957,8 @@ mod probe_tests {
             "class annotation must default to 'ingress' when the CR omits ingressClassName"
         );
         assert_eq!(
-            anns.get("cert-manager.io/cluster-issuer").map(String::as_str),
+            anns.get("cert-manager.io/cluster-issuer")
+                .map(String::as_str),
             Some("letsencrypt-prod"),
         );
         // Must use the annotation form, NEVER spec.ingressClassName: the
@@ -937,5 +985,143 @@ mod probe_tests {
         );
         // tls=false -> no issuer annotation.
         assert!(!anns.contains_key("cert-manager.io/cluster-issuer"));
+    }
+}
+
+#[cfg(test)]
+mod deployment_tests {
+    use super::*;
+    use k8s_openapi::api::core::v1::{EmptyDirVolumeSource, PersistentVolumeClaimVolumeSource};
+
+    fn pvc_volume() -> Volume {
+        Volume {
+            name: "data".into(),
+            persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                claim_name: "cloud-api-data".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn empty_dir_volume() -> Volume {
+        Volume {
+            name: "cache".into(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            ..Default::default()
+        }
+    }
+
+    fn deploy(strategy: &str, volumes: Vec<Volume>) -> Deployment {
+        build_deployment(
+            "cloud",
+            "hanzo",
+            standard_labels("cloud", "api", "cloud", "v1.0.0"),
+            selector_labels("cloud"),
+            Some(1),
+            vec![],
+            volumes,
+            strategy,
+            vec![],
+            "",
+        )
+    }
+
+    fn pod_spec(d: &Deployment) -> &PodSpec {
+        d.spec.as_ref().unwrap().template.spec.as_ref().unwrap()
+    }
+
+    /// The load-bearing invariant: a RollingUpdate service that mounts a
+    /// ReadWriteOnce PVC gets a SOFT self-podAffinity so the surge pod
+    /// co-locates on the volume's node (RWO permits multiple pods per node) —
+    /// no Multi-Attach deadlock, no detach/reattach gap, and same-host SQLite
+    /// stays corruption-safe. Combined with maxUnavailable=0 the roll is
+    /// zero-downtime.
+    #[test]
+    fn rolling_pvc_service_colocates_surge_pod_on_the_volume_node() {
+        let d = deploy("RollingUpdate", vec![pvc_volume()]);
+        let spec = d.spec.as_ref().unwrap();
+
+        // Zero-downtime knobs: old pod serves until the new one is Ready.
+        let ru = spec
+            .strategy
+            .as_ref()
+            .unwrap()
+            .rolling_update
+            .as_ref()
+            .expect("rolling update params present");
+        assert_eq!(ru.max_surge, Some(IntOrString::Int(1)));
+        assert_eq!(ru.max_unavailable, Some(IntOrString::Int(0)));
+
+        let aff = pod_spec(&d)
+            .affinity
+            .as_ref()
+            .expect("affinity present for a rolling PVC-backed service");
+        let pa = aff.pod_affinity.as_ref().expect("pod_affinity present");
+        assert!(
+            aff.pod_anti_affinity.is_none(),
+            "must NOT anti-affine — spreading the pods across nodes reintroduces Multi-Attach"
+        );
+        assert!(
+            pa.required_during_scheduling_ignored_during_execution
+                .is_none(),
+            "required self-affinity can't schedule from zero pods → node-loss outage; must be soft"
+        );
+        let terms = pa
+            .preferred_during_scheduling_ignored_during_execution
+            .as_ref()
+            .expect("soft (preferred) co-location term present");
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].weight, 100);
+        assert_eq!(
+            terms[0].pod_affinity_term.topology_key,
+            "kubernetes.io/hostname"
+        );
+        let ml = terms[0]
+            .pod_affinity_term
+            .label_selector
+            .as_ref()
+            .unwrap()
+            .match_labels
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            ml,
+            &selector_labels("cloud"),
+            "co-locate onto THIS app's own pods (the running writer)"
+        );
+    }
+
+    /// Recreate keeps the single-writer guarantee with a hard gap; it never
+    /// overlaps two pods, so it must never carry co-location affinity.
+    #[test]
+    fn recreate_pvc_service_has_no_affinity() {
+        let d = deploy("Recreate", vec![pvc_volume()]);
+        assert_eq!(
+            d.spec
+                .as_ref()
+                .unwrap()
+                .strategy
+                .as_ref()
+                .unwrap()
+                .type_
+                .as_deref(),
+            Some("Recreate")
+        );
+        assert!(
+            pod_spec(&d).affinity.is_none(),
+            "Recreate never overlaps pods → no co-location"
+        );
+    }
+
+    /// A rolling service with no RWO PVC has no Multi-Attach risk, so it must
+    /// not be pinned to one node (that would needlessly forfeit spread/HA).
+    #[test]
+    fn rolling_service_without_pvc_has_no_affinity() {
+        let d = deploy("RollingUpdate", vec![empty_dir_volume()]);
+        assert!(
+            pod_spec(&d).affinity.is_none(),
+            "no RWO PVC → no Multi-Attach risk → no co-location pin"
+        );
     }
 }
