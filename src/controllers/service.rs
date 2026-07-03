@@ -347,7 +347,7 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
 
     let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
     let patch = serde_json::json!({"status": status});
-    let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
+    let pp = PatchParams::apply(apply::FIELD_MANAGER);
     if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
         warn!(error = %e, "failed to update Service status (CRD may not be installed)");
     }
