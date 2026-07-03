@@ -361,3 +361,28 @@ migrations, making the same-host overlap safe).
 Test count: 136 → 139 lib tests (+3 `manifests::deployment_tests`:
 rolling+PVC co-locates soft/self/hostname, Recreate+PVC has no affinity,
 rolling+no-PVC has no affinity; 0 regressions).
+
+## v0.6.14 — surge co-location is now OPT-IN (`ServiceSpec.surgeColocation`)
+
+RED (against 0.6.13) proved the no-corruption claim but found the co-location was
+injected on **any** `RollingUpdate` + PVC service, not just cloud — four others
+already had it (`search`, `search-fts5`, `tasks`, `hanzo-playground`), and an
+exclusive-lock single-open engine (`search`/Meili-LMDB, `vector`/Qdrant) can only
+crashloop or Multi-Attach-stall under it (fail-safe, but not a real handoff). The
+"no-op until a CR opts in" claim was false.
+
+Fix: the co-location affinity is now gated on a new opt-in bool
+`ServiceSpec.surgeColocation` (default false). Refactor:
+- `manifests::build_deployment` is affinity-agnostic again (no implicit affinity).
+- The affinity SHAPE is the pure `manifests::colocation_affinity(selector)`
+  (soft, weight 100, hostname, self-selector) — still the DRY home, unit-tested.
+- `controllers::service` injects it in post-process iff
+  `should_colocate(spec.surgeColocation, strategy, mounts_pvc)` — pure, unit-tested
+  (opted-in+rolling+PVC ⇒ yes; not-opted / Recreate / no-PVC ⇒ no).
+
+So co-location is applied to **exactly the services that ask for it**. Only cloud
+sets `surgeColocation: true` (its stores are SQLite-WAL + `busy_timeout` +
+`_txlock=immediate`, safe under a brief same-host two-pod overlap). Exclusive-lock
+engines stay on `strategy: Recreate`. Test count unchanged at 139 (−3 old
+deployment_tests, +2 helper/builder tests in manifests, +1 `should_colocate` gate
+test in service; 0 regressions).

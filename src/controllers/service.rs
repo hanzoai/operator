@@ -383,6 +383,14 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
+/// Inject surge co-location affinity iff: the CR opted in (`surgeColocation`),
+/// the strategy is a RollingUpdate (anything but `Recreate`; empty defaults to
+/// RollingUpdate), AND the pod mounts a real PVC. Pure so the fleet-safety gate
+/// is unit-tested without a cluster.
+fn should_colocate(surge_colocation: bool, strategy: &str, mounts_pvc: bool) -> bool {
+    surge_colocation && strategy != "Recreate" && mounts_pvc
+}
+
 /// Public alias for use by compat facades.
 pub async fn reconcile_service_inner_pub(
     client: &Client,
@@ -479,6 +487,11 @@ async fn reconcile_service_inner(
     } else {
         Some(spec.replicas.unwrap_or(1))
     };
+    // Does the pod mount a real PVC? (computed before volumes_k8s is moved into
+    // build_deployment) — the precondition for surge co-location.
+    let mounts_pvc = volumes_k8s
+        .iter()
+        .any(|v| v.persistent_volume_claim.is_some());
     let mut deploy = manifests::build_deployment(
         name,
         namespace,
@@ -495,6 +508,18 @@ async fn reconcile_service_inner(
         if let Some(annotations) = &spec.annotations {
             if let Some(meta) = d_spec.template.metadata.as_mut() {
                 meta.annotations = Some(annotations.clone());
+            }
+        }
+        // Zero-downtime surge co-location — OPT-IN (spec.surgeColocation). Only a
+        // RollingUpdate service whose data is a single RWO PVC needs it, and only
+        // if the store is safe under a brief same-host two-pod overlap (SQLite
+        // WAL). Pin the surge pod to the volume's node so it bind-mounts the
+        // already-attached volume instead of dead-locking on Multi-Attach.
+        // Exclusive-lock engines opt OUT (they must use strategy Recreate), so
+        // the affinity is never injected implicitly.
+        if should_colocate(spec.surge_colocation, &spec.strategy, mounts_pvc) {
+            if let Some(pod) = d_spec.template.spec.as_mut() {
+                pod.affinity = Some(manifests::colocation_affinity(&sel_labels));
             }
         }
         // Spec init containers, plus the auto-injected replicate-restore init.
@@ -706,6 +731,30 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
 mod tests {
     use super::*;
     use crate::crd::{AutoscalingSpec, ImageSpec, ServicePort as CrServicePort};
+
+    /// Surge co-location is OPT-IN and only for a RollingUpdate PVC service. This
+    /// locks the fleet-safety gate: an exclusive-lock engine (opted out, or on a
+    /// non-PVC / Recreate service) is never silently pinned to one node.
+    #[test]
+    fn colocate_only_when_opted_in_rolling_and_pvc() {
+        assert!(should_colocate(true, "RollingUpdate", true));
+        assert!(
+            should_colocate(true, "", true),
+            "empty strategy renders as RollingUpdate, so it co-locates too"
+        );
+        assert!(
+            !should_colocate(false, "RollingUpdate", true),
+            "not opted in → never pinned (this is the MED-2 fix)"
+        );
+        assert!(
+            !should_colocate(true, "Recreate", true),
+            "Recreate never overlaps two pods → no co-location"
+        );
+        assert!(
+            !should_colocate(true, "RollingUpdate", false),
+            "no PVC → no Multi-Attach risk → don't forfeit spread"
+        );
+    }
 
     fn base_spec() -> ServiceSpec {
         ServiceSpec {
