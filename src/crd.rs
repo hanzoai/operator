@@ -482,6 +482,16 @@ pub struct DatastoreSpec {
     pub service_monitor: Option<ServiceMonitorSpec>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub part_of: String,
+    /// Pod-level `securityContext.fsGroup`. Set this when a NON-root engine
+    /// image (e.g. FerretDB `docdb` runs as uid:gid 1000, distroless — no
+    /// entrypoint can chown) must write its data PVC: the kubelet chowns the
+    /// mounted volume to this GID + adds it to every container's supplementary
+    /// groups, so the app can write. Omit for root or self-chowning images
+    /// (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+    /// changing it never restarts unrelated datastores (a datastore that leaves
+    /// it None gets a byte-identical StatefulSet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_group: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]

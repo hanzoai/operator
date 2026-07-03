@@ -230,6 +230,7 @@ async fn reconcile_datastore_inner(
         ips_k8s,
         &format!("{}-hs", name),
     );
+    apply_fs_group(&mut sts, spec.fs_group);
     set_owner(&mut sts.metadata.owner_references, &owner);
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     apply::apply(&stss, &sts).await?;
@@ -273,6 +274,22 @@ async fn reconcile_datastore_inner(
 
     info!(name, namespace, type_ = %spec.type_, "Datastore reconciled");
     Ok(())
+}
+
+/// Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root engine
+/// image (FerretDB docdb runs as uid:gid 1000, distroless — no entrypoint can
+/// chown) write its data PVC: the kubelet chowns the mounted volume to this GID
+/// + adds it to every container's supplementary groups. `None` → the pod is
+/// left untouched → byte-identical StatefulSet for root/self-chowning engines
+/// (ClickHouse datastore).
+fn apply_fs_group(sts: &mut StatefulSet, fs_group: Option<i64>) {
+    let Some(fsg) = fs_group else { return };
+    if let Some(pod) = sts.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+        pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
+            fs_group: Some(fsg),
+            ..Default::default()
+        });
+    }
 }
 
 fn default_port_for(type_: &str) -> i32 {
@@ -453,5 +470,53 @@ mod tests {
     #[test]
     fn attribution_labels_empty_when_unlabeled() {
         assert!(attribution_labels(&ds(&[])).is_empty());
+    }
+
+    fn empty_sts() -> StatefulSet {
+        use k8s_openapi::api::apps::v1::StatefulSetSpec;
+        use k8s_openapi::api::core::v1::{PodSpec, PodTemplateSpec};
+        StatefulSet {
+            spec: Some(StatefulSetSpec {
+                template: PodTemplateSpec {
+                    spec: Some(PodSpec::default()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // A non-root engine (docdb=FerretDB, uid 1000) sets spec.fsGroup so the
+    // kubelet group-owns its data PVC — else it CrashLoops writing /state.
+    #[test]
+    fn fs_group_set_stamps_pod_security_context() {
+        let mut sts = empty_sts();
+        apply_fs_group(&mut sts, Some(1000));
+        let sc = sts
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .expect("fsGroup engine must stamp a pod securityContext");
+        assert_eq!(sc.fs_group, Some(1000));
+    }
+
+    // A root/self-chowning engine (ClickHouse datastore) leaves fsGroup None →
+    // no securityContext → byte-identical StatefulSet (no needless restart).
+    #[test]
+    fn fs_group_none_leaves_pod_untouched() {
+        let mut sts = empty_sts();
+        apply_fs_group(&mut sts, None);
+        assert!(sts
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .is_none());
     }
 }
