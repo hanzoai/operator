@@ -190,7 +190,7 @@ async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxRunt
     ));
     let api: Api<LuxRuntime> = Api::namespaced(client.clone(), namespace);
     let patch = serde_json::json!({ "status": status });
-    let pp = PatchParams::apply(apply::FIELD_MANAGER).force();
+    let pp = PatchParams::apply(apply::FIELD_MANAGER);
     if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
         warn!(error = %e, "failed to update LuxRuntime status");
     }
