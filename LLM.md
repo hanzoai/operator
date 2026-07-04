@@ -328,3 +328,43 @@ Test count: 110 → 136 lib tests (+9 agent_deployment gate/condition, +9
 agents_client envelope/mode incl. `"data"`-substring regression, +8
 visor_client envelope/spec/auth-header; bundle test 27→28; 0 regressions).
 `cargo build`/`clippy -D warnings`/`fmt --check`/`test` all clean.
+
+## v0.6.17 — surge co-location OPT-IN, forward-ported onto main (zero-downtime SQLite-WAL deploys)
+
+The 0.6.13/0.6.14 surge co-location feature was authored on branch
+`fix/cloud-zero-downtime-rwo-colocation` but **never merged to main** — the
+0.6.15/0.6.16 tags were cut from a main that lacks it, so the live
+`0.6.16-amd64` binary silently ignores `spec.surgeColocation` even though the
+CRD (universe `crds.yaml`, ahead of the binary) carries the field. Confirmed
+live: patching `surgeColocation: true` on the iam CR flipped strategy to
+RollingUpdate but injected NO affinity (0.6.16 has no `should_colocate`).
+
+v0.6.17 forward-ports ONLY the additive surge pieces onto current main (which
+already renders RollingUpdate as maxSurge=1/maxUnavailable=0 and has the newer
+Kinds — AgentDeployment/ManagedDatabase/probe-handlers — that the old branch
+predates, so the whole-file merge was NOT usable):
+
+- `crd.rs`: `ServiceSpec.surge_colocation: bool` (default false, camelCase
+  `surgeColocation`).
+- `manifests.rs`: the pure `colocation_affinity(selector)` — soft (preferred,
+  weight 100) self-podAffinity on `kubernetes.io/hostname`.
+- `controllers/service.rs`: `should_colocate(surge, strategy, mounts_pvc) =
+  surge && strategy != "Recreate" && mounts_pvc`, and the injection in
+  `reconcile_service_inner` (post-build, iff the gate opens) using
+  `sel_labels`. `mounts_pvc` is computed from the resolved `volumes_k8s`.
+
+Semantics (unchanged from 0.6.14): a RollingUpdate service that opts in AND
+mounts a PVC gets a surge pod softly pinned to the volume's node, so it
+bind-mounts the already-attached RWO volume (no Multi-Attach deadlock) — a
+zero-downtime same-node handoff. SAFE ONLY for a store that tolerates a brief
+same-host two-pod overlap: SQLite WAL + `busy_timeout` (+ per-file flock for
+DEK-mint). Exclusive-lock engines (cloud's Badger KMS + in-memory audit seq)
+MUST stay `strategy: Recreate` + `surgeColocation: false` — verified UNSAFE
+live under the 0.6.x experiment. First real consumers: `iam` and `commerce`
+(both per-org SQLCipher-WAL via `github.com/hanzoai/sqlite`, no exclusive-lock
+engine). No-op for the entire fleet until a CR opts in.
+
+Test count: 145 → 147 lib tests (+2 service: `should_colocate` gate +
+`colocation_affinity` soft/self/hostname shape; 0 regressions). My files
+compile + fmt-clean; the 2 pre-existing clippy doc-indent warnings in
+`datastore.rs` are untouched (out of scope).

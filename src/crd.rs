@@ -360,6 +360,17 @@ pub struct ServiceSpec {
     pub service_account_name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub strategy: String,
+    /// Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+    /// whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+    /// Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+    /// (`manifests::colocation_affinity`) so the surge pod co-locates on the
+    /// volume's node and bind-mounts the already-attached volume — no Multi-Attach
+    /// deadlock, no reattach gap. ONLY set this for a store safe under a brief
+    /// same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+    /// single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+    /// instead — leave this false. Default false (untouched).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub surge_colocation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
