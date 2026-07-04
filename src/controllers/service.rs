@@ -370,6 +370,14 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
+/// Inject surge co-location affinity iff: the CR opted in (`surgeColocation`),
+/// the strategy is a RollingUpdate (anything but `Recreate`; empty defaults to
+/// RollingUpdate), AND the pod mounts a real PVC. Pure so the fleet-safety gate
+/// is unit-tested without a cluster.
+fn should_colocate(surge_colocation: bool, strategy: &str, mounts_pvc: bool) -> bool {
+    surge_colocation && strategy != "Recreate" && mounts_pvc
+}
+
 /// Public alias for use by compat facades.
 pub async fn reconcile_service_inner_pub(
     client: &Client,
@@ -460,6 +468,11 @@ async fn reconcile_service_inner(
         all_volumes.push(replicate_config_volume(name));
     }
     let volumes_k8s: Vec<_> = all_volumes.iter().map(crd_types::Volume::to_k8s).collect();
+    // Does the pod mount a real PVC? Computed before volumes_k8s is moved into
+    // build_deployment — the precondition for surge co-location.
+    let mounts_pvc = volumes_k8s
+        .iter()
+        .any(|v| v.persistent_volume_claim.is_some());
     let ips_k8s: Vec<_> = spec
         .image_pull_secrets
         .iter()
@@ -486,6 +499,18 @@ async fn reconcile_service_inner(
         if let Some(annotations) = &spec.annotations {
             if let Some(meta) = d_spec.template.metadata.as_mut() {
                 meta.annotations = Some(annotations.clone());
+            }
+        }
+        // Zero-downtime surge co-location — OPT-IN (spec.surgeColocation). Only a
+        // RollingUpdate service whose data is a single RWO PVC needs it, and only
+        // if the store is safe under a brief same-host two-pod overlap (SQLite
+        // WAL + busy_timeout). Pin the surge pod to the volume's node so it
+        // bind-mounts the already-attached volume instead of dead-locking on
+        // Multi-Attach. Exclusive-lock engines opt OUT (they use strategy
+        // Recreate), so the affinity is never injected implicitly.
+        if should_colocate(spec.surge_colocation, &spec.strategy, mounts_pvc) {
+            if let Some(pod) = d_spec.template.spec.as_mut() {
+                pod.affinity = Some(manifests::colocation_affinity(&sel_labels));
             }
         }
         // Spec init containers, plus the auto-injected replicate-restore init.
@@ -1105,6 +1130,56 @@ mod tests {
         assert!(
             !has_restore,
             "dir_mode must NOT inject a restore initContainer"
+        );
+    }
+
+    /// Surge co-location gate — the fleet-safety property. OPT-IN + RollingUpdate
+    /// + a mounted PVC are ALL required; anything else must NOT get the affinity
+    /// (an exclusive-lock engine on Recreate, a non-opted service, or a
+    /// volume-less service would only stall or crashloop under it).
+    #[test]
+    fn colocate_only_when_opted_in_rolling_and_pvc() {
+        assert!(should_colocate(true, "RollingUpdate", true));
+        assert!(should_colocate(true, "", true)); // empty strategy ⇒ RollingUpdate
+        assert!(!should_colocate(false, "RollingUpdate", true)); // not opted in
+        assert!(!should_colocate(true, "Recreate", true)); // exclusive-lock default
+        assert!(!should_colocate(true, "RollingUpdate", false)); // no PVC to anchor
+    }
+
+    /// The co-location affinity shape: SOFT (preferred, never required — a failed
+    /// co-location degrades to a fail-safe stalled roll, not an outage), weight
+    /// 100, hostname topology, self-selector (matches the app's own pods).
+    #[test]
+    fn colocation_affinity_is_soft_self_hostname() {
+        let mut sel = std::collections::BTreeMap::new();
+        sel.insert("app.kubernetes.io/name".to_string(), "iam".to_string());
+        let aff = manifests::colocation_affinity(&sel);
+        let pa = aff.pod_affinity.unwrap();
+        assert!(
+            pa.required_during_scheduling_ignored_during_execution
+                .is_none(),
+            "must be SOFT — never a required (hard) constraint"
+        );
+        let terms = pa
+            .preferred_during_scheduling_ignored_during_execution
+            .unwrap();
+        assert_eq!(terms.len(), 1);
+        assert_eq!(terms[0].weight, 100);
+        assert_eq!(
+            terms[0].pod_affinity_term.topology_key,
+            "kubernetes.io/hostname"
+        );
+        assert_eq!(
+            terms[0]
+                .pod_affinity_term
+                .label_selector
+                .as_ref()
+                .unwrap()
+                .match_labels
+                .as_ref()
+                .unwrap()
+                .get("app.kubernetes.io/name"),
+            Some(&"iam".to_string())
         );
     }
 }
