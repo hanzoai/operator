@@ -381,6 +381,30 @@ pub fn build_condition(
     }
 }
 
+/// Preserve `last_transition_time` from a prior condition of the same `type_`
+/// when its `status` (`True`/`False`) has NOT flipped. Per the Kubernetes
+/// condition convention, `lastTransitionTime` advances ONLY on a genuine state
+/// transition. `build_condition` stamps `now()` unconditionally, so without
+/// this a controller re-stamps the timestamp every reconcile — the CR's status
+/// then changes on every pass, the controller's own watch re-delivers it as an
+/// `object updated` event, and the reconcile self-triggers into a hot loop.
+pub fn carry_transition_time(prior: &[Condition], next: &mut Condition) {
+    if let Some(prev) = prior.iter().find(|c| c.type_ == next.type_) {
+        if prev.status == next.status {
+            next.last_transition_time = prev.last_transition_time.clone();
+        }
+    }
+}
+
+/// True when two serializable status values differ structurally. Controllers
+/// use this to SKIP a no-op `patch_status`: a `force()` merge bumps
+/// `resourceVersion` every reconcile even when nothing changed, and the watch
+/// re-delivers that as `object updated`, self-triggering the next reconcile.
+/// Skipping identical writes breaks that loop at the source.
+pub fn status_changed<T: Serialize>(new: &T, old: &T) -> bool {
+    serde_json::to_value(new).ok() != serde_json::to_value(old).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

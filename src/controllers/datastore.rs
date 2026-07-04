@@ -16,7 +16,7 @@ use kube::api::Api;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, Resource, ResourceExt};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
@@ -272,7 +272,7 @@ async fn reconcile_datastore_inner(
         apply::apply(&svcs, &a).await?;
     }
 
-    info!(name, namespace, type_ = %spec.type_, "Datastore reconciled");
+    debug!(name, namespace, type_ = %spec.type_, "Datastore reconciled");
     Ok(())
 }
 
