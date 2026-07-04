@@ -12,7 +12,7 @@ use kube::api::Api;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, ResourceExt};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
@@ -135,7 +135,7 @@ async fn reconcile_inner(
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
     apply::apply(&svcs, &svc).await?;
 
-    info!(name, namespace, zones = spec.zones.len(), "DNS reconciled");
+    debug!(name, namespace, zones = spec.zones.len(), "DNS reconciled");
     Ok(())
 }
 
