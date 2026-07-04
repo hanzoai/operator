@@ -14,10 +14,11 @@ use k8s_openapi::api::autoscaling::v2::{
     MetricTarget, ResourceMetricSource,
 };
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction, HTTPGetAction,
-    Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim, PodSpec,
-    PodTemplateSpec, Probe, ResourceRequirements as K8sResourceRequirements,
-    Service as CoreService, ServicePort, ServiceSpec as CoreServiceSpec, Volume, VolumeMount,
+    Affinity, ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction,
+    HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
+    PodAffinity, PodAffinityTerm, PodSpec, PodTemplateSpec, Probe,
+    ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
+    ServiceSpec as CoreServiceSpec, Volume, VolumeMount, WeightedPodAffinityTerm,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -257,6 +258,46 @@ pub fn build_deployment(
                     ..Default::default()
                 }),
             },
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Soft self-podAffinity that co-locates a rolling surge pod on the SAME node
+/// as the app's already-running pods (topologyKey hostname, matching the app's
+/// own selector). For a service whose data lives on a single ReadWriteOnce PVC,
+/// this lets the surge pod bind-mount the already-attached volume — DO block
+/// storage is single-attach, so RWO permits multiple pods per NODE but not a
+/// second node — instead of dead-locking on a "Multi-Attach" error. That turns
+/// a RollingUpdate over the volume into a zero-downtime, same-host handoff.
+///
+/// PREFERRED, never required: with no anchor pod (cold start / node loss) the
+/// surge still schedules anywhere and recovers; a rare failure to co-locate is a
+/// fail-SAFE stalled roll (old pod keeps serving under maxUnavailable=0), never
+/// an outage or a cross-node split-brain writer.
+///
+/// OPT-IN by the caller (`ServiceSpec.surgeColocation`): the brief same-node
+/// two-pod overlap is only safe for stores that tolerate concurrent same-host
+/// opens (SQLite in WAL mode + `busy_timeout`). An exclusive-lock single-open
+/// engine (Badger, LMDB, Qdrant, …) must stay on strategy `Recreate` instead,
+/// so this is never applied automatically.
+pub fn colocation_affinity(selector_labels_map: &BTreeMap<String, String>) -> Affinity {
+    Affinity {
+        pod_affinity: Some(PodAffinity {
+            preferred_during_scheduling_ignored_during_execution: Some(vec![
+                WeightedPodAffinityTerm {
+                    weight: 100,
+                    pod_affinity_term: PodAffinityTerm {
+                        label_selector: Some(LabelSelector {
+                            match_labels: Some(selector_labels_map.clone()),
+                            ..Default::default()
+                        }),
+                        topology_key: "kubernetes.io/hostname".to_string(),
+                        ..Default::default()
+                    },
+                },
+            ]),
             ..Default::default()
         }),
         ..Default::default()
