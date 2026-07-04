@@ -13,7 +13,7 @@ use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, ResourceExt};
 use std::collections::BTreeMap;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
@@ -138,7 +138,7 @@ async fn reconcile_inner(
         }
     }
 
-    info!(name, namespace, "Gateway reconciled");
+    debug!(name, namespace, "Gateway reconciled");
     Ok(())
 }
 

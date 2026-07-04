@@ -13,7 +13,7 @@ use kube::api::Api;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, ResourceExt};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
@@ -177,7 +177,7 @@ async fn reconcile_inner(
     clip.metadata.owner_references = Some(vec![owner.clone()]);
     apply::apply(&svcs, &clip).await?;
 
-    info!(name, namespace, replicas, "Base reconciled");
+    debug!(name, namespace, replicas, "Base reconciled");
     Ok(())
 }
 

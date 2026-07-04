@@ -25,7 +25,7 @@ use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, Resource, ResourceExt};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
@@ -36,7 +36,7 @@ use crate::crd_types;
 use crate::manifests;
 
 use super::owner_ref_for;
-use crate::crd_types::{build_condition, Condition};
+use crate::crd_types::{build_condition, carry_transition_time, status_changed, Condition};
 
 /// Upsert a condition in-place by `type_`.
 fn upsert_condition(conditions: &mut Vec<Condition>, new_cond: Condition) {
@@ -296,6 +296,10 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
 
     reconcile_service_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
 
+    // Prior status — used to keep condition timestamps stable and to skip
+    // no-op status writes (see the patch guard below).
+    let prior_status = cr.status.clone().unwrap_or_default();
+
     // Status writeback: poll the Deployment for ready replica count.
     let dep_api: Api<Deployment> = Api::namespaced(ctx.client.clone(), &namespace);
     let dep = dep_api.get_opt(&name).await?;
@@ -321,7 +325,7 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     status.phase = Some(phase.clone());
 
     let ready = matches!(phase, Phase::Running);
-    let cond = build_condition(
+    let mut cond = build_condition(
         "Ready",
         ready,
         if ready { "Available" } else { "NotReady" },
@@ -331,6 +335,9 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         ),
         status.observed_generation,
     );
+    // Only advance lastTransitionTime on a real Ready flip — otherwise the
+    // fresh now() timestamp would make every reconcile mutate the CR.
+    carry_transition_time(&prior_status.conditions, &mut cond);
     upsert_condition(&mut status.conditions, cond);
 
     // Compute endpoint URLs from ingress hosts.
@@ -345,11 +352,19 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         }
     }
 
-    let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
-    let patch = serde_json::json!({"status": status});
-    let pp = PatchParams::apply(apply::FIELD_MANAGER);
-    if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update Service status (CRD may not be installed)");
+    // Skip the write when nothing changed. An unconditional status merge bumps
+    // resourceVersion on every reconcile, which the watch re-delivers as an
+    // `object updated` event → a self-triggered reconcile storm (~2.75/s/CR
+    // across the fleet). Writing only on real change breaks the loop.
+    if status_changed(&status, &prior_status) {
+        let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
+        let patch = serde_json::json!({"status": status});
+        let pp = PatchParams::apply(apply::FIELD_MANAGER);
+        if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
+            warn!(error = %e, "failed to update Service status (CRD may not be installed)");
+        } else {
+            debug!(name, namespace, ?phase, "Service status updated");
+        }
     }
 
     Ok(Action::requeue(Duration::from_secs(60)))
@@ -608,7 +623,7 @@ async fn reconcile_service_inner(
         }
     }
 
-    info!(name, namespace, "Service reconciled");
+    debug!(name, namespace, "Service reconciled");
     Ok(())
 }
 
