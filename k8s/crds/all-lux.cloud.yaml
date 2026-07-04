@@ -166,6 +166,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -578,6 +618,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -4704,6 +4754,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -5116,6 +5206,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -5545,6 +5645,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -5957,6 +6097,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -6386,6 +6536,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -6798,6 +6988,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -8529,6 +8729,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -8941,6 +9181,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -9370,6 +9620,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -9782,6 +10072,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -10599,6 +10899,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -11011,6 +11351,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -11440,6 +11790,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -11852,6 +12242,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true
@@ -12281,6 +12681,46 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              ha:
+                description: |-
+                  Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+                  + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+                  `persistence`: when `ha.enabled`, sidecar persistence is suppressed.
+                nullable: true
+                properties:
+                  dataDir:
+                    description: |-
+                      Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+                      container mounts the `volumeClaimTemplate` PVC here.
+                    type: string
+                  enabled:
+                    default: false
+                    type: boolean
+                  primaryService:
+                    default: true
+                    description: |-
+                      Emit the primary-only Service (`<name>-primary`, selector
+                      `hanzo.ai/role: primary`) for write routing. Default `true`.
+                    type: boolean
+                  storage:
+                    description: Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+                    properties:
+                      retentionPolicy:
+                        type: string
+                      size:
+                        description: Quantity string (e.g. `"10Gi"`).
+                        type: string
+                      storageClassName:
+                        type: string
+                    required:
+                    - size
+                    type: object
+                  volumeName:
+                    description: Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+                    type: string
+                required:
+                - storage
+                type: object
               image:
                 properties:
                   pullPolicy:
@@ -12693,6 +13133,16 @@ spec:
                   - containerPort
                   - name
                   type: object
+                type: array
+              preStop:
+                description: |-
+                  Configurable container `preStop` hook (exec form), e.g.
+                  `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+                  Applied to the MAIN container; when empty, the operator's default
+                  `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+                  the HA drain: checkpoint → final Sync → release the single-primary lease.
+                items:
+                  type: string
                 type: array
               readinessProbe:
                 nullable: true

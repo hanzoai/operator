@@ -41,6 +41,10 @@ pub const LABEL_PART_OF: &str = "app.kubernetes.io/part-of";
 pub const LABEL_VERSION: &str = "app.kubernetes.io/version";
 pub const LABEL_MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const MANAGED_BY_VALUE: &str = "hanzo-operator";
+/// Label a pod stamps on itself while it holds the single-primary lease. The
+/// HA primary-only Service selects on it to route writes to exactly one pod.
+pub const LABEL_ROLE: &str = "hanzo.ai/role";
+pub const ROLE_PRIMARY: &str = "primary";
 
 /// Build the standard `app.kubernetes.io/*` label set. Empty values omitted.
 pub fn standard_labels(
@@ -84,8 +88,12 @@ pub fn merge_labels(maps: &[&BTreeMap<String, String>]) -> BTreeMap<String, Stri
     out
 }
 
-/// Inject a preStop sleep on every container that lacks one. Gives pods 5
-/// seconds to drain before SIGTERM.
+/// Default preStop drain: give a pod 5 seconds to be removed from Service
+/// endpoints before SIGTERM. Applied to every container that does NOT already
+/// carry a preStop — so a caller that pre-sets a *configurable* preStop (via
+/// [`pre_stop_lifecycle`], e.g. the HA checkpoint→final-Sync→lease-release
+/// drain) overrides this per-container, and every other container keeps the
+/// byte-identical `sleep 5` default.
 fn inject_pre_stop(containers: Vec<Container>) -> Vec<Container> {
     containers
         .into_iter()
@@ -106,6 +114,22 @@ fn inject_pre_stop(containers: Vec<Container>) -> Vec<Container> {
             c
         })
         .collect()
+}
+
+/// Build a configurable exec `preStop` Lifecycle from a command vector. A
+/// caller sets this on the MAIN container before building the workload; the
+/// default-injecting [`inject_pre_stop`] then leaves it untouched. Used for the
+/// HA drain hook (checkpoint → final Sync → release the single-primary lease).
+pub fn pre_stop_lifecycle(command: &[String]) -> Lifecycle {
+    Lifecycle {
+        pre_stop: Some(LifecycleHandler {
+            exec: Some(ExecAction {
+                command: Some(command.to_vec()),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
 }
 
 /// Convert operator ResourceRequirements to k8s ResourceRequirements.
@@ -369,6 +393,21 @@ pub fn build_headless_service(
         s.cluster_ip = Some("None".to_string());
     }
     svc
+}
+
+/// Build a **primary-only** ClusterIP Service for HA write routing. Extends the
+/// pod selector with `hanzo.ai/role: primary` so it resolves to exactly the one
+/// pod currently holding the single-primary lease (the app stamps that label on
+/// itself). Standby pods forward mutating requests to this Service's DNS.
+pub fn build_primary_service(
+    name: &str,
+    namespace: &str,
+    labels: BTreeMap<String, String>,
+    ports: Vec<ServicePort>,
+    mut selector_labels_map: BTreeMap<String, String>,
+) -> CoreService {
+    selector_labels_map.insert(LABEL_ROLE.to_string(), ROLE_PRIMARY.to_string());
+    build_service(name, namespace, labels, ports, selector_labels_map)
 }
 
 /// Build an Ingress with cert-manager annotations.

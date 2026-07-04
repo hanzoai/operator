@@ -297,6 +297,44 @@ pub struct PersistenceSpec {
     pub storage: Option<StorageSpec>,
 }
 
+/// Zero-downtime SQLite HA topology (HIP: on-stack SQLite HA).
+///
+/// When `enabled`, the Service controller renders a **StatefulSet** (per-pod
+/// `volumeClaimTemplate` → no shared-RWO deadlock) instead of a Deployment,
+/// plus a **headless Service** (`<name>-hs`) for stable pod DNS and — when
+/// `primaryService` — a **primary-only Service** (`<name>-primary`, selector
+/// `hanzo.ai/role: primary`) that routes writes to the single lease holder.
+///
+/// The operator only expresses the TOPOLOGY. The *replication mechanism*
+/// (in-process WAL→LTX streaming to SeaweedFS S3, `s3.Leaser` single-primary
+/// election, `Restore(Follow)` standby catch-up) lives in the app via
+/// `github.com/hanzoai/replicate` — orthogonal to, and never combined with,
+/// the sidecar-based [`PersistenceSpec`] (they would double-write the WAL).
+/// When `ha.enabled`, `persistence` injection is therefore suppressed.
+///
+/// The app stamps `hanzo.ai/role=primary` onto its own pod when it holds the
+/// lease (needs `patch pods` RBAC), and drains via the configurable
+/// `spec.preStop` hook (checkpoint → final Sync → release lease).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HaSpec {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Mount path of the per-pod data volume, e.g. `/var/lib/cloud`. The main
+    /// container mounts the `volumeClaimTemplate` PVC here.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub data_dir: String,
+    /// Per-pod PVC (`volumeClaimTemplate`) size/class for the data volume.
+    pub storage: StorageSpec,
+    /// Name of the per-pod data volume + `volumeClaimTemplate`. Default `data`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub volume_name: String,
+    /// Emit the primary-only Service (`<name>-primary`, selector
+    /// `hanzo.ai/role: primary`) for write routing. Default `true`.
+    #[serde(default = "default_true")]
+    pub primary_service: bool,
+}
+
 // ============================================================================
 // Service Kind
 // ============================================================================
@@ -386,6 +424,18 @@ pub struct ServiceSpec {
     /// it never restarts unrelated persistence services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
+    /// Zero-downtime SQLite HA topology (StatefulSet + per-pod PVC + headless
+    /// + primary-only Service). See [`HaSpec`]. Mutually orthogonal to
+    /// `persistence` — when `ha.enabled`, sidecar persistence is suppressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ha: Option<HaSpec>,
+    /// Configurable container `preStop` hook (exec form), e.g.
+    /// `["/bin/sh","-c","curl -sf -X POST localhost:8000/internal/drain; sleep 5"]`.
+    /// Applied to the MAIN container; when empty, the operator's default
+    /// `sleep 5` drain is used (byte-identical to the pre-HA behavior). Used by
+    /// the HA drain: checkpoint → final Sync → release the single-primary lease.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_stop: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]

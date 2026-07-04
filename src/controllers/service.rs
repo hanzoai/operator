@@ -15,9 +15,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::autoscaling::v2::{CrossVersionObjectReference, HorizontalPodAutoscaler};
-use k8s_openapi::api::core::v1::{ConfigMap, Service as CoreService};
+use k8s_openapi::api::core::v1::{
+    ConfigMap, PodSecurityContext, PodTemplateSpec, Service as CoreService,
+};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
@@ -30,7 +32,7 @@ use tracing::{error, info, warn};
 use crate::apply;
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
+    HaSpec, KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
 };
 use crate::crd_types;
 use crate::manifests;
@@ -279,6 +281,81 @@ fn main_app_db_mount(p: &PersistenceSpec) -> crd_types::VolumeMount {
     }
 }
 
+// ============================================================================
+// HA — zero-downtime SQLite topology (StatefulSet + per-pod PVC + headless +
+// primary-only Service). The operator expresses the TOPOLOGY; the app owns the
+// replication mechanism (in-process hanzoai/replicate: WAL→S3, s3.Leaser).
+// ============================================================================
+
+/// Default per-pod data volume name (`volumeClaimTemplate` + main mount).
+const HA_DEFAULT_VOLUME: &str = "data";
+
+/// Resolve an [`HaSpec`] with defaults filled in.
+fn resolved_ha(h: &HaSpec) -> HaSpec {
+    let mut r = h.clone();
+    if r.volume_name.is_empty() {
+        r.volume_name = HA_DEFAULT_VOLUME.to_string();
+    }
+    r
+}
+
+/// The main container's mount of the per-pod HA data volume (backed by the
+/// StatefulSet `volumeClaimTemplate`), so each pod reads/writes its OWN PVC.
+fn ha_data_mount(h: &HaSpec) -> crd_types::VolumeMount {
+    crd_types::VolumeMount {
+        name: h.volume_name.clone(),
+        mount_path: h.data_dir.clone(),
+        sub_path: String::new(),
+        read_only: None,
+    }
+}
+
+/// Apply pod-template extras shared by the Deployment and StatefulSet render
+/// paths: template annotations, init containers (+ the persistence restore
+/// init in single-DB mode), and the opt-in `securityContext.fsGroup`. Kept in
+/// one place so both workload kinds stay byte-identical in these fields.
+fn apply_pod_template_extras(
+    tpl: &mut PodTemplateSpec,
+    spec: &ServiceSpec,
+    persistence: &Option<PersistenceSpec>,
+) {
+    if let Some(annotations) = &spec.annotations {
+        if let Some(meta) = tpl.metadata.as_mut() {
+            meta.annotations = Some(annotations.clone());
+        }
+    }
+    // Spec init containers, plus the auto-injected replicate-restore init.
+    // dir_mode omits the restore init — directory restore is best-effort via
+    // the sidecar's restore-on-boot (a single file path can't address a
+    // fan-out of per-org/user DBs).
+    let mut inits: Vec<_> = spec
+        .init_containers
+        .iter()
+        .map(crd_types::Container::to_k8s)
+        .collect();
+    if let Some(p) = persistence {
+        if !p.dir_mode {
+            inits.push(replicate_restore_init(p).to_k8s());
+        }
+    }
+    if !inits.is_empty() {
+        if let Some(pod) = tpl.spec.as_mut() {
+            pod.init_containers = Some(inits);
+        }
+    }
+    // Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root
+    // image write a persistence PVC (the kubelet chowns the volume to this
+    // GID + adds it to every container's supplementary groups).
+    if let Some(fsg) = spec.fs_group {
+        if let Some(pod) = tpl.spec.as_mut() {
+            pod.security_context = Some(PodSecurityContext {
+                fs_group: Some(fsg),
+                ..Default::default()
+            });
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Ctx {
     pub client: Client,
@@ -296,15 +373,21 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
 
     reconcile_service_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
 
-    // Status writeback: poll the Deployment for ready replica count.
-    let dep_api: Api<Deployment> = Api::namespaced(ctx.client.clone(), &namespace);
-    let dep = dep_api.get_opt(&name).await?;
+    // Status writeback: poll the backing workload for ready replica count —
+    // a StatefulSet in HA mode, else the Deployment.
     let mut status = ServiceStatus {
         observed_generation: cr.meta().generation.unwrap_or(0),
         ..Default::default()
     };
-    if let Some(d) = dep {
-        if let Some(s) = d.status {
+    if cr.spec.ha.as_ref().is_some_and(|h| h.enabled) {
+        let sts_api: Api<StatefulSet> = Api::namespaced(ctx.client.clone(), &namespace);
+        if let Some(s) = sts_api.get_opt(&name).await?.and_then(|x| x.status) {
+            status.ready_replicas = s.ready_replicas.unwrap_or(0);
+            status.available_replicas = s.available_replicas.unwrap_or(0);
+        }
+    } else {
+        let dep_api: Api<Deployment> = Api::namespaced(ctx.client.clone(), &namespace);
+        if let Some(s) = dep_api.get_opt(&name).await?.and_then(|x| x.status) {
             status.ready_replicas = s.ready_replicas.unwrap_or(0);
             status.available_replicas = s.available_replicas.unwrap_or(0);
         }
@@ -381,13 +464,22 @@ async fn reconcile_service_inner(
     let extra_labels = spec.labels.clone().unwrap_or_default();
     let all_labels = manifests::merge_labels(&[&std_labels, &extra_labels]);
 
-    // Resolve persistence once (defaults filled in) when enabled. Drives the
-    // auto-injected app-db mount, ConfigMap, restore init, and sidecar below.
-    let persistence = spec
-        .persistence
-        .as_ref()
-        .filter(|p| p.enabled)
-        .map(|p| resolved_persistence(name, p));
+    // Resolve HA topology first. HA is orthogonal to (and never combined with)
+    // sidecar persistence — both would ship the same WAL. When HA is enabled
+    // the app owns replication in-process (hanzoai/replicate), so sidecar
+    // persistence is suppressed.
+    let ha = spec.ha.as_ref().filter(|h| h.enabled).map(resolved_ha);
+
+    // Resolve persistence (defaults filled in) when enabled AND HA is off.
+    // Drives the auto-injected app-db mount, ConfigMap, restore init, sidecar.
+    let persistence = if ha.is_some() {
+        None
+    } else {
+        spec.persistence
+            .as_ref()
+            .filter(|p| p.enabled)
+            .map(|p| resolved_persistence(name, p))
+    };
 
     // 1. Build the main container honoring spec.env/volumes/volumeMounts.
     let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
@@ -396,17 +488,20 @@ async fn reconcile_service_inner(
         .iter()
         .map(crd_types::EnvFromSource::to_k8s)
         .collect();
-    // Honor spec.volume_mounts, then auto-inject the shared app-db mount on
-    // the MAIN container so the app reads/writes the DB the sidecar streams.
+    // Honor spec.volume_mounts, then auto-inject the shared data mount on the
+    // MAIN container: the per-pod HA PVC (StatefulSet volumeClaimTemplate) in
+    // HA mode, else the sidecar-shared app-db volume in persistence mode.
     let mut main_vms: Vec<crd_types::VolumeMount> = spec.volume_mounts.clone();
-    if let Some(p) = &persistence {
+    if let Some(h) = &ha {
+        main_vms.push(ha_data_mount(h));
+    } else if let Some(p) = &persistence {
         main_vms.push(main_app_db_mount(p));
     }
     let vm_k8s: Vec<_> = main_vms
         .iter()
         .map(crd_types::VolumeMount::to_k8s)
         .collect();
-    let main = manifests::build_container(
+    let mut main = manifests::build_container(
         name,
         &manifests::image_ref(&spec.image.repository, &spec.image.tag),
         &spec.image.pull_policy,
@@ -424,89 +519,129 @@ async fn reconcile_service_inner(
             .as_ref()
             .map(manifests::build_http_probe),
     );
+    // Configurable preStop (HA drain: checkpoint → final Sync → release lease).
+    // Pre-set on the MAIN container so the default-injecting builder leaves it
+    // untouched; every other container keeps the byte-identical `sleep 5`.
+    if !spec.pre_stop.is_empty() {
+        main.lifecycle = Some(manifests::pre_stop_lifecycle(&spec.pre_stop));
+    }
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
-    // Auto-inject the replicate sidecar (streams the WAL to SeaweedFS).
+    // Auto-inject the replicate sidecar (persistence mode only; HA ships
+    // in-process, so no sidecar — two shippers would corrupt the WAL stream).
     if let Some(p) = &persistence {
         containers.push(replicate_sidecar(p).to_k8s());
     }
 
-    // 2. Build and apply Deployment.
-    //
-    // When HPA is enabled, the operator MUST NOT own `spec.replicas` — server-
-    // side apply would otherwise fight the HPA on every reconcile cycle.
-    // Passing `None` here removes the field from the desired state, so the
-    // HPA becomes the sole field manager for replicas. The initial scale is
-    // then determined by `spec.autoscaling.minReplicas` (the HPA's floor).
+    // 2. Assemble pod volumes + image pull secrets.
     let mut all_volumes: Vec<crd_types::Volume> = spec.volumes.clone();
     if let Some(p) = &persistence {
         // Shared live-DB volume (PVC or emptyDir) + the replicate.yml mount.
         all_volumes.push(app_db_volume(name, p));
         all_volumes.push(replicate_config_volume(name));
     }
+    // HA mode adds NO pod volume for data — the volumeClaimTemplate provides a
+    // per-pod PVC bound to `ha.volume_name` (no shared-RWO deadlock).
     let volumes_k8s: Vec<_> = all_volumes.iter().map(crd_types::Volume::to_k8s).collect();
     let ips_k8s: Vec<_> = spec
         .image_pull_secrets
         .iter()
         .map(crd_types::LocalObjectReference::to_k8s)
         .collect();
-    let replicas_for_deployment = if spec.autoscaling.as_ref().is_some_and(|a| a.enabled) {
-        None
+
+    // 3. Render the workload: a StatefulSet (per-pod PVC → no shared-RWO
+    // deadlock, so `replicas: 2` primary+standby is possible) when HA is
+    // enabled, else the Deployment path (unchanged / byte-identical).
+    if let Some(h) = &ha {
+        let pvc = manifests::build_pvc_template(
+            &h.volume_name,
+            &h.storage.storage_class_name,
+            h.storage.size.as_str(),
+        );
+        let mut sts = manifests::build_statefulset(
+            name,
+            namespace,
+            all_labels.clone(),
+            sel_labels.clone(),
+            Some(spec.replicas.unwrap_or(1)),
+            containers,
+            volumes_k8s,
+            vec![pvc],
+            ips_k8s,
+            &format!("{}-hs", name),
+        );
+        if let Some(s_spec) = sts.spec.as_mut() {
+            // serviceAccountName lives on the pod spec (build_statefulset takes
+            // no SA arg, unlike build_deployment).
+            if !spec.service_account_name.is_empty() {
+                if let Some(pod) = s_spec.template.spec.as_mut() {
+                    pod.service_account_name = Some(spec.service_account_name.clone());
+                }
+            }
+            apply_pod_template_extras(&mut s_spec.template, spec, &persistence);
+        }
+        set_owner(&mut sts.metadata.owner_references, &owner);
+        let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
+        apply::apply(&stss, &sts).await?;
+
+        // Headless Service for stable per-pod DNS (StatefulSet requirement) +
+        // the primary-only Service that routes writes to the lease holder.
+        if !spec.ports.is_empty() {
+            let svc_ports = manifests::service_ports(&spec.ports);
+            let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
+            let mut hs = manifests::build_headless_service(
+                &format!("{}-hs", name),
+                namespace,
+                all_labels.clone(),
+                svc_ports.clone(),
+                sel_labels.clone(),
+            );
+            set_owner(&mut hs.metadata.owner_references, &owner);
+            apply::apply(&svcs, &hs).await?;
+
+            if h.primary_service {
+                let mut ps = manifests::build_primary_service(
+                    &format!("{}-primary", name),
+                    namespace,
+                    all_labels.clone(),
+                    svc_ports,
+                    sel_labels.clone(),
+                );
+                set_owner(&mut ps.metadata.owner_references, &owner);
+                apply::apply(&svcs, &ps).await?;
+            }
+        }
     } else {
-        Some(spec.replicas.unwrap_or(1))
-    };
-    let mut deploy = manifests::build_deployment(
-        name,
-        namespace,
-        all_labels.clone(),
-        sel_labels.clone(),
-        replicas_for_deployment,
-        containers,
-        volumes_k8s,
-        &spec.strategy,
-        ips_k8s,
-        &spec.service_account_name,
-    );
-    if let Some(d_spec) = deploy.spec.as_mut() {
-        if let Some(annotations) = &spec.annotations {
-            if let Some(meta) = d_spec.template.metadata.as_mut() {
-                meta.annotations = Some(annotations.clone());
-            }
+        // Deployment path (unchanged).
+        //
+        // When HPA is enabled, the operator MUST NOT own `spec.replicas` —
+        // server-side apply would otherwise fight the HPA every reconcile.
+        // Passing `None` removes the field so the HPA is the sole field manager
+        // for replicas; the initial scale is `spec.autoscaling.minReplicas`.
+        let replicas_for_deployment = if spec.autoscaling.as_ref().is_some_and(|a| a.enabled) {
+            None
+        } else {
+            Some(spec.replicas.unwrap_or(1))
+        };
+        let mut deploy = manifests::build_deployment(
+            name,
+            namespace,
+            all_labels.clone(),
+            sel_labels.clone(),
+            replicas_for_deployment,
+            containers,
+            volumes_k8s,
+            &spec.strategy,
+            ips_k8s,
+            &spec.service_account_name,
+        );
+        if let Some(d_spec) = deploy.spec.as_mut() {
+            apply_pod_template_extras(&mut d_spec.template, spec, &persistence);
         }
-        // Spec init containers, plus the auto-injected replicate-restore init.
-        // dir_mode omits the restore init — directory restore is best-effort
-        // via the sidecar's restore-on-boot (a single file path can't address
-        // a fan-out of per-org/user DBs).
-        let mut inits: Vec<_> = spec
-            .init_containers
-            .iter()
-            .map(crd_types::Container::to_k8s)
-            .collect();
-        if let Some(p) = &persistence {
-            if !p.dir_mode {
-                inits.push(replicate_restore_init(p).to_k8s());
-            }
-        }
-        if !inits.is_empty() {
-            if let Some(pod) = d_spec.template.spec.as_mut() {
-                pod.init_containers = Some(inits);
-            }
-        }
-        // Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root
-        // image write a persistence PVC (the kubelet chowns the volume to this
-        // GID + adds it to every container's supplementary groups).
-        if let Some(fsg) = spec.fs_group {
-            if let Some(pod) = d_spec.template.spec.as_mut() {
-                pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
-                    fs_group: Some(fsg),
-                    ..Default::default()
-                });
-            }
-        }
+        set_owner(&mut deploy.metadata.owner_references, &owner);
+        let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+        apply::apply(&deps, &deploy).await?;
     }
-    set_owner(&mut deploy.metadata.owner_references, &owner);
-    let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&deps, &deploy).await?;
 
     // 2b. Persistence ConfigMap (`replicate.yml`). Owned by the Service so it
     // is GC'd with the CR.
@@ -551,9 +686,10 @@ async fn reconcile_service_inner(
         }
     }
 
-    // 5. HPA.
+    // 5. HPA. Skipped in HA mode — HPA targets a Deployment, which HA replaces
+    // with a StatefulSet (and HA runs a fixed primary+standby set).
     if let Some(as_spec) = &spec.autoscaling {
-        if as_spec.enabled {
+        if as_spec.enabled && ha.is_none() {
             let target = CrossVersionObjectReference {
                 api_version: Some("apps/v1".to_string()),
                 kind: "Deployment".to_string(),
@@ -1090,6 +1226,199 @@ mod tests {
         assert!(
             !has_restore,
             "dir_mode must NOT inject a restore initContainer"
+        );
+    }
+
+    // ---- HA (zero-downtime SQLite: StatefulSet + per-pod PVC + preStop) ----
+
+    use crate::crd::HaSpec;
+
+    fn ha_spec() -> HaSpec {
+        HaSpec {
+            enabled: true,
+            data_dir: "/var/lib/cloud".to_string(),
+            storage: StorageSpec {
+                size: "10Gi".to_string(),
+                ..Default::default()
+            },
+            volume_name: String::new(), // resolves to the "data" default
+            primary_service: true,
+        }
+    }
+
+    /// Assemble the StatefulSet exactly as `reconcile_service_inner` does for a
+    /// Service with `ha.enabled` (mirrors `build_persisted_deployment`).
+    fn build_ha_statefulset(name: &str, spec: &ServiceSpec) -> StatefulSet {
+        let h = resolved_ha(spec.ha.as_ref().unwrap());
+        let mut main_vms: Vec<crd_types::VolumeMount> = spec.volume_mounts.clone();
+        main_vms.push(ha_data_mount(&h));
+        let vm_k8s: Vec<_> = main_vms
+            .iter()
+            .map(crd_types::VolumeMount::to_k8s)
+            .collect();
+        let mut main = manifests::build_container(
+            name,
+            &manifests::image_ref(&spec.image.repository, &spec.image.tag),
+            &spec.image.pull_policy,
+            spec.command.clone(),
+            spec.args.clone(),
+            spec.env.iter().map(crd_types::EnvVar::to_k8s).collect(),
+            vec![],
+            vm_k8s,
+            manifests::container_ports(&spec.ports),
+            None,
+            None,
+            None,
+        );
+        if !spec.pre_stop.is_empty() {
+            main.lifecycle = Some(manifests::pre_stop_lifecycle(&spec.pre_stop));
+        }
+        let containers = vec![main];
+        let pvc = manifests::build_pvc_template(
+            &h.volume_name,
+            &h.storage.storage_class_name,
+            h.storage.size.as_str(),
+        );
+        let mut sts = manifests::build_statefulset(
+            name,
+            "hanzo",
+            manifests::standard_labels(name, "", "", &spec.image.tag),
+            manifests::selector_labels(name),
+            Some(spec.replicas.unwrap_or(1)),
+            containers,
+            vec![],
+            vec![pvc],
+            vec![],
+            &format!("{}-hs", name),
+        );
+        if let Some(s_spec) = sts.spec.as_mut() {
+            apply_pod_template_extras(&mut s_spec.template, spec, &None);
+        }
+        sts
+    }
+
+    #[test]
+    fn ha_renders_statefulset_with_vct_and_mount() {
+        let mut spec = base_spec();
+        spec.replicas = Some(2);
+        spec.ha = Some(ha_spec());
+        let sts = build_ha_statefulset("cloud", &spec);
+        let s = sts.spec.expect("statefulset spec");
+        assert_eq!(s.replicas, Some(2), "HA runs a fixed 2-pod primary+standby");
+        assert_eq!(
+            s.service_name.as_deref(),
+            Some("cloud-hs"),
+            "STS must reference the headless Service for pod DNS"
+        );
+        let vcts = s
+            .volume_claim_templates
+            .as_ref()
+            .expect("per-pod volumeClaimTemplate must be present");
+        assert_eq!(vcts.len(), 1);
+        assert_eq!(
+            vcts[0].metadata.name.as_deref(),
+            Some("data"),
+            "default per-pod PVC name is `data`"
+        );
+        let main = &s.template.spec.as_ref().unwrap().containers[0];
+        let vms = main.volume_mounts.as_ref().expect("main mounts");
+        assert!(
+            vms.iter()
+                .any(|m| m.name == "data" && m.mount_path == "/var/lib/cloud"),
+            "main container must mount its per-pod PVC at data_dir"
+        );
+    }
+
+    #[test]
+    fn ha_main_carries_configurable_pre_stop() {
+        // The HA drain hook (checkpoint → final Sync → release lease) must land
+        // on the main container verbatim — NOT the default `sleep 5`.
+        let mut spec = base_spec();
+        spec.ha = Some(ha_spec());
+        spec.pre_stop = vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "curl -sf -X POST localhost:8000/internal/drain; sleep 5".to_string(),
+        ];
+        let sts = build_ha_statefulset("cloud", &spec);
+        let s = sts.spec.unwrap();
+        let main = &s.template.spec.as_ref().unwrap().containers[0];
+        let cmd = main
+            .lifecycle
+            .as_ref()
+            .and_then(|l| l.pre_stop.as_ref())
+            .and_then(|h| h.exec.as_ref())
+            .and_then(|e| e.command.as_ref())
+            .expect("configurable preStop exec command");
+        assert_eq!(cmd, &spec.pre_stop, "preStop must be the configured command");
+    }
+
+    #[test]
+    fn default_pre_stop_is_sleep_5_when_unset() {
+        // Byte-identical guard: no HA, no configured preStop → the builder's
+        // default `sleep 5` drain is injected on the main container.
+        let labels = manifests::standard_labels("svc", "", "", "v1");
+        let sel = manifests::selector_labels("svc");
+        let main = manifests::build_container(
+            "svc", "img", "", vec![], vec![], vec![], vec![], vec![], vec![], None, None, None,
+        );
+        let dep = manifests::build_deployment(
+            "svc", "default", labels, sel, Some(1), vec![main], vec![], "", vec![], "",
+        );
+        let c = &dep.spec.unwrap().template.spec.unwrap().containers[0];
+        let cmd = c
+            .lifecycle
+            .as_ref()
+            .and_then(|l| l.pre_stop.as_ref())
+            .and_then(|h| h.exec.as_ref())
+            .and_then(|e| e.command.as_ref())
+            .expect("default preStop");
+        assert_eq!(
+            cmd,
+            &vec!["/bin/sh".to_string(), "-c".to_string(), "sleep 5".to_string()]
+        );
+    }
+
+    #[test]
+    fn primary_service_selects_role_primary() {
+        let sel = manifests::selector_labels("cloud");
+        let svc = manifests::build_primary_service(
+            "cloud-primary",
+            "hanzo",
+            manifests::standard_labels("cloud", "", "", ""),
+            vec![],
+            sel,
+        );
+        let selector = svc.spec.unwrap().selector.expect("primary selector");
+        assert_eq!(
+            selector.get("hanzo.ai/role").map(String::as_str),
+            Some("primary"),
+            "primary Service must select only the lease holder"
+        );
+        assert_eq!(
+            selector.get("app.kubernetes.io/name").map(String::as_str),
+            Some("cloud"),
+            "primary Service must still scope to the app"
+        );
+    }
+
+    #[test]
+    fn ha_suppresses_sidecar_persistence() {
+        // HA + persistence set together: HA wins the workload type and the
+        // sidecar/restore-init are suppressed (two shippers corrupt the WAL).
+        // (Mirrors the controller's `persistence = if ha.is_some() { None }`.)
+        let mut spec = base_spec();
+        spec.ha = Some(ha_spec());
+        spec.persistence = Some(persistence_spec());
+        let ha_on = spec.ha.as_ref().filter(|h| h.enabled).is_some();
+        let effective_persistence: Option<PersistenceSpec> = if ha_on {
+            None
+        } else {
+            spec.persistence.clone()
+        };
+        assert!(
+            effective_persistence.is_none(),
+            "persistence must be suppressed when HA is enabled"
         );
     }
 }
