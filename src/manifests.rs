@@ -746,6 +746,18 @@ pub fn build_configmap(
     }
 }
 
+/// True when a ConfigMap carries no config — both `data` and `binaryData`
+/// are absent or empty. Such a ConfigMap must NEVER be force-applied: SSA
+/// would strip every key the operator's field manager owns, blanking a
+/// mounted config file and crashlooping the workload. `apply::apply_configmap`
+/// enforces this gate (root cause of the hanzo.id auth outage: `iam-conf`
+/// regenerated empty → `panic: unable to open database file`).
+pub fn configmap_is_empty(cm: &ConfigMap) -> bool {
+    let data_empty = cm.data.as_ref().map_or(true, |d| d.is_empty());
+    let binary_empty = cm.binary_data.as_ref().map_or(true, |d| d.is_empty());
+    data_empty && binary_empty
+}
+
 /// Resolve image repository + tag into a single image reference.
 pub fn image_ref(repository: &str, tag: &str) -> String {
     if tag.is_empty() {
@@ -794,5 +806,46 @@ pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> Persis
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The outage guard: a ConfigMap built from an empty CR config source is
+    /// flagged empty so `apply::apply_configmap` skips it and leaves any
+    /// existing populated ConfigMap untouched.
+    #[test]
+    fn empty_config_source_yields_empty_configmap_flag() {
+        let cm = build_configmap("iam-conf", "hanzo", BTreeMap::new(), BTreeMap::new());
+        assert!(
+            configmap_is_empty(&cm),
+            "empty-data ConfigMap must be flagged empty so the apply guard skips it"
+        );
+    }
+
+    #[test]
+    fn populated_config_source_not_empty() {
+        let mut data = BTreeMap::new();
+        data.insert("app.conf".to_string(), "listen = :8000\n".to_string());
+        let cm = build_configmap("iam-conf", "hanzo", BTreeMap::new(), data);
+        assert!(
+            !configmap_is_empty(&cm),
+            "populated ConfigMap must apply normally"
+        );
+    }
+
+    #[test]
+    fn binary_only_configmap_not_empty() {
+        use k8s_openapi::ByteString;
+        let mut cm = build_configmap("bin-conf", "hanzo", BTreeMap::new(), BTreeMap::new());
+        let mut bd = BTreeMap::new();
+        bd.insert("blob".to_string(), ByteString(vec![1, 2, 3]));
+        cm.binary_data = Some(bd);
+        assert!(
+            !configmap_is_empty(&cm),
+            "binary-only ConfigMap carries config and must apply"
+        );
     }
 }

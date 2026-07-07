@@ -84,7 +84,7 @@ async fn reconcile_inner(
         ..Default::default()
     };
     let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&cms, &cm).await?;
+    apply::apply_configmap(&cms, &cm).await?;
 
     // Deployment.
     let ports = vec![CrServicePort {

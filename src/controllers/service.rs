@@ -561,7 +561,7 @@ async fn reconcile_service_inner(
         );
         set_owner(&mut cm.metadata.owner_references, &owner);
         let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-        apply::apply(&cms, &cm).await?;
+        apply::apply_configmap(&cms, &cm).await?;
     }
 
     // 3. Service (only if ports are defined).
