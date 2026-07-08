@@ -38,6 +38,18 @@ pub async fn reconcile(cr: Arc<SQL>, ctx: Arc<Ctx>) -> Result<Action> {
     ds_spec.type_ = DATASTORE_TYPE.to_string();
     datastore::reconcile_datastore_inner_pub(&ctx.client, &name, &namespace, &ds_spec, owner)
         .await?;
+    // Report Ready on the facade CR just like the canonical Datastore does. The
+    // reconcile above materializes the StatefulSet, but the newtype facade
+    // previously never wrote status — leaving `SQL`/`KV` CRs with an empty
+    // Ready condition even when their workload was healthy.
+    datastore::write_status::<SQL>(
+        &ctx.client,
+        &name,
+        &namespace,
+        &ds_spec,
+        cr.metadata.generation.unwrap_or(0),
+    )
+    .await;
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
