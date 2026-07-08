@@ -18,7 +18,7 @@ use k8s_openapi::api::core::v1::{
     HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
     PodAffinity, PodAffinityTerm, PodSpec, PodTemplateSpec, Probe,
     ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
-    ServiceSpec as CoreServiceSpec, Volume, VolumeMount, WeightedPodAffinityTerm,
+    ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume, VolumeMount, WeightedPodAffinityTerm,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -149,6 +149,61 @@ pub fn build_http_probe(spec: &ProbeSpec) -> Probe {
         },
         ..Default::default()
     }
+}
+
+/// Build a k8s `Probe` from a CR `ProbeSpec`, dispatching to the declared
+/// handler. Returns `None` when the spec declares no usable handler, so the
+/// caller emits NO probe rather than an invalid one.
+///
+/// Handler precedence: `exec` → `tcpSocket` → `httpGet` (`port > 0`).
+///
+/// This is the fix for the reconcile storm where non-HTTP datastores
+/// (`insights-sql` `pg_isready`, `insights-kv` `redis-cli ping`,
+/// `insights-kafka` TCP `9092`) declared `exec`/`tcpSocket` probes that the
+/// old HTTP-only `ProbeSpec` dropped — leaving `port: 0` and emitting an
+/// `httpGet` the API server rejected (`port: Invalid value: 0: must be between
+/// 1 and 65535`). We now honor the real handler and NEVER emit a port-0
+/// `httpGet`.
+pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
+    let timing = |mut p: Probe| -> Probe {
+        p.initial_delay_seconds = Some(if spec.initial_delay_seconds > 0 {
+            spec.initial_delay_seconds
+        } else {
+            5
+        });
+        p.period_seconds = Some(if spec.period_seconds > 0 {
+            spec.period_seconds
+        } else {
+            10
+        });
+        p
+    };
+    if let Some(e) = &spec.exec {
+        if !e.command.is_empty() {
+            return Some(timing(Probe {
+                exec: Some(ExecAction {
+                    command: Some(e.command.clone()),
+                }),
+                ..Default::default()
+            }));
+        }
+    }
+    if let Some(t) = &spec.tcp_socket {
+        if t.port > 0 {
+            return Some(timing(Probe {
+                tcp_socket: Some(TCPSocketAction {
+                    port: IntOrString::Int(t.port),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+    }
+    if spec.port > 0 {
+        // Reuse the HTTP builder (already applies path/timing defaults).
+        return Some(build_http_probe(spec));
+    }
+    None
 }
 
 /// Convert CR ServicePorts to k8s ContainerPorts.
@@ -812,6 +867,87 @@ pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> Persis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crd::{ExecAction as CrExec, TcpSocketAction as CrTcp};
+
+    fn probe(port: i32) -> ProbeSpec {
+        ProbeSpec {
+            path: String::new(),
+            port,
+            exec: None,
+            tcp_socket: None,
+            initial_delay_seconds: 0,
+            period_seconds: 0,
+        }
+    }
+
+    // An `exec` probe (Postgres `pg_isready`, Valkey `redis-cli ping`) renders as
+    // an exec handler — NOT a mangled `httpGet{port:0}` — and carries no other
+    // handler.
+    #[test]
+    fn build_probe_renders_exec_handler() {
+        let mut p = probe(0);
+        p.exec = Some(CrExec {
+            command: vec!["pg_isready".into(), "-U".into(), "hanzo".into()],
+        });
+        let out = build_probe(&p).expect("exec probe must render");
+        assert_eq!(
+            out.exec.unwrap().command.unwrap(),
+            vec!["pg_isready", "-U", "hanzo"]
+        );
+        assert!(out.http_get.is_none(), "exec probe must not emit httpGet");
+        assert!(out.tcp_socket.is_none());
+    }
+
+    // A `tcpSocket` probe (Kafka TCP :9092) renders as a tcpSocket handler with
+    // the right port and no httpGet.
+    #[test]
+    fn build_probe_renders_tcp_socket_handler() {
+        let mut p = probe(0);
+        p.tcp_socket = Some(CrTcp { port: 9092 });
+        let out = build_probe(&p).expect("tcp probe must render");
+        assert_eq!(out.tcp_socket.unwrap().port, IntOrString::Int(9092));
+        assert!(out.http_get.is_none(), "tcp probe must not emit httpGet");
+    }
+
+    // A plain HTTP probe (port > 0) still renders as httpGet.
+    #[test]
+    fn build_probe_renders_http_handler() {
+        let out = build_probe(&probe(7700)).expect("http probe must render");
+        let hg = out.http_get.expect("http probe must emit httpGet");
+        assert_eq!(hg.port, IntOrString::Int(7700));
+        assert!(out.exec.is_none() && out.tcp_socket.is_none());
+    }
+
+    // The regression guard: a probe with NO usable handler (port 0, no
+    // exec/tcpSocket) renders NOTHING rather than an invalid `httpGet{port:0}`
+    // the API server rejects — the root of the 33 err/min reconcile storm.
+    #[test]
+    fn build_probe_never_emits_port_zero_http() {
+        assert!(
+            build_probe(&probe(0)).is_none(),
+            "an empty probe must yield None, never httpGet{{port:0}}"
+        );
+    }
+
+    // Handler precedence is exec > tcpSocket > httpGet: a CR that (wrongly)
+    // sets several picks exactly one, so the object is never rejected for
+    // specifying more than one handler type.
+    #[test]
+    fn build_probe_handler_precedence_is_exec_then_tcp_then_http() {
+        let mut p = probe(8080);
+        p.tcp_socket = Some(CrTcp { port: 9092 });
+        p.exec = Some(CrExec {
+            command: vec!["true".into()],
+        });
+        let out = build_probe(&p).unwrap();
+        assert!(out.exec.is_some());
+        assert!(out.tcp_socket.is_none() && out.http_get.is_none());
+
+        let mut p2 = probe(8080);
+        p2.tcp_socket = Some(CrTcp { port: 9092 });
+        let out2 = build_probe(&p2).unwrap();
+        assert!(out2.tcp_socket.is_some() && out2.http_get.is_none());
+    }
 
     /// The outage guard: a ConfigMap built from an empty CR config source is
     /// flagged empty so `apply::apply_configmap` skips it and leaves any

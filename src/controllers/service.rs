@@ -442,10 +442,10 @@ async fn reconcile_service_inner(
         spec.resources.as_ref().map(manifests::to_k8s_resources),
         spec.liveness_probe
             .as_ref()
-            .map(manifests::build_http_probe),
+            .and_then(manifests::build_probe),
         spec.readiness_probe
             .as_ref()
-            .map(manifests::build_http_probe),
+            .and_then(manifests::build_probe),
     );
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
@@ -546,7 +546,12 @@ async fn reconcile_service_inner(
     }
     set_owner(&mut deploy.metadata.owner_references, &owner);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&deps, &deploy).await?;
+    // Deployments may carry a stale server-defaulted volume source (an
+    // `emptyDir` left from a past source-less apply) or a duplicate probe
+    // handler that SSA-merge cannot clear; `apply_or_recreate` deterministically
+    // recreates from the desired (single-source) spec in that case. Standalone
+    // PVCs re-attach; healthy Deployments apply cleanly and never recreate.
+    apply::apply_or_recreate(&deps, &deploy).await?;
 
     // 2b. Persistence ConfigMap (`replicate.yml`). Owned by the Service so it
     // is GC'd with the CR.
