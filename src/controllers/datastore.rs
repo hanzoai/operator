@@ -183,11 +183,11 @@ async fn reconcile_datastore_inner(
         .iter()
         .map(crd_types::EnvFromSource::to_k8s)
         .collect();
-    let vm_k8s: Vec<_> = spec
-        .volume_mounts
-        .iter()
-        .map(crd_types::VolumeMount::to_k8s)
-        .collect();
+    // The `volumeClaimTemplate` name (immutable on the StatefulSet) + the
+    // container's data mounts. See `vct_name` / `resolve_volume_mounts`.
+    let vct = vct_name(spec);
+    let mounts = resolve_volume_mounts(spec, &vct);
+    let vm_k8s: Vec<_> = mounts.iter().map(crd_types::VolumeMount::to_k8s).collect();
     let main = manifests::build_container(
         name,
         &manifests::image_ref(&image.repository, &image.tag),
@@ -206,7 +206,7 @@ async fn reconcile_datastore_inner(
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
 
     let pvc_template = manifests::build_pvc_template(
-        "data",
+        &vct,
         &spec.storage.storage_class_name,
         spec.storage.size.as_str(),
     );
@@ -301,6 +301,50 @@ fn default_port_for(type_: &str) -> i32 {
         "nats" => 4222,
         _ => 8080,
     }
+}
+
+/// Default container mount path for a datastore engine's data volume. Matches
+/// the paths the live fleet already uses so an adopted StatefulSet's pod spec
+/// is byte-identical (no needless rollout): Postgres writes under
+/// `/var/lib/postgresql/data`, Valkey/MinIO/NATS under `/data`, FerretDB
+/// (docdb) under `/state`.
+fn default_data_path_for(type_: &str) -> String {
+    match type_ {
+        "postgresql" => "/var/lib/postgresql/data",
+        "docdb" => "/state",
+        _ => "/data",
+    }
+    .to_string()
+}
+
+/// Name of the `volumeClaimTemplate` and the auto-injected data mount. Defaults
+/// to `data`. IMMUTABLE on the StatefulSet — a datastore adopting a
+/// pre-existing StatefulSet MUST set `storage.volumeName` to the live
+/// template's name (e.g. `sql-data`), else the apply is rejected as an
+/// immutable-field update and the workload stops reconciling.
+fn vct_name(spec: &DatastoreSpec) -> String {
+    spec.storage
+        .volume_name
+        .clone()
+        .unwrap_or_else(|| "data".to_string())
+}
+
+/// The container's data mounts: the CR's explicit `volumeMounts` when set,
+/// otherwise a single auto-injected mount of the VCT at the engine's default
+/// data path. Auto-injection fixes the prior bug where the template was created
+/// but never mounted (a fresh datastore wrote to the container's ephemeral fs
+/// and lost its data on restart). CRs that mount the volume themselves
+/// (docdb tenants → `/state`) are left exactly as declared.
+fn resolve_volume_mounts(spec: &DatastoreSpec, vct: &str) -> Vec<crd_types::VolumeMount> {
+    if !spec.volume_mounts.is_empty() {
+        return spec.volume_mounts.clone();
+    }
+    vec![crd_types::VolumeMount {
+        name: vct.to_string(),
+        mount_path: default_data_path_for(&spec.type_),
+        sub_path: String::new(),
+        read_only: None,
+    }]
 }
 
 /// Best-effort, password-free in-cluster DSN for a datastore workload. Carries
@@ -463,7 +507,10 @@ mod tests {
         let got = attribution_labels(&cr);
         assert_eq!(got.get("hanzo.ai/org"), Some(&"acme".to_string()));
         assert_eq!(got.get("hanzo.ai/resource"), Some(&"rs_123".to_string()));
-        assert_eq!(got.get("hanzo.ai/managed-by"), Some(&"provisioning".to_string()));
+        assert_eq!(
+            got.get("hanzo.ai/managed-by"),
+            Some(&"provisioning".to_string())
+        );
         assert!(!got.contains_key("unrelated"));
     }
 
@@ -518,5 +565,70 @@ mod tests {
             .unwrap()
             .security_context
             .is_none());
+    }
+
+    fn spec_with_storage(type_: &str, volume_name: Option<&str>) -> DatastoreSpec {
+        DatastoreSpec {
+            type_: type_.to_string(),
+            storage: StorageSpec {
+                size: "20Gi".to_string(),
+                volume_name: volume_name.map(|s| s.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    // A fresh datastore's volumeClaimTemplate defaults to `data`.
+    #[test]
+    fn vct_name_defaults_to_data() {
+        assert_eq!(vct_name(&spec_with_storage("postgresql", None)), "data");
+    }
+
+    // Adopting a pre-existing StatefulSet: `storage.volumeName` names the VCT so
+    // the operator's template matches the live (immutable) `sql-data` template
+    // instead of forcing a forbidden rename. This is the sql/kv adoption fix.
+    #[test]
+    fn vct_name_honors_volume_name_for_adoption() {
+        assert_eq!(
+            vct_name(&spec_with_storage("postgresql", Some("sql-data"))),
+            "sql-data"
+        );
+    }
+
+    // With no explicit mounts, the datastore auto-mounts its VCT at the engine's
+    // real data path — so sql's rendered pod matches the live pod
+    // (`sql-data` → `/var/lib/postgresql/data`) and adoption is a clean no-op.
+    #[test]
+    fn resolve_mounts_auto_injects_vct_at_engine_path() {
+        let spec = spec_with_storage("postgresql", Some("sql-data"));
+        let vct = vct_name(&spec);
+        let mounts = resolve_volume_mounts(&spec, &vct);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "sql-data");
+        assert_eq!(mounts[0].mount_path, "/var/lib/postgresql/data");
+
+        // Valkey adopts `kv-data` → `/data`.
+        let kv = spec_with_storage("valkey", Some("kv-data"));
+        let kvm = resolve_volume_mounts(&kv, &vct_name(&kv));
+        assert_eq!(kvm[0].mount_path, "/data");
+    }
+
+    // A CR that declares its own mounts (docdb tenants → `/state`, volume
+    // `data`) is left EXACTLY as-is — the operator must not double-mount or
+    // move a working tenant datastore.
+    #[test]
+    fn resolve_mounts_honors_explicit_cr_mounts() {
+        let mut spec = spec_with_storage("docdb", None);
+        spec.volume_mounts = vec![crd_types::VolumeMount {
+            name: "data".to_string(),
+            mount_path: "/state".to_string(),
+            sub_path: String::new(),
+            read_only: None,
+        }];
+        let mounts = resolve_volume_mounts(&spec, &vct_name(&spec));
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "data");
+        assert_eq!(mounts[0].mount_path, "/state");
     }
 }
