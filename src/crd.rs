@@ -61,16 +61,48 @@ pub struct ResourceRequirements {
     pub limits: Option<BTreeMap<String, String>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeSpec {
+    /// `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+    /// `port > 0`.
     #[serde(default)]
     pub path: String,
+    /// `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+    /// `exec` or `tcpSocket` handler instead for non-HTTP health checks
+    /// (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+    /// Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+    /// schema made `port` required, which forced every probe to be HTTP and
+    /// silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
+    #[serde(default)]
     pub port: i32,
+    /// `exec` handler — probe succeeds when the command exits 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ExecAction>,
+    /// `tcpSocket` handler — probe succeeds when the TCP port accepts a
+    /// connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+    /// tcpSocket, then httpGet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_socket: Option<TcpSocketAction>,
     #[serde(default)]
     pub initial_delay_seconds: i32,
     #[serde(default)]
     pub period_seconds: i32,
+}
+
+/// `exec` probe handler (mirror of k8s `core/v1.ExecAction`).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecAction {
+    #[serde(default)]
+    pub command: Vec<String>,
+}
+
+/// `tcpSocket` probe handler (mirror of k8s `core/v1.TCPSocketAction`).
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TcpSocketAction {
+    pub port: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
@@ -227,6 +259,14 @@ pub struct StorageSpec {
     pub size: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub retention_policy: String,
+    /// Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+    /// Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+    /// datastore adopting a pre-existing StatefulSet MUST set this to the
+    /// existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+    /// apply is rejected (`updates to statefulset spec ... are forbidden`) and
+    /// the workload stops reconciling. New datastores can omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_name: Option<String>,
 }
 
 /// Durable SeaweedFS-backed SQLite for ANY Service Kind, via the proven

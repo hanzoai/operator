@@ -415,22 +415,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -556,6 +588,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -582,22 +624,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -758,6 +832,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -1288,6 +1374,16 @@ spec:
                     description: Quantity string (e.g. `"10Gi"`).
                     type: string
                   storageClassName:
+                    type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
                     type: string
                 required:
                 - size
@@ -2033,6 +2129,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -2150,6 +2256,16 @@ spec:
                         description: Quantity string (e.g. `"10Gi"`).
                         type: string
                       storageClassName:
+                        type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
                         type: string
                     required:
                     - size
@@ -2956,6 +3072,16 @@ spec:
                     type: string
                   storageClassName:
                     type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
+                    type: string
                 required:
                 - size
                 type: object
@@ -3453,6 +3579,16 @@ spec:
                     description: Quantity string (e.g. `"10Gi"`).
                     type: string
                   storageClassName:
+                    type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
                     type: string
                 required:
                 - size
@@ -3979,6 +4115,16 @@ spec:
                     type: string
                   storageClassName:
                     type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
+                    type: string
                 required:
                 - size
                 type: object
@@ -4504,6 +4650,16 @@ spec:
                     type: string
                   storageClassName:
                     type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
+                    type: string
                 required:
                 - size
                 type: object
@@ -5005,22 +5161,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -5146,6 +5334,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -5172,22 +5370,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -5348,6 +5578,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -5846,22 +6088,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -5987,6 +6261,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -6013,22 +6297,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -6189,6 +6505,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -6687,22 +7015,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -6828,6 +7188,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -6854,22 +7224,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -7030,6 +7432,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -7551,6 +7965,16 @@ spec:
                     description: Quantity string (e.g. `"10Gi"`).
                     type: string
                   storageClassName:
+                    type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
                     type: string
                 required:
                 - size
@@ -8084,6 +8508,16 @@ spec:
                     type: string
                   storageClassName:
                     type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
+                    type: string
                 required:
                 - size
                 type: object
@@ -8377,6 +8811,16 @@ spec:
                         description: Quantity string (e.g. `"10Gi"`).
                         type: string
                       storageClassName:
+                        type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
                         type: string
                     required:
                     - size
@@ -8856,22 +9300,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -8997,6 +9473,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -9023,22 +9509,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -9199,6 +9717,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -9697,22 +10227,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -9838,6 +10400,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -9864,22 +10436,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -10040,6 +10644,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -10926,22 +11542,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -11067,6 +11715,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -11093,22 +11751,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -11269,6 +11959,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -11767,22 +12469,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -11908,6 +12642,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -11934,22 +12678,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -12110,6 +12886,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -12608,22 +13396,54 @@ spec:
               livenessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               networkPolicy:
                 nullable: true
@@ -12749,6 +13569,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -12775,22 +13605,54 @@ spec:
               readinessProbe:
                 nullable: true
                 properties:
+                  exec:
+                    description: '`exec` handler — probe succeeds when the command exits 0.'
+                    nullable: true
+                    properties:
+                      command:
+                        default: []
+                        items:
+                          type: string
+                        type: array
+                    type: object
                   initialDelaySeconds:
                     default: 0
                     format: int32
                     type: integer
                   path:
                     default: ''
+                    description: |-
+                      `httpGet` path. Used only when no `exec`/`tcpSocket` handler is set and
+                      `port > 0`.
                     type: string
                   periodSeconds:
                     default: 0
                     format: int32
                     type: integer
                   port:
+                    default: 0
+                    description: |-
+                      `httpGet` port. `0` (the default) means "no HTTP handler" — set an
+                      `exec` or `tcpSocket` handler instead for non-HTTP health checks
+                      (Postgres `pg_isready`, Valkey `redis-cli ping`, a Kafka TCP listener).
+                      Optional so a CR can declare an `exec`/`tcpSocket`-only probe; the old
+                      schema made `port` required, which forced every probe to be HTTP and
+                      silently mangled exec/tcpSocket probes into an invalid `httpGet{port:0}`.
                     format: int32
                     type: integer
-                required:
-                - port
+                  tcpSocket:
+                    description: |-
+                      `tcpSocket` handler — probe succeeds when the TCP port accepts a
+                      connection. Mutually exclusive with `httpGet`/`exec` (exec wins, then
+                      tcpSocket, then httpGet).
+                    nullable: true
+                    properties:
+                      port:
+                        format: int32
+                        type: integer
+                    required:
+                    - port
+                    type: object
                 type: object
               replicas:
                 format: int32
@@ -12951,6 +13813,18 @@ spec:
                 type: array
               strategy:
                 type: string
+              surgeColocation:
+                description: |-
+                  Opt in to a zero-downtime, same-node handoff for a RollingUpdate service
+                  whose data is a single ReadWriteOnce PVC. When true (and strategy is not
+                  Recreate and a PVC is mounted) the operator injects a soft self-podAffinity
+                  (`manifests::colocation_affinity`) so the surge pod co-locates on the
+                  volume's node and bind-mounts the already-attached volume — no Multi-Attach
+                  deadlock, no reattach gap. ONLY set this for a store safe under a brief
+                  same-host two-pod overlap (SQLite WAL + busy_timeout). An exclusive-lock
+                  single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
+                  instead — leave this false. Default false (untouched).
+                type: boolean
               volumeMounts:
                 items:
                   properties:
@@ -13349,6 +14223,16 @@ spec:
                     type: string
                   storageClassName:
                     type: string
+                  volumeName:
+                    description: |-
+                      Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                      Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                      datastore adopting a pre-existing StatefulSet MUST set this to the
+                      existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                      apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                      the workload stops reconciling. New datastores can omit it.
+                    nullable: true
+                    type: string
                 required:
                 - size
                 type: object
@@ -13623,6 +14507,16 @@ spec:
                         type: string
                       storageClassName:
                         type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
+                        type: string
                     required:
                     - size
                     type: object
@@ -13736,6 +14630,16 @@ spec:
                         description: Quantity string (e.g. `"10Gi"`).
                         type: string
                       storageClassName:
+                        type: string
+                      volumeName:
+                        description: |-
+                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
+                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
+                          datastore adopting a pre-existing StatefulSet MUST set this to the
+                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
+                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
+                          the workload stops reconciling. New datastores can omit it.
+                        nullable: true
                         type: string
                     required:
                     - size
