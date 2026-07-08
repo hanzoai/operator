@@ -58,11 +58,18 @@ async fn reconcile_inner(
     };
 
     let ings: Api<Ingress> = Api::namespaced(client.clone(), namespace);
-    for (idx, domain) in spec.domains.iter().enumerate() {
+
+    // Apply the desired child Ingress for each domain and record its name. Child
+    // names are STABLE — a pure function of (CR name, host) — so removing or
+    // reordering a domain never churns a host into a new object (the historical
+    // `{parent}-{idx}-{host}` scheme orphaned a host's Ingress on every list
+    // shift). Duplicate-host domains collapse to one child (last apply wins),
+    // which is correct: exactly one Ingress per host.
+    let mut desired: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for domain in spec.domains.iter() {
         let ing = build_domain_ingress(
             name,
             namespace,
-            idx,
             domain,
             class,
             issuer,
@@ -70,16 +77,60 @@ async fn reconcile_inner(
             spec.labels.as_ref(),
             &owner,
         );
+        desired.insert(ing.name_any());
         apply::apply(&ings, &ing).await?;
+    }
+
+    // PRUNE: reap this CR's stale children. The reconciler is now own+prune, not
+    // upsert-only — after applying the desired set we delete every Ingress named
+    // with this CR's `{name}-` prefix that is NOT desired. This reaps BOTH the
+    // old `{parent}-{idx}-{host}` versioned orphans AND any predecessor-operator
+    // leftovers (which carry no owner-ref, so owner-ref GC alone never collected
+    // them). The prefix scope guarantees we can only ever delete THIS CR's own
+    // children — never a Service-controller Ingress (named after its Service) or
+    // any unrelated object. Desired children are applied BEFORE the prune, so
+    // every surviving host stays served throughout.
+    let prefix = format!("{name}-");
+    let mut pruned = 0usize;
+    for existing in ings.list(&kube::api::ListParams::default()).await?.items {
+        let child = existing.name_any();
+        if should_prune(&child, &prefix, &desired) {
+            match ings
+                .delete(&child, &kube::api::DeleteParams::default())
+                .await
+            {
+                Ok(_) => {
+                    pruned += 1;
+                    info!(name = %name, child = %child, "Pruned stale Ingress child");
+                }
+                Err(e) => {
+                    warn!(name = %name, child = %child, error = %e, "Failed to prune Ingress child")
+                }
+            }
+        }
     }
 
     info!(
         name,
         namespace,
         domains = spec.domains.len(),
+        pruned,
         "Ingress reconciled"
     );
     Ok(())
+}
+
+/// Prune predicate (pure, unit-tested): an Ingress is a stale child of this CR
+/// iff its name carries the CR's `{name}-` prefix and is not in the desired set.
+/// The prefix scope is the safety boundary — it can never match a
+/// Service-controller Ingress (named after its Service, e.g. `chat`/`billing`)
+/// or any unrelated object, only this CR's own current-or-stale children.
+fn should_prune(
+    child_name: &str,
+    prefix: &str,
+    desired: &std::collections::HashSet<String>,
+) -> bool {
+    child_name.starts_with(prefix) && !desired.contains(child_name)
 }
 
 /// Materialize one k8s `Ingress` from a single `DomainConfig`. Pure (no cluster
@@ -96,7 +147,6 @@ async fn reconcile_inner(
 fn build_domain_ingress(
     parent_name: &str,
     namespace: &str,
-    idx: usize,
     domain: &DomainConfig,
     class: &str,
     issuer: &str,
@@ -104,7 +154,11 @@ fn build_domain_ingress(
     extra_labels: Option<&BTreeMap<String, String>>,
     owner: &OwnerReference,
 ) -> Ingress {
-    let ing_name = format!("{}-{}-{}", parent_name, idx, sanitize_label(&domain.domain));
+    // STABLE name: `{parent}-{sanitized-host}` — a pure function of the host,
+    // with NO array index, so it never churns when domains are added/removed/
+    // reordered. (The former `-{idx}-` scheme minted a new object per position
+    // shift and never reaped the old → the orphan accumulation.)
+    let ing_name = format!("{}-{}", parent_name, sanitize_label(&domain.domain));
 
     let mut annotations: BTreeMap<String, String> = BTreeMap::new();
     annotations.insert("kubernetes.io/ingress.class".to_string(), class.to_string());
@@ -241,7 +295,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -267,7 +320,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -292,10 +344,11 @@ mod tests {
             tls[0].hosts.as_ref().unwrap(),
             &vec!["*.hanzo.app".to_string()]
         );
-        // Object-name-safe secret name (no leading-dash fragment from the `*`).
+        // Object-name-safe secret name (no leading-dash fragment from the `*`),
+        // and NO array-index segment (stable-name scheme).
         assert_eq!(
             tls[0].secret_name.as_deref(),
-            Some("hanzo-app-sites-0-wildcard-hanzo-app-tls")
+            Some("hanzo-app-sites-wildcard-hanzo-app-tls")
         );
     }
 
@@ -309,7 +362,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -340,6 +392,69 @@ mod tests {
         // Non-wildcard domains must sanitize exactly as before, so existing
         // Ingress child names (hanzo-domains-*) never churn.
         assert_eq!(sanitize_label("api.cloud.hanzo.ai"), "api-cloud-hanzo-ai");
+    }
+
+    /// The child Ingress name must be a pure function of (CR name, host) — no
+    /// array index — so removing/reordering a domain never mints a new object
+    /// under a shifted index (the orphan-accumulation root cause). Two calls
+    /// with the SAME host but different surrounding domain lists yield the SAME
+    /// name.
+    #[test]
+    fn child_name_is_stable_and_index_free() {
+        let d = DomainConfig {
+            domain: "console.hanzo.ai".to_string(),
+            routes: vec![cloud_route()],
+            tls: true,
+        };
+        let ing = build_domain_ingress(
+            "hanzo-domains",
+            "hanzo",
+            &d,
+            "ingress",
+            "letsencrypt-prod",
+            None,
+            None,
+            &owner(),
+        );
+        assert_eq!(
+            ing.metadata.name.as_deref(),
+            Some("hanzo-domains-console-hanzo-ai"),
+            "name must be {{parent}}-{{host}} with no index segment"
+        );
+    }
+
+    /// The prune predicate is the safety boundary. It reaps this CR's stale
+    /// children (old `-{idx}-` names AND ownerless predecessor leftovers) but
+    /// must NEVER touch a Service-controller Ingress (named after its Service)
+    /// or any object outside the `{name}-` prefix.
+    #[test]
+    fn prune_targets_only_this_crs_stale_children() {
+        let prefix = "hanzo-domains-";
+        let mut desired = std::collections::HashSet::new();
+        desired.insert("hanzo-domains-console-hanzo-ai".to_string());
+        desired.insert("hanzo-domains-api-hanzo-ai".to_string());
+
+        // Stale idx-scheme orphan → pruned.
+        assert!(should_prune(
+            "hanzo-domains-12-console-hanzo-ai",
+            prefix,
+            &desired
+        ));
+        // Predecessor-operator leftover (no owner-ref, old no-idx scheme) → pruned.
+        assert!(should_prune("hanzo-domains-hanzo-chat", prefix, &desired));
+        // Currently desired → KEPT.
+        assert!(!should_prune(
+            "hanzo-domains-console-hanzo-ai",
+            prefix,
+            &desired
+        ));
+        // Service-controller Ingress (different prefix) → NEVER touched.
+        assert!(!should_prune("chat", prefix, &desired));
+        assert!(!should_prune("billing", prefix, &desired));
+        assert!(!should_prune("hanzo-app", prefix, &desired));
+        // A name sharing a leading token but not the exact `{name}-` prefix
+        // (`hanzo-domains2-…`) must NOT match — the boundary is the literal prefix.
+        assert!(!should_prune("hanzo-domains2-foo", prefix, &desired));
     }
 }
 

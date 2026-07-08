@@ -22,6 +22,23 @@ const LEASE_DURATION_SECONDS: i32 = 30;
 const RENEW_INTERVAL_SECS: u64 = 10;
 const RETRY_INTERVAL_SECS: u64 = 15;
 
+/// Serialize a timestamp as a k8s `MicroTime` JSON value for a merge patch.
+///
+/// The apiserver's Lease validation parses `renewTime`/`acquireTime` as
+/// `MicroTime` — RFC3339 with EXACTLY 6 fractional digits (`.000000`). jiff's
+/// default `Timestamp` Display trims trailing zeros (e.g. `…38.76981Z`, 5
+/// digits), which the apiserver rejects with a 422 — the leader-election flap
+/// that stalled all reconciliation. Rather than hand-format (and risk drifting
+/// from the wire contract), we serialize through k8s-openapi's own `MicroTime`
+/// impl, so the merge-patch clock uses the IDENTICAL formatting as the typed
+/// create path — one serialization authority, no drift.
+fn micro_time_value(ts: jiff::Timestamp) -> serde_json::Value {
+    // MicroTime's Serialize emits a JSON string via `%.6f`; a newtype struct is
+    // transparent to serde_json, so this is always `Value::String`. Infallible
+    // for a valid Timestamp.
+    serde_json::to_value(MicroTime(ts)).expect("MicroTime always serializes to a JSON string")
+}
+
 /// Per-operator configuration for leader election. Each operator picks a
 /// unique `lease_name` (e.g. `lux-operator-leader`, `hanzo-operator-leader`)
 /// so multiple operators can coexist in the same cluster without contending
@@ -122,14 +139,8 @@ impl LeaderElection {
     }
 
     async fn try_acquire_or_renew(&self, leases: &Api<Lease>) -> anyhow::Result<bool> {
-        // k8s-openapi 0.28 backs meta/v1 MicroTime with jiff::Timestamp, so the
-        // lease clock is jiff. k8s MicroTime is MICROSECOND precision; jiff's
-        // default nanosecond RFC3339 (9 fractional digits) is rejected by the
-        // apiserver's Lease validation ("cannot parse ...Z as Z07:00"), so we
-        // truncate to microseconds for both the JSON-merge patch and typed writes.
-        let now = jiff::Timestamp::now()
-            .round(jiff::Unit::Microsecond)
-            .unwrap_or_else(|_| jiff::Timestamp::now());
+        let now = jiff::Timestamp::now();
+        let now_micro = micro_time_value(now);
         let lease_name = self.config.lease_name.as_str();
 
         match leases.get(lease_name).await {
@@ -150,7 +161,7 @@ impl LeaderElection {
                 if holder == Some(self.identity.as_str()) {
                     let patch = serde_json::json!({
                         "spec": {
-                            "renewTime": now.to_string(),
+                            "renewTime": now_micro,
                         }
                     });
                     leases
@@ -162,8 +173,8 @@ impl LeaderElection {
                         "spec": {
                             "holderIdentity": self.identity,
                             "leaseDurationSeconds": LEASE_DURATION_SECONDS,
-                            "acquireTime": now.to_string(),
-                            "renewTime": now.to_string(),
+                            "acquireTime": now_micro,
+                            "renewTime": now_micro,
                             "leaseTransitions": transitions + 1,
                         }
                     });
@@ -252,5 +263,38 @@ mod tests {
             identity_prefix: "operator-".into(),
         };
         assert_eq!(cfg.identity_prefix, "operator-");
+    }
+
+    /// Regression for the leader-election 422 flap: a timestamp whose
+    /// microseconds END IN ZERO is the case jiff Display trimmed to <6 digits
+    /// (`…76981Z`), which the apiserver's MicroTime parser rejected. The patch
+    /// clock must always emit EXACTLY 6 fractional digits.
+    #[test]
+    fn micro_time_value_always_has_six_fractional_digits() {
+        let ts: jiff::Timestamp = "2026-07-08T15:01:38.769810Z".parse().unwrap();
+        // jiff's own Display trims the trailing zero — this is the bug we guard.
+        assert_eq!(ts.to_string(), "2026-07-08T15:01:38.76981Z");
+        let v = micro_time_value(ts);
+        let s = v.as_str().expect("MicroTime serializes to a JSON string");
+        assert_eq!(
+            s, "2026-07-08T15:01:38.769810Z",
+            "must be exactly 6 frac digits"
+        );
+        let frac = s.split('.').nth(1).unwrap().trim_end_matches('Z');
+        assert_eq!(
+            frac.len(),
+            6,
+            "MicroTime must be exactly 6 fractional digits: {s}"
+        );
+    }
+
+    /// A whole-second timestamp (zero fraction) must still render `.000000`,
+    /// never a bare second — also rejected by the strict MicroTime parser.
+    #[test]
+    fn micro_time_value_pads_zero_fraction_to_six_digits() {
+        let ts: jiff::Timestamp = "2026-07-08T15:01:38Z".parse().unwrap();
+        let v = micro_time_value(ts);
+        let s = v.as_str().unwrap();
+        assert_eq!(s, "2026-07-08T15:01:38.000000Z");
     }
 }
