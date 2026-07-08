@@ -38,6 +38,16 @@ pub async fn reconcile(cr: Arc<KV>, ctx: Arc<Ctx>) -> Result<Action> {
     ds_spec.type_ = DATASTORE_TYPE.to_string();
     datastore::reconcile_datastore_inner_pub(&ctx.client, &name, &namespace, &ds_spec, owner)
         .await?;
+    // Report Ready on the facade CR just like the canonical Datastore does
+    // (the newtype facade previously never wrote status).
+    datastore::write_status::<KV>(
+        &ctx.client,
+        &name,
+        &namespace,
+        &ds_spec,
+        cr.metadata.generation.unwrap_or(0),
+    )
+    .await;
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 

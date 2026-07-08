@@ -43,7 +43,47 @@ pub const LABEL_VERSION: &str = "app.kubernetes.io/version";
 pub const LABEL_MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const MANAGED_BY_VALUE: &str = "hanzo-operator";
 
-/// Build the standard `app.kubernetes.io/*` label set. Empty values omitted.
+/// Coerce an image tag / ref into a valid Kubernetes label value for
+/// `app.kubernetes.io/version`. A label value must be ≤63 chars, contain only
+/// `[A-Za-z0-9._-]`, and start + end alphanumeric.
+///
+/// Digest-pinned refs are now the canonical deploy pattern (universe#445), so
+/// `spec.image.tag` can carry `v8.4.118@sha256:9820e153…`. That value blows
+/// BOTH the 63-char limit and the charset (`@`, `:` are illegal), so inserting
+/// it verbatim made the API server reject the whole Deployment
+/// (`metadata.labels: Invalid value`) — the `console` reconcile storm.
+///
+/// Rule: keep the human tag before any `@` digest, replace remaining illegal
+/// chars with `-`, cap at 63, and trim back to an alphanumeric boundary. A
+/// bare-digest ref (nothing before `@`) folds to a valid `sha256-<hex…>`.
+/// Deterministic: same ref → same value (no rollout churn).
+pub fn sanitize_label_value(v: &str) -> String {
+    // Prefer the human tag before a digest; fall back to the whole ref.
+    let base = match v.split_once('@') {
+        Some((tag, _digest)) if !tag.is_empty() => tag,
+        _ => v,
+    };
+    // Replace any char outside the label alphabet. ASCII-only after this, so a
+    // subsequent byte-truncate can't split a char.
+    let mapped: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let capped = &mapped[..mapped.len().min(63)];
+    // Must start AND end with an alphanumeric.
+    capped
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .to_string()
+}
+
+/// Build the standard `app.kubernetes.io/*` label set. Empty values omitted;
+/// the `version` label is sanitized via [`sanitize_label_value`].
 pub fn standard_labels(
     name: &str,
     component: &str,
@@ -60,8 +100,11 @@ pub fn standard_labels(
     if !part_of.is_empty() {
         labels.insert(LABEL_PART_OF.to_string(), part_of.to_string());
     }
+    // Sanitize: a digest-pinned `version` (repo tag `vX.Y.Z@sha256:…`) is not a
+    // valid label value and would fail the Deployment apply.
+    let version = sanitize_label_value(version);
     if !version.is_empty() {
-        labels.insert(LABEL_VERSION.to_string(), version.to_string());
+        labels.insert(LABEL_VERSION.to_string(), version);
     }
     labels
 }
@@ -947,6 +990,74 @@ mod tests {
         p2.tcp_socket = Some(CrTcp { port: 9092 });
         let out2 = build_probe(&p2).unwrap();
         assert!(out2.tcp_socket.is_some() && out2.http_get.is_none());
+    }
+
+    // The console regression: a digest-pinned image tag (now canonical per
+    // universe#445) must NOT land verbatim in a label — it exceeds 63 chars and
+    // contains illegal `@`/`:`, which rejected the whole Deployment apply.
+    #[test]
+    fn sanitize_label_value_strips_digest_from_pinned_tag() {
+        let v = "v8.4.118@sha256:9820e1539f1a51c36179a595fda500c9470461e9b2ea0e42c7166decbc70b77a";
+        assert_eq!(sanitize_label_value(v), "v8.4.118");
+        assert!(is_valid_label_value(&sanitize_label_value(v)));
+    }
+
+    // A plain semver tag is a valid label value and passes through unchanged.
+    #[test]
+    fn sanitize_label_value_passes_plain_tags_through() {
+        for t in ["18", "0.1.1", "v2.7.1", "latest"] {
+            assert_eq!(sanitize_label_value(t), t, "plain tag must be unchanged");
+        }
+    }
+
+    // A bare-digest ref (no human tag before `@`) folds to a valid `sha256-…`.
+    #[test]
+    fn sanitize_label_value_folds_bare_digest() {
+        let out = sanitize_label_value(
+            "@sha256:9820e1539f1a51c36179a595fda500c9470461e9b2ea0e42c7166decbc70b77a",
+        );
+        assert!(out.starts_with("sha256-"));
+        assert!(
+            is_valid_label_value(&out),
+            "bare digest must sanitize valid: {out}"
+        );
+    }
+
+    // Any long/illegal value is capped at 63 chars and trimmed to an
+    // alphanumeric boundary — the two hard label constraints.
+    #[test]
+    fn sanitize_label_value_caps_length_and_boundaries() {
+        let out = sanitize_label_value(&format!("v1.2.3@{}", "a".repeat(200)));
+        assert_eq!(out, "v1.2.3");
+        // A value that is illegal chars + long still ends valid.
+        let messy = sanitize_label_value(&"_-.".repeat(30));
+        assert!(is_valid_label_value(&messy) || messy.is_empty());
+    }
+
+    // The end-to-end guard: standard_labels emits a VALID version label for a
+    // digest-pinned image (previously the FieldValueInvalid on console).
+    #[test]
+    fn standard_labels_version_is_a_valid_label_for_pinned_image() {
+        let l = standard_labels(
+            "console",
+            "app",
+            "cloud",
+            "v8.4.118@sha256:9820e1539f1a51c36179a595fda500c9470461e9b2ea0e42c7166decbc70b77a",
+        );
+        let ver = l.get(LABEL_VERSION).expect("version label present");
+        assert_eq!(ver, "v8.4.118");
+        assert!(is_valid_label_value(ver));
+    }
+
+    /// Mirror of the k8s label-value validation (RFC 1123-ish): ≤63 chars,
+    /// `[A-Za-z0-9._-]`, start + end alphanumeric.
+    fn is_valid_label_value(v: &str) -> bool {
+        !v.is_empty()
+            && v.len() <= 63
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            && v.chars().next().unwrap().is_ascii_alphanumeric()
+            && v.chars().last().unwrap().is_ascii_alphanumeric()
     }
 
     /// The outage guard: a ConfigMap built from an empty CR config source is
