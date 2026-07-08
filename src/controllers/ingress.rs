@@ -81,20 +81,28 @@ async fn reconcile_inner(
         apply::apply(&ings, &ing).await?;
     }
 
-    // PRUNE: reap this CR's stale children. The reconciler is now own+prune, not
+    // PRUNE: reap this CR's stale children. The reconciler is own+prune, not
     // upsert-only — after applying the desired set we delete every Ingress named
-    // with this CR's `{name}-` prefix that is NOT desired. This reaps BOTH the
-    // old `{parent}-{idx}-{host}` versioned orphans AND any predecessor-operator
-    // leftovers (which carry no owner-ref, so owner-ref GC alone never collected
-    // them). The prefix scope guarantees we can only ever delete THIS CR's own
-    // children — never a Service-controller Ingress (named after its Service) or
-    // any unrelated object. Desired children are applied BEFORE the prune, so
-    // every surviving host stays served throughout.
+    // with this CR's `{name}-` prefix that is NOT desired, gated by an ownership
+    // check: prune only if the child is UNOWNED (predecessor-operator leftovers
+    // carry no owner-ref, so owner-ref GC alone never collected them) OR owned by
+    // THIS CR. A child owned solely by a DIFFERENT CR that happens to share our
+    // name prefix is KEPT — the prefix is the coarse scope, the owner-ref is the
+    // fine boundary, so we can never cross-delete another controller's children.
+    // Desired children are applied BEFORE the prune, so every surviving host stays
+    // served throughout.
     let prefix = format!("{name}-");
+    let self_uid = owner.uid.as_str();
     let mut pruned = 0usize;
     for existing in ings.list(&kube::api::ListParams::default()).await?.items {
         let child = existing.name_any();
-        if should_prune(&child, &prefix, &desired) {
+        if should_prune(
+            &child,
+            existing.metadata.owner_references.as_deref(),
+            &prefix,
+            self_uid,
+            &desired,
+        ) {
             match ings
                 .delete(&child, &kube::api::DeleteParams::default())
                 .await
@@ -120,17 +128,32 @@ async fn reconcile_inner(
     Ok(())
 }
 
-/// Prune predicate (pure, unit-tested): an Ingress is a stale child of this CR
-/// iff its name carries the CR's `{name}-` prefix and is not in the desired set.
-/// The prefix scope is the safety boundary — it can never match a
-/// Service-controller Ingress (named after its Service, e.g. `chat`/`billing`)
-/// or any unrelated object, only this CR's own current-or-stale children.
+/// Prune predicate (pure, unit-tested). An Ingress is a stale child of this CR
+/// iff ALL hold:
+///   1. its name carries the CR's `{name}-` prefix (coarse scope), AND
+///   2. it is not in the desired set (not a current child), AND
+///   3. it is UNOWNED (no owner-ref — predecessor-operator leftovers) OR owned by
+///      THIS CR (`self_uid` appears in its owner-refs).
+/// Condition 3 is the fine boundary: a child owned solely by a DIFFERENT CR that
+/// happens to share our name prefix is KEPT, so we can never cross-delete another
+/// controller's children. The "unowned → prunable" arm is REQUIRED — the
+/// predecessor leftovers (`hanzo-domains-{dataroom,esign,…}`) carry no owner-ref
+/// and would otherwise survive forever.
 fn should_prune(
     child_name: &str,
+    owner_refs: Option<&[OwnerReference]>,
     prefix: &str,
+    self_uid: &str,
     desired: &std::collections::HashSet<String>,
 ) -> bool {
-    child_name.starts_with(prefix) && !desired.contains(child_name)
+    if !child_name.starts_with(prefix) || desired.contains(child_name) {
+        return false;
+    }
+    match owner_refs {
+        None => true,
+        Some(refs) if refs.is_empty() => true,
+        Some(refs) => refs.iter().any(|r| r.uid == self_uid),
+    }
 }
 
 /// Materialize one k8s `Ingress` from a single `DomainConfig`. Pure (no cluster
@@ -423,38 +446,88 @@ mod tests {
         );
     }
 
-    /// The prune predicate is the safety boundary. It reaps this CR's stale
-    /// children (old `-{idx}-` names AND ownerless predecessor leftovers) but
-    /// must NEVER touch a Service-controller Ingress (named after its Service)
-    /// or any object outside the `{name}-` prefix.
+    /// The prune predicate is the safety boundary: `{name}-` prefix (coarse) AND
+    /// not-desired AND (unowned OR owned-by-this-CR) (fine). It reaps this CR's
+    /// stale children AND ownerless predecessor leftovers, but must NEVER touch a
+    /// Service-controller Ingress, an object outside the prefix, OR a child owned
+    /// by a DIFFERENT CR that shares the prefix.
     #[test]
     fn prune_targets_only_this_crs_stale_children() {
+        const SELF_UID: &str = "self-cr-uid";
         let prefix = "hanzo-domains-";
         let mut desired = std::collections::HashSet::new();
         desired.insert("hanzo-domains-console-hanzo-ai".to_string());
         desired.insert("hanzo-domains-api-hanzo-ai".to_string());
 
-        // Stale idx-scheme orphan → pruned.
+        let owned_by_self = [OwnerReference {
+            uid: SELF_UID.to_string(),
+            ..Default::default()
+        }];
+        let owned_by_other = [OwnerReference {
+            uid: "some-other-cr-uid".to_string(),
+            ..Default::default()
+        }];
+
+        // Stale idx-scheme orphan owned by THIS CR → pruned.
         assert!(should_prune(
             "hanzo-domains-12-console-hanzo-ai",
+            Some(&owned_by_self),
             prefix,
+            SELF_UID,
             &desired
         ));
-        // Predecessor-operator leftover (no owner-ref, old no-idx scheme) → pruned.
-        assert!(should_prune("hanzo-domains-hanzo-chat", prefix, &desired));
-        // Currently desired → KEPT.
+        // Predecessor-operator leftover: prefix-match, NO owner-ref → pruned
+        // (the required "unowned → prunable" arm — else these survive forever).
+        assert!(should_prune(
+            "hanzo-domains-dataroom-hanzo-ai",
+            None,
+            prefix,
+            SELF_UID,
+            &desired
+        ));
+        assert!(should_prune(
+            "hanzo-domains-hanzo-chat",
+            Some(&[]),
+            prefix,
+            SELF_UID,
+            &desired
+        ));
+        // Prefix-match but owned by a DIFFERENT CR → KEPT (no cross-delete).
+        assert!(!should_prune(
+            "hanzo-domains-someone-elses-child",
+            Some(&owned_by_other),
+            prefix,
+            SELF_UID,
+            &desired
+        ));
+        // Currently desired (even if owned by us) → KEPT.
         assert!(!should_prune(
             "hanzo-domains-console-hanzo-ai",
+            Some(&owned_by_self),
             prefix,
+            SELF_UID,
             &desired
         ));
-        // Service-controller Ingress (different prefix) → NEVER touched.
-        assert!(!should_prune("chat", prefix, &desired));
-        assert!(!should_prune("billing", prefix, &desired));
-        assert!(!should_prune("hanzo-app", prefix, &desired));
+        // Service-controller Ingress (different prefix) → NEVER touched, whatever
+        // its owner.
+        assert!(!should_prune("chat", None, prefix, SELF_UID, &desired));
+        assert!(!should_prune("billing", None, prefix, SELF_UID, &desired));
+        assert!(!should_prune(
+            "hanzo-app",
+            Some(&owned_by_self),
+            prefix,
+            SELF_UID,
+            &desired
+        ));
         // A name sharing a leading token but not the exact `{name}-` prefix
         // (`hanzo-domains2-…`) must NOT match — the boundary is the literal prefix.
-        assert!(!should_prune("hanzo-domains2-foo", prefix, &desired));
+        assert!(!should_prune(
+            "hanzo-domains2-foo",
+            None,
+            prefix,
+            SELF_UID,
+            &desired
+        ));
     }
 }
 
