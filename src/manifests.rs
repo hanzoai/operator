@@ -536,15 +536,26 @@ pub fn build_ingress(
             annotations.insert(k.clone(), v.clone());
         }
     }
-    // hanzoai/ingress (Traefik fork) silently drops spec.tls when the caller
-    // sets spec.ingressClassName instead of the annotation. Emit the
-    // annotation form so TLS stays hooked up.
-    if !spec.ingress_class_name.is_empty() {
-        annotations.insert(
-            "kubernetes.io/ingress.class".to_string(),
-            spec.ingress_class_name.clone(),
-        );
-    }
+    // hanzoai/ingress (Traefik fork) matches ingresses by the legacy
+    // `kubernetes.io/ingress.class` annotation, NOT by spec.ingressClassName.
+    // The `ingress` IngressClass is marked cluster-default, so the API server
+    // auto-assigns spec.ingressClassName=ingress to EVERY ingress that omits a
+    // class — which this Traefik fork then silently ignores (its internal
+    // controller-name check is `traefik.io/…`, not `hanzo.ai/ingress-controller`),
+    // dropping the route AND its TLS. So a new brand that never sets a class
+    // ships with a live Deployment but no ingress and no cert — a silent, per-
+    // site break. Defend against it here, in the one place every operator
+    // Service ingress is built: ALWAYS emit the annotation form (defaulting to
+    // `ingress`) so TLS stays hooked up no matter what class the API defaults.
+    let ingress_class = if spec.ingress_class_name.is_empty() {
+        "ingress"
+    } else {
+        spec.ingress_class_name.as_str()
+    };
+    annotations.insert(
+        "kubernetes.io/ingress.class".to_string(),
+        ingress_class.to_string(),
+    );
 
     let path_type = "Prefix".to_string();
     let mut rules = Vec::new();
