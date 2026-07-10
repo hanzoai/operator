@@ -9,10 +9,14 @@
 //! defaults. CRs in the cluster don't notice the swap.
 
 use k8s_openapi::api::core::v1::{
+    ConfigMapVolumeSource as K8sConfigMapVolumeSource, EmptyDirVolumeSource as K8sEmptyDirVolumeSource,
     EnvFromSource as K8sEnvFromSource, EnvVar as K8sEnvVar, EnvVarSource as K8sEnvVarSource,
-    LocalObjectReference as K8sLocalObjectReference, SecretReference as K8sSecretReference,
+    KeyToPath as K8sKeyToPath, LocalObjectReference as K8sLocalObjectReference,
+    PersistentVolumeClaimVolumeSource as K8sPersistentVolumeClaimVolumeSource,
+    SecretReference as K8sSecretReference, SecretVolumeSource as K8sSecretVolumeSource,
     Volume as K8sVolume, VolumeMount as K8sVolumeMount,
 };
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition as K8sCondition, Time as K8sTime};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -102,15 +106,78 @@ pub struct VolumeMount {
     pub read_only: Option<bool>,
 }
 
+/// A pod volume: a name plus exactly one typed source. Each source is a real
+/// object schema (not a freeform `serde_json::Value`), so it survives into the
+/// generated structural CRD — a `serde_json::Value` source renders as an
+/// untyped blob that the apiserver prunes, which silently dropped `configMap` /
+/// `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Volume {
     pub name: String,
-    /// JSON-arbitrary volume source. Maps the union of EmptyDir, ConfigMap,
-    /// Secret, PersistentVolumeClaim, HostPath, etc. CRDs can carry any of
-    /// these without us re-typing the full v1.core.Volume union.
-    #[serde(flatten)]
-    pub source: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_map: Option<ConfigMapVolumeSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<SecretVolumeSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persistent_volume_claim: Option<PersistentVolumeClaimVolumeSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub empty_dir: Option<EmptyDirVolumeSource>,
+}
+
+/// One key→path projection inside a `configMap` / `secret` volume source.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyToPath {
+    pub key: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<i32>,
+}
+
+/// `configMap` volume source — mounts a ConfigMap by name.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigMapVolumeSource {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<KeyToPath>,
+}
+
+/// `secret` volume source — mounts a Secret by name.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretVolumeSource {
+    pub secret_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<KeyToPath>,
+}
+
+/// `persistentVolumeClaim` volume source — mounts an existing PVC.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentVolumeClaimVolumeSource {
+    pub claim_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+}
+
+/// `emptyDir` volume source — an ephemeral scratch volume.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyDirVolumeSource {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_limit: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -242,22 +309,52 @@ impl VolumeMount {
     }
 }
 
+/// Convert our key→path items into the k8s form, `None` when empty (k8s omits
+/// an absent projection).
+fn to_key_paths(items: &[KeyToPath]) -> Option<Vec<K8sKeyToPath>> {
+    if items.is_empty() {
+        return None;
+    }
+    Some(
+        items
+            .iter()
+            .map(|i| K8sKeyToPath {
+                key: i.key.clone(),
+                path: i.path.clone(),
+                mode: i.mode,
+            })
+            .collect(),
+    )
+}
+
 impl Volume {
     pub fn to_k8s(&self) -> K8sVolume {
-        // Round-trip via JSON: our `source` field is the flattened union
-        // of all volume source kinds; serializing it back into k8s-openapi
-        // gets us the canonical typed form.
-        let mut obj = serde_json::Map::new();
-        obj.insert("name".into(), serde_json::json!(self.name));
-        if let Some(map) = self.source.as_object() {
-            for (k, v) in map {
-                obj.insert(k.clone(), v.clone());
-            }
-        }
-        serde_json::from_value(serde_json::Value::Object(obj)).unwrap_or_else(|_| K8sVolume {
+        K8sVolume {
             name: self.name.clone(),
+            config_map: self.config_map.as_ref().map(|c| K8sConfigMapVolumeSource {
+                name: c.name.clone(),
+                default_mode: c.default_mode,
+                optional: c.optional,
+                items: to_key_paths(&c.items),
+            }),
+            secret: self.secret.as_ref().map(|s| K8sSecretVolumeSource {
+                secret_name: Some(s.secret_name.clone()),
+                default_mode: s.default_mode,
+                optional: s.optional,
+                items: to_key_paths(&s.items),
+            }),
+            persistent_volume_claim: self.persistent_volume_claim.as_ref().map(|p| {
+                K8sPersistentVolumeClaimVolumeSource {
+                    claim_name: p.claim_name.clone(),
+                    read_only: p.read_only,
+                }
+            }),
+            empty_dir: self.empty_dir.as_ref().map(|e| K8sEmptyDirVolumeSource {
+                medium: e.medium.clone(),
+                size_limit: e.size_limit.as_ref().map(|q| Quantity(q.clone())),
+            }),
             ..Default::default()
-        })
+        }
     }
 }
 
@@ -410,19 +507,18 @@ mod tests {
     use super::*;
 
     /// A `configMap` volume source (e.g. `status`'s gatus config) must survive
-    /// the CR-JSON → `Volume` deserialize → `to_k8s` round-trip. The flattened
-    /// `serde_json::Value` source field is the load-bearing part: if it drops
-    /// the source, the operator emits a sourceless volume and the app's config
-    /// never mounts (the `status` gatus "configuration file not found" crash).
+    /// the CR-JSON → `Volume` deserialize → `to_k8s` round-trip. The typed
+    /// source is the load-bearing part: if it drops the source, the operator
+    /// emits a sourceless volume and the app's config never mounts (the
+    /// `status` gatus "configuration file not found" crash).
     #[test]
     fn volume_configmap_source_survives_round_trip() {
         let cr = serde_json::json!({"name": "config", "configMap": {"name": "status-config"}});
         let v: Volume = serde_json::from_value(cr).expect("deserialize volume");
         assert_eq!(v.name, "config");
         assert!(
-            v.source.get("configMap").is_some(),
-            "flattened source must capture the configMap key, got {}",
-            v.source
+            v.config_map.is_some(),
+            "typed source must capture the configMap key",
         );
         let k = v.to_k8s();
         assert_eq!(k.name, "config");

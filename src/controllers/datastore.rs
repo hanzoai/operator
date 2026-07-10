@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{Datastore as DatastoreCR, DatastoreSpec, DatastoreStatus, ImageSpec, Phase};
+use crate::crd::{DBSpec, Datastore as DatastoreCR, DatastoreStatus, Engine, ImageSpec, Phase};
 use crate::crd_types;
 use crate::manifests;
 
@@ -41,39 +41,19 @@ pub struct Ctx {
     pub api_group: String,
 }
 
-/// Resolve the default image for a given datastore type.
-fn default_image_for(type_: &str) -> ImageSpec {
-    match type_ {
-        "postgresql" => ImageSpec {
-            repository: "ghcr.io/hanzoai/sql".to_string(),
-            tag: "16".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
-        "valkey" => ImageSpec {
-            repository: "ghcr.io/hanzoai/kv".to_string(),
-            tag: "8".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
-        "docdb" => ImageSpec {
-            repository: "ghcr.io/hanzoai/docdb".to_string(),
-            tag: "latest".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
-        "minio" => ImageSpec {
-            repository: "ghcr.io/hanzoai/s3".to_string(),
-            tag: "latest".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
-        "nats" => ImageSpec {
-            repository: "nats".to_string(),
-            tag: "2.10".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
-        _ => ImageSpec {
-            repository: "ghcr.io/hanzoai/datastore".to_string(),
-            tag: "latest".to_string(),
-            pull_policy: "IfNotPresent".to_string(),
-        },
+/// Resolve the default image for a datastore engine.
+fn default_image_for(engine: Engine) -> ImageSpec {
+    let (repository, tag) = match engine {
+        Engine::Postgres => ("ghcr.io/hanzoai/sql", "16"),
+        Engine::Valkey => ("ghcr.io/hanzoai/kv", "8"),
+        Engine::Docdb => ("ghcr.io/hanzoai/docdb", "latest"),
+        Engine::Minio => ("ghcr.io/hanzoai/s3", "latest"),
+        Engine::Datastore => ("ghcr.io/hanzoai/datastore", "latest"),
+    };
+    ImageSpec {
+        repository: repository.to_string(),
+        tag: tag.to_string(),
+        pull_policy: "IfNotPresent".to_string(),
     }
 }
 
@@ -94,7 +74,8 @@ pub async fn reconcile_datastore(cr: Arc<DatastoreCR>, ctx: Arc<Ctx>) -> Result<
         &ctx.client,
         &name,
         &namespace,
-        &cr.spec,
+        &cr.spec.0,
+        Engine::Datastore,
         owner,
         &attribution_labels(&cr),
     )
@@ -122,10 +103,11 @@ pub async fn reconcile_datastore_inner_pub(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &DatastoreSpec,
+    spec: &DBSpec,
+    engine: Engine,
     owner: OwnerReference,
 ) -> Result<()> {
-    reconcile_datastore_inner(client, name, namespace, spec, owner, &BTreeMap::new()).await
+    reconcile_datastore_inner(client, name, namespace, spec, engine, owner, &BTreeMap::new()).await
 }
 
 /// Like [`reconcile_datastore_inner_pub`] but stamps `extra_labels` onto the
@@ -136,27 +118,29 @@ pub async fn reconcile_datastore_inner_labeled(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &DatastoreSpec,
+    spec: &DBSpec,
+    engine: Engine,
     owner: OwnerReference,
     extra_labels: &BTreeMap<String, String>,
 ) -> Result<()> {
-    reconcile_datastore_inner(client, name, namespace, spec, owner, extra_labels).await
+    reconcile_datastore_inner(client, name, namespace, spec, engine, owner, extra_labels).await
 }
 
 async fn reconcile_datastore_inner(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &DatastoreSpec,
+    spec: &DBSpec,
+    engine: Engine,
     owner: OwnerReference,
     extra_labels: &BTreeMap<String, String>,
 ) -> Result<()> {
     let image = spec
         .image
         .clone()
-        .unwrap_or_else(|| default_image_for(&spec.type_));
+        .unwrap_or_else(|| default_image_for(engine));
 
-    let base_labels = manifests::standard_labels(name, &spec.type_, &spec.part_of, &image.tag);
+    let base_labels = manifests::standard_labels(name, engine.as_str(), &spec.part_of, &image.tag);
     // Merge tenant/extra labels into workload + pod-template metadata only;
     // `selector_labels` stays minimal and immutable.
     let std_labels = if extra_labels.is_empty() {
@@ -168,8 +152,8 @@ async fn reconcile_datastore_inner(
 
     let ports = if spec.ports.is_empty() {
         vec![crate::crd::ServicePort {
-            name: spec.type_.clone(),
-            container_port: default_port_for(&spec.type_),
+            name: engine.as_str().to_string(),
+            container_port: default_port_for(engine),
             service_port: None,
             protocol: "TCP".to_string(),
         }]
@@ -186,7 +170,7 @@ async fn reconcile_datastore_inner(
     // The `volumeClaimTemplate` name (immutable on the StatefulSet) + the
     // container's data mounts. See `vct_name` / `resolve_volume_mounts`.
     let vct = vct_name(spec);
-    let mounts = resolve_volume_mounts(spec, &vct);
+    let mounts = resolve_volume_mounts(spec, &vct, engine);
     let vm_k8s: Vec<_> = mounts.iter().map(crd_types::VolumeMount::to_k8s).collect();
     let main = manifests::build_container(
         name,
@@ -272,7 +256,7 @@ async fn reconcile_datastore_inner(
         apply::apply(&svcs, &a).await?;
     }
 
-    debug!(name, namespace, type_ = %spec.type_, "Datastore reconciled");
+    debug!(name, namespace, engine = engine.as_str(), "Datastore reconciled");
     Ok(())
 }
 
@@ -292,14 +276,13 @@ fn apply_fs_group(sts: &mut StatefulSet, fs_group: Option<i64>) {
     }
 }
 
-fn default_port_for(type_: &str) -> i32 {
-    match type_ {
-        "postgresql" => 5432,
-        "valkey" => 6379,
-        "docdb" => 27017,
-        "minio" => 9000,
-        "nats" => 4222,
-        _ => 8080,
+fn default_port_for(engine: Engine) -> i32 {
+    match engine {
+        Engine::Postgres => 5432,
+        Engine::Valkey => 6379,
+        Engine::Docdb => 27017,
+        Engine::Minio => 9000,
+        Engine::Datastore => 8080,
     }
 }
 
@@ -308,11 +291,11 @@ fn default_port_for(type_: &str) -> i32 {
 /// is byte-identical (no needless rollout): Postgres writes under
 /// `/var/lib/postgresql/data`, Valkey/MinIO/NATS under `/data`, FerretDB
 /// (docdb) under `/state`.
-fn default_data_path_for(type_: &str) -> String {
-    match type_ {
-        "postgresql" => "/var/lib/postgresql/data",
-        "docdb" => "/state",
-        _ => "/data",
+fn default_data_path_for(engine: Engine) -> String {
+    match engine {
+        Engine::Postgres => "/var/lib/postgresql/data",
+        Engine::Docdb => "/state",
+        Engine::Valkey | Engine::Minio | Engine::Datastore => "/data",
     }
     .to_string()
 }
@@ -322,7 +305,7 @@ fn default_data_path_for(type_: &str) -> String {
 /// pre-existing StatefulSet MUST set `storage.volumeName` to the live
 /// template's name (e.g. `sql-data`), else the apply is rejected as an
 /// immutable-field update and the workload stops reconciling.
-fn vct_name(spec: &DatastoreSpec) -> String {
+fn vct_name(spec: &DBSpec) -> String {
     spec.storage
         .volume_name
         .clone()
@@ -335,13 +318,13 @@ fn vct_name(spec: &DatastoreSpec) -> String {
 /// but never mounted (a fresh datastore wrote to the container's ephemeral fs
 /// and lost its data on restart). CRs that mount the volume themselves
 /// (docdb tenants → `/state`) are left exactly as declared.
-fn resolve_volume_mounts(spec: &DatastoreSpec, vct: &str) -> Vec<crd_types::VolumeMount> {
+fn resolve_volume_mounts(spec: &DBSpec, vct: &str, engine: Engine) -> Vec<crd_types::VolumeMount> {
     if !spec.volume_mounts.is_empty() {
         return spec.volume_mounts.clone();
     }
     vec![crd_types::VolumeMount {
         name: vct.to_string(),
-        mount_path: default_data_path_for(&spec.type_),
+        mount_path: default_data_path_for(engine),
         sub_path: String::new(),
         read_only: None,
     }]
@@ -351,21 +334,21 @@ fn resolve_volume_mounts(spec: &DatastoreSpec, vct: &str) -> Vec<crd_types::Volu
 /// the scheme, ClusterIP service DNS, and client port only. The control plane
 /// reads this off `DatastoreStatus.connection_string` to discover tenant
 /// databases.
-pub fn connection_string_for(spec: &DatastoreSpec, name: &str, namespace: &str) -> String {
+pub fn connection_string_for(spec: &DBSpec, engine: Engine, name: &str, namespace: &str) -> String {
     let port = spec
         .ports
         .first()
         .map(|p| p.service_port.unwrap_or(p.container_port))
-        .unwrap_or_else(|| default_port_for(&spec.type_));
+        .unwrap_or_else(|| default_port_for(engine));
     let host = format!("{name}.{namespace}.svc");
-    match spec.type_.as_str() {
-        "postgresql" => format!("postgresql://{host}:{port}"),
-        "valkey" => format!("redis://{host}:{port}"),
-        "docdb" => format!("mongodb://{host}:{port}"),
-        "minio" => format!("http://{host}:{port}"),
-        "nats" => format!("nats://{host}:{port}"),
-        _ => format!("tcp://{host}:{port}"),
-    }
+    let scheme = match engine {
+        Engine::Postgres => "postgresql",
+        Engine::Valkey => "redis",
+        Engine::Docdb => "mongodb",
+        Engine::Minio => "http",
+        Engine::Datastore => "tcp",
+    };
+    format!("{scheme}://{host}:{port}")
 }
 
 /// Compute + patch `DatastoreStatus` for any Datastore-family CR `K`. Reads the
@@ -375,7 +358,8 @@ pub async fn write_status<K>(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &DatastoreSpec,
+    spec: &DBSpec,
+    engine: Engine,
     generation: i64,
 ) where
     K: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
@@ -394,7 +378,7 @@ pub async fn write_status<K>(
     };
     let mut status = DatastoreStatus {
         observed_generation: generation,
-        connection_string: connection_string_for(spec, name, namespace),
+        connection_string: connection_string_for(spec, engine, name, namespace),
         ..Default::default()
     };
     if let Some(s) = sts.and_then(|x| x.status) {
@@ -431,7 +415,8 @@ async fn write_datastore_status(client: &Client, name: &str, namespace: &str, cr
         client,
         name,
         namespace,
-        &cr.spec,
+        &cr.spec.0,
+        Engine::Datastore,
         cr.meta().generation.unwrap_or(0),
     )
     .await;
@@ -475,14 +460,13 @@ mod tests {
     fn ds(labels: &[(&str, &str)]) -> DatastoreCR {
         let mut cr = DatastoreCR::new(
             "ds-x",
-            DatastoreSpec {
-                type_: "datastore".to_string(),
+            crate::crd::DatastoreSpec(DBSpec {
                 storage: StorageSpec {
                     size: "10Gi".to_string(),
                     ..Default::default()
                 },
                 ..Default::default()
-            },
+            }),
         );
         cr.metadata.labels = Some(
             labels
@@ -567,9 +551,8 @@ mod tests {
             .is_none());
     }
 
-    fn spec_with_storage(type_: &str, volume_name: Option<&str>) -> DatastoreSpec {
-        DatastoreSpec {
-            type_: type_.to_string(),
+    fn spec_with_storage(volume_name: Option<&str>) -> DBSpec {
+        DBSpec {
             storage: StorageSpec {
                 size: "20Gi".to_string(),
                 volume_name: volume_name.map(|s| s.to_string()),
@@ -582,7 +565,7 @@ mod tests {
     // A fresh datastore's volumeClaimTemplate defaults to `data`.
     #[test]
     fn vct_name_defaults_to_data() {
-        assert_eq!(vct_name(&spec_with_storage("postgresql", None)), "data");
+        assert_eq!(vct_name(&spec_with_storage(None)), "data");
     }
 
     // Adopting a pre-existing StatefulSet: `storage.volumeName` names the VCT so
@@ -591,7 +574,7 @@ mod tests {
     #[test]
     fn vct_name_honors_volume_name_for_adoption() {
         assert_eq!(
-            vct_name(&spec_with_storage("postgresql", Some("sql-data"))),
+            vct_name(&spec_with_storage(Some("sql-data"))),
             "sql-data"
         );
     }
@@ -601,16 +584,16 @@ mod tests {
     // (`sql-data` → `/var/lib/postgresql/data`) and adoption is a clean no-op.
     #[test]
     fn resolve_mounts_auto_injects_vct_at_engine_path() {
-        let spec = spec_with_storage("postgresql", Some("sql-data"));
+        let spec = spec_with_storage(Some("sql-data"));
         let vct = vct_name(&spec);
-        let mounts = resolve_volume_mounts(&spec, &vct);
+        let mounts = resolve_volume_mounts(&spec, &vct, Engine::Postgres);
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "sql-data");
         assert_eq!(mounts[0].mount_path, "/var/lib/postgresql/data");
 
         // Valkey adopts `kv-data` → `/data`.
-        let kv = spec_with_storage("valkey", Some("kv-data"));
-        let kvm = resolve_volume_mounts(&kv, &vct_name(&kv));
+        let kv = spec_with_storage(Some("kv-data"));
+        let kvm = resolve_volume_mounts(&kv, &vct_name(&kv), Engine::Valkey);
         assert_eq!(kvm[0].mount_path, "/data");
     }
 
@@ -619,14 +602,14 @@ mod tests {
     // move a working tenant datastore.
     #[test]
     fn resolve_mounts_honors_explicit_cr_mounts() {
-        let mut spec = spec_with_storage("docdb", None);
+        let mut spec = spec_with_storage(None);
         spec.volume_mounts = vec![crd_types::VolumeMount {
             name: "data".to_string(),
             mount_path: "/state".to_string(),
             sub_path: String::new(),
             read_only: None,
         }];
-        let mounts = resolve_volume_mounts(&spec, &vct_name(&spec));
+        let mounts = resolve_volume_mounts(&spec, &vct_name(&spec), Engine::Docdb);
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].name, "data");
         assert_eq!(mounts[0].mount_path, "/state");

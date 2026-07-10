@@ -863,13 +863,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -954,9 +1048,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.type
-      name: Type
-      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -969,6 +1060,9 @@ spec:
         description: Auto-generated derived type for DatastoreSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              `Datastore` Kind — the `hanzoai/datastore` analytics engine (ClickHouse).
+              A concrete engine, not a generic catch-all: the engine IS the Kind.
             properties:
               args:
                 items:
@@ -1388,8 +1482,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -1409,17 +1501,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -3174,6 +3359,11 @@ spec:
         description: Auto-generated derived type for SQLSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              The shared datastore workload VALUE: everything the StatefulSet + Service +
+              PVC machinery needs, independent of engine. The engine is expressed by the
+              Kind (`SQL`/`KV`/`DocDB`/`S3`/`Datastore`) or, for `ManagedDatabase`, by an
+              explicit `engine` field — never braided into this value as a discriminator.
             properties:
               args:
                 items:
@@ -3593,8 +3783,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -3614,17 +3802,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -3709,6 +3990,11 @@ spec:
         description: Auto-generated derived type for KVSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              The shared datastore workload VALUE: everything the StatefulSet + Service +
+              PVC machinery needs, independent of engine. The engine is expressed by the
+              Kind (`SQL`/`KV`/`DocDB`/`S3`/`Datastore`) or, for `ManagedDatabase`, by an
+              explicit `engine` field — never braided into this value as a discriminator.
             properties:
               args:
                 items:
@@ -4128,8 +4414,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -4149,17 +4433,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -4244,6 +4621,11 @@ spec:
         description: Auto-generated derived type for DocDBSpec via `CustomResource`
         properties:
           spec:
+            description: |-
+              The shared datastore workload VALUE: everything the StatefulSet + Service +
+              PVC machinery needs, independent of engine. The engine is expressed by the
+              Kind (`SQL`/`KV`/`DocDB`/`S3`/`Datastore`) or, for `ManagedDatabase`, by an
+              explicit `engine` field — never braided into this value as a discriminator.
             properties:
               args:
                 items:
@@ -4663,8 +5045,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -4684,17 +5064,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -5609,13 +6082,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -6536,13 +7103,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -7463,13 +8124,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -7560,6 +8315,11 @@ spec:
         description: Auto-generated derived type for S3Spec via `CustomResource`
         properties:
           spec:
+            description: |-
+              The shared datastore workload VALUE: everything the StatefulSet + Service +
+              PVC machinery needs, independent of engine. The engine is expressed by the
+              Kind (`SQL`/`KV`/`DocDB`/`S3`/`Datastore`) or, for `ManagedDatabase`, by an
+              explicit `engine` field — never braided into this value as a discriminator.
             properties:
               args:
                 items:
@@ -7979,8 +8739,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -8000,17 +8758,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -8097,11 +8948,11 @@ spec:
           spec:
             description: |-
               Per-tenant isolated database. Paid/isolated tenants get a dedicated
-              `Datastore`-family workload (StatefulSet + Service + headless + PVC); the
-              tenant picks the engine via the inner `DatastoreSpec.type` (postgresql /
-              valkey / docdb / minio). Unlike the `SQL`/`KV`/`DocDB`/`S3` facades it does
-              NOT force a fixed engine — the inner type flows through verbatim.
-              Reconciled by `controllers::managed_database`.
+              `Datastore`-family workload (StatefulSet + Service + headless + PVC). Unlike
+              the `SQL`/`KV`/`DocDB`/`S3` facades — whose engine is fixed by their Kind —
+              `ManagedDatabase` lets the tenant pick the engine at runtime, so it is the
+              one Kind that carries an explicit `engine` selector alongside the shared
+              workload spec. Reconciled by `controllers::managed_database`.
             properties:
               args:
                 items:
@@ -8131,6 +8982,18 @@ spec:
                   type: string
                 type: array
               credentialsSecret:
+                type: string
+              engine:
+                default: postgresql
+                description: |-
+                  Tenant-selected engine. The other datastore Kinds fix their engine by
+                  Kind; this is the one Kind whose engine is a first-class value.
+                enum:
+                - postgresql
+                - valkey
+                - docdb
+                - minio
+                - datastore
                 type: string
               env:
                 items:
@@ -8521,8 +9384,6 @@ spec:
                 required:
                 - size
                 type: object
-              type:
-                type: string
               volumeMounts:
                 items:
                   properties:
@@ -8542,17 +9403,110 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - storage
-            - type
             type: object
           status:
             nullable: true
@@ -9748,13 +10702,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -10675,13 +11723,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -11990,13 +13132,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -12917,13 +14153,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image
@@ -13844,13 +15174,107 @@ spec:
                 type: array
               volumes:
                 items:
+                  description: |-
+                    A pod volume: a name plus exactly one typed source. Each source is a real
+                    object schema (not a freeform `serde_json::Value`), so it survives into the
+                    generated structural CRD — a `serde_json::Value` source renders as an
+                    untyped blob that the apiserver prunes, which silently dropped `configMap` /
+                    `persistentVolumeClaim` from `spec.volumes[*]` and broke config/PVC mounts.
                   properties:
+                    configMap:
+                      description: '`configMap` volume source — mounts a ConfigMap by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        name:
+                          type: string
+                        optional:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - name
+                      type: object
+                    emptyDir:
+                      description: '`emptyDir` volume source — an ephemeral scratch volume.'
+                      nullable: true
+                      properties:
+                        medium:
+                          nullable: true
+                          type: string
+                        sizeLimit:
+                          nullable: true
+                          type: string
+                      type: object
                     name:
                       type: string
+                    persistentVolumeClaim:
+                      description: '`persistentVolumeClaim` volume source — mounts an existing PVC.'
+                      nullable: true
+                      properties:
+                        claimName:
+                          type: string
+                        readOnly:
+                          nullable: true
+                          type: boolean
+                      required:
+                      - claimName
+                      type: object
+                    secret:
+                      description: '`secret` volume source — mounts a Secret by name.'
+                      nullable: true
+                      properties:
+                        defaultMode:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        items:
+                          items:
+                            description: One key→path projection inside a `configMap` / `secret` volume source.
+                            properties:
+                              key:
+                                type: string
+                              mode:
+                                format: int32
+                                nullable: true
+                                type: integer
+                              path:
+                                type: string
+                            required:
+                            - key
+                            - path
+                            type: object
+                          type: array
+                        optional:
+                          nullable: true
+                          type: boolean
+                        secretName:
+                          type: string
+                      required:
+                      - secretName
+                      type: object
                   required:
                   - name
                   type: object
-                  x-kubernetes-preserve-unknown-fields: true
                 type: array
             required:
             - image

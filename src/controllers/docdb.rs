@@ -1,7 +1,9 @@
-//! DocDB reconciler — newtype facade over Datastore. DocDB (FerretDB + PostgreSQL
-//! providing MongoDB wire-protocol) workloads declared as a `DocDB` CR materialize
-//! as an ordinary Datastore with `type=docdb` forced server-side: a `DocDB` CR
-//! cannot accidentally become a different datastore type.
+//! DocDB reconciler — facade over the shared datastore machinery. DocDB
+//! (FerretDB + PostgreSQL providing the MongoDB wire protocol) workloads
+//! declared as a `DocDB` CR materialize with `Engine::Docdb` pinned by the
+//! Kind. DocDB composes SQL (`DocDBSpec(SQLSpec(DBSpec))`) because FerretDB runs
+//! on Postgres; the controller unwraps to the shared `DBSpec` and emits the
+//! single `hanzoai/docdb` StatefulSet (FerretDB + its embedded Postgres).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,12 +16,9 @@ use kube::{Client, ResourceExt};
 use tracing::{error, info};
 
 use crate::core::{OperatorError, Result};
-use crate::crd::DocDB;
+use crate::crd::{DocDB, Engine};
 
 use super::{datastore, owner_ref_for};
-
-/// Canonical `spec.type` for DocDB facade CRs.
-const DATASTORE_TYPE: &str = "docdb";
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -34,10 +33,17 @@ pub async fn reconcile(cr: Arc<DocDB>, ctx: Arc<Ctx>) -> Result<Action> {
         .ok_or_else(|| OperatorError::Config("DocDB has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "DocDB");
-    let mut ds_spec = cr.spec.0.clone();
-    ds_spec.type_ = DATASTORE_TYPE.to_string();
-    datastore::reconcile_datastore_inner_pub(&ctx.client, &name, &namespace, &ds_spec, owner)
-        .await?;
+    // DocDBSpec(SQLSpec(DBSpec)) — unwrap both newtype layers to the shared spec.
+    let ds_spec = cr.spec.0 .0.clone();
+    datastore::reconcile_datastore_inner_pub(
+        &ctx.client,
+        &name,
+        &namespace,
+        &ds_spec,
+        Engine::Docdb,
+        owner,
+    )
+    .await?;
     // Report Ready on the facade CR just like the canonical Datastore does
     // (the newtype facade previously never wrote status).
     datastore::write_status::<DocDB>(
@@ -45,6 +51,7 @@ pub async fn reconcile(cr: Arc<DocDB>, ctx: Arc<Ctx>) -> Result<Action> {
         &name,
         &namespace,
         &ds_spec,
+        Engine::Docdb,
         cr.metadata.generation.unwrap_or(0),
     )
     .await;
@@ -72,22 +79,26 @@ pub async fn run_docdb_controller(client: Client, namespace: String, api_group: 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::crd::{DatastoreSpec, DocDBSpec, StorageSpec};
+    use crate::controllers::datastore::connection_string_for;
+    use crate::crd::{DBSpec, DocDBSpec, Engine, SQLSpec, StorageSpec};
 
+    // A `DocDB` CR composes SQL (`DocDBSpec(SQLSpec(DBSpec))`) and is pinned to
+    // FerretDB by its Kind — the reconcile unwraps both layers and drives
+    // `Engine::Docdb`, so the workload speaks the MongoDB wire DSN on 27017.
     #[test]
-    fn docdb_forces_docdb_type() {
-        let inner = DatastoreSpec {
-            type_: String::new(),
+    fn docdb_facade_composes_sql_and_is_ferretdb() {
+        let facade = DocDBSpec(SQLSpec(DBSpec {
             storage: StorageSpec {
                 size: "5Gi".to_string(),
                 ..Default::default()
             },
             ..Default::default()
-        };
-        let facade = DocDBSpec(inner);
-        let mut ds = facade.0.clone();
-        ds.type_ = DATASTORE_TYPE.to_string();
-        assert_eq!(ds.type_, "docdb");
+        }));
+        // Unwrap the two newtype layers exactly as the reconcile does.
+        let inner = &facade.0 .0;
+        assert_eq!(
+            connection_string_for(inner, Engine::Docdb, "docs", "hanzo"),
+            "mongodb://docs.hanzo.svc:27017"
+        );
     }
 }
