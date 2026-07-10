@@ -269,74 +269,6 @@ pub struct StorageSpec {
     pub volume_name: Option<String>,
 }
 
-/// Durable SeaweedFS-backed SQLite for ANY Service Kind, via the proven
-/// `hanzoai/replicate` init-restore + sidecar-stream pattern (the
-/// console-sqlite blueprint, generalized into the operator — the "one way"
-/// to give a service a persistent SQLite DB).
-///
-/// When `enabled`, the Service controller auto-injects (the user hand-writes
-/// NONE of this): a shared `app-db` volume (PVC if `storage` is set, else
-/// emptyDir) mounted at `data_dir` on the main container; a
-/// `<service>-replicate-config` ConfigMap holding `replicate.yml`; a
-/// `replicate-restore` initContainer (single-DB mode only — directory
-/// restore is best-effort via the sidecar); and a `replicate` sidecar that
-/// streams the SQLite WAL to SeaweedFS, age-encrypted client-side.
-///
-/// This is the Service-Kind analog of `ReplicationSpec` (the ZapDB/ZAP leg);
-/// it mirrors that spec's S3/age field shape.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct PersistenceSpec {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Mount path shared by the main container, the restore init, and the
-    /// sidecar, e.g. `/var/lib/hanzo/console`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub data_dir: String,
-    /// Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-    /// `!dir_mode`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub db_path: String,
-    /// Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-    /// DBs instead of a single file.
-    #[serde(default)]
-    pub dir_mode: bool,
-    /// Glob used in `dir_mode`. Default `**/*.db`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub pattern: String,
-    /// SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub bucket: String,
-    /// S3 key prefix, e.g. `console/app`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub s3_path: String,
-    /// S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-    /// prepends `https://` to a scheme-less endpoint, which the cleartext
-    /// in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub s3_endpoint: String,
-    /// S3 region. Default `us-east-1`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub s3_region: String,
-    /// SeaweedFS/MinIO require path-style addressing (subdomain buckets
-    /// don't resolve in-cluster). Default `true`.
-    #[serde(default = "default_true")]
-    pub force_path_style: bool,
-    /// K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub credentials_secret: String,
-    /// K8s Secret with `identity` / `recipients` (age keypair). Default
-    /// `<service-name>-replicate-age`.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub age_secret: String,
-    /// `hanzoai/replicate` image. Default the pinned semver.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub image: String,
-    /// PVC size/class for the `app-db` working volume. `None` → emptyDir.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storage: Option<StorageSpec>,
-}
-
 // ============================================================================
 // Service Kind
 // ============================================================================
@@ -425,16 +357,12 @@ pub struct ServiceSpec {
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-    /// auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub persistence: Option<PersistenceSpec>,
     /// Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-    /// (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-    /// kubelet chowns the volume to this GID + adds it to every container's
+    /// (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+    /// chowns the volume to this GID + adds it to every container's
     /// supplementary groups, so the app can write. Omit for root images
     /// (e.g. `console`), which already write any volume. Opt-in so changing
-    /// it never restarts unrelated persistence services.
+    /// it never restarts unrelated services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
 }
