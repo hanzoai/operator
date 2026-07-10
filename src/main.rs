@@ -321,5 +321,17 @@ async fn run_all_controllers(
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ),
+        // Tenant controller — projects the namespace-scoped
+        // `cloud-api-platform` RoleBinding + `ghcr-pull` image-pull Secret into
+        // every platform-managed tenant namespace so an onboarded org gets
+        // one-click `/v1/platform` deploy scoped to ITS OWN namespace (never a
+        // ClusterRoleBinding). Cloud's deploy path BLOCKS on it (waitForTenantRBAC).
+        // Enabled by default; set TENANT_CONTROLLER=false to disable.
+        controllers::tenant::run_tenant_controller(
+            client.clone(),
+            std::env::var("TENANT_CONTROLLER")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+        ),
     );
 }

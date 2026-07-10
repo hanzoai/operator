@@ -64,3 +64,12 @@ pub mod managed_database;
 // @hanzo/bot machine). Reconcile ACTIONS reach cloud /v1/agents + visor
 // /v1/machines over HTTP; provisioning is opt-in + fail-safe (AGENT_DEPLOY_MODE).
 pub mod agent_deployment;
+
+// Tenant controller. Not a CRD Kind — its reconcile source is the set of
+// platform-managed tenant namespaces (`tenant-<org>`, labeled
+// `hanzo.ai/managed-by=platform`). For each it ensures the namespace-scoped
+// `cloud-api-platform` RoleBinding + `ghcr-pull` image-pull Secret that let an
+// onboarded org get one-click `/v1/platform` deploy INTO that tenant — and
+// nowhere else. Cloud's deploy path blocks on it (waitForTenantRBAC). Enabled by
+// default (TENANT_CONTROLLER); see the module docs.
+pub mod tenant;

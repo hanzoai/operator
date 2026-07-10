@@ -368,3 +368,44 @@ Test count: 145 → 147 lib tests (+2 service: `should_colocate` gate +
 `colocation_affinity` soft/self/hostname shape; 0 regressions). My files
 compile + fmt-clean; the 2 pre-existing clippy doc-indent warnings in
 `datastore.rs` are untouched (out of scope).
+
+## v0.6.22 — Tenant onboarding controller (per-tenant one-click deploy)
+
+The sole go-live blocker for Hanzo PaaS: cloud's deploy path
+(`clients/platform/k8s.go` `waitForTenantRBAC`) BLOCKS on a
+SelfSubjectAccessReview poll until the operator has onboarded a
+freshly-created `tenant-<org>` namespace. `src/controllers/tenant.rs`
+(reconciled from branches `batcha/tenant-rolebinding` + `feat/tenant-pull-secret`)
+watches namespaces filtered to `hanzo.ai/managed-by=platform` and, for each,
+SSA-applies the two objects cloud waits on:
+
+1. a **namespaced** `RoleBinding` `cloud-api-platform` → ClusterRole
+   `hanzo-cloud-platform-tenant`, subject `hanzo/cloud-api` ServiceAccount —
+   NEVER a ClusterRoleBinding (that would be a cross-tenant deploy hole); the
+   grant is confined to the one tenant namespace and independently revocable.
+2. a `ghcr-pull` `kubernetes.io/dockerconfigjson` image-pull `Secret`, projected
+   from the KMS-synced source `hanzo/ghcr-secret`, so tenant pods can pull the
+   PRIVATE per-tenant build image `ghcr.io/hanzoai/tenant-<org>/*`. cloud-api
+   holds NO `secrets` grant — the operator is the designated K8s-secret handler.
+
+Both children carry the `hanzo.ai/managed-by=platform` label and a Namespace
+owner reference so they GC with the tenant. The Secret path is fail-OPEN (a
+missing/empty source is logged, the RoleBinding still lands so deploy AUTHZ is
+never blocked) and hijack-guarded (`managed-by=hanzo-operator-tenant-rbac` —
+never overwrites a Secret it does not own). `Config::from_env()` white-labels
+every name (SA, ClusterRole, source/target Secret) for the lux/zoo/osage
+universes. Gate: `TENANT_CONTROLLER` (default on).
+
+Contract completeness lives in `hanzoai/universe`
+(`infra/k8s/operator/deployment.yaml` + `rbac/cloud-platform-rbac.yaml`, both
+already declared): the `hanzo-cloud-platform-tenant` ClusterRole (services.hanzo.ai
++ resourcequotas/limitranges + datastores/docdbs/manageddatabases + secrets +
+pvc + kmssecrets), and the operator's own ClusterRole grants (`namespaces`
+get/list/watch, `rolebindings` CRUD, `clusterroles` `bind` scoped via
+`resourceNames: [hanzo-cloud-platform-tenant]`).
+
+Test count: 168 → 179 lib tests (+11 tenant: namespaced/confined binding,
+roleRef+subject, platform-label+owner-ref, org resolution, white-label env,
+dockerconfigjson shape, hijack-manager isolation, source-bytes precedence;
+0 regressions). fmt-clean; no new clippy warnings (my file is clean; the 4
+pre-existing warnings in datastore.rs/manifests.rs are out of scope).
