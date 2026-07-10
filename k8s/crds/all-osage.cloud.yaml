@@ -158,11 +158,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -516,91 +516,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -5377,11 +5292,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -5735,91 +5650,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -6398,11 +6228,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -6756,91 +6586,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -7419,11 +7164,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -7777,91 +7522,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -9997,11 +9657,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -10355,91 +10015,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -11018,11 +10593,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -11376,91 +10951,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -12427,11 +11917,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -12785,91 +12275,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -13448,11 +12853,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -13806,91 +13211,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
@@ -14469,11 +13789,11 @@ spec:
               fsGroup:
                 description: |-
                   Pod-level `securityContext.fsGroup`. Set this when a NON-root image
-                  (e.g. `esign` runs as uid 1001) must write a `persistence` PVC: the
-                  kubelet chowns the volume to this GID + adds it to every container's
+                  (e.g. `esign` runs as uid 1001) must write a mounted PVC: the kubelet
+                  chowns the volume to this GID + adds it to every container's
                   supplementary groups, so the app can write. Omit for root images
                   (e.g. `console`), which already write any volume. Opt-in so changing
-                  it never restarts unrelated persistence services.
+                  it never restarts unrelated services.
                 format: int64
                 nullable: true
                 type: integer
@@ -14827,91 +14147,6 @@ spec:
                     format: int32
                     nullable: true
                     type: integer
-                type: object
-              persistence:
-                description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
-                  auto-wires the restore init + replication sidecar + ConfigMap + PVC.
-                nullable: true
-                properties:
-                  ageSecret:
-                    description: |-
-                      K8s Secret with `identity` / `recipients` (age keypair). Default
-                      `<service-name>-replicate-age`.
-                    type: string
-                  bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
-                    type: string
-                  credentialsSecret:
-                    description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
-                    type: string
-                  dataDir:
-                    description: |-
-                      Mount path shared by the main container, the restore init, and the
-                      sidecar, e.g. `/var/lib/hanzo/console`.
-                    type: string
-                  dbPath:
-                    description: |-
-                      Single-DB file relative to `data_dir`, e.g. `"app.db"`. Used when
-                      `!dir_mode`.
-                    type: string
-                  dirMode:
-                    default: false
-                    description: |-
-                      Per-org/user/project fan-out: `replicate` watches `data_dir` for many
-                      DBs instead of a single file.
-                    type: boolean
-                  enabled:
-                    default: false
-                    type: boolean
-                  forcePathStyle:
-                    default: true
-                    description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
-                    type: boolean
-                  image:
-                    description: '`hanzoai/replicate` image. Default the pinned semver.'
-                    type: string
-                  pattern:
-                    description: Glob used in `dir_mode`. Default `**/*.db`.
-                    type: string
-                  s3Endpoint:
-                    description: |-
-                      S3 endpoint. MUST keep the `http://` scheme — replicate's S3 client
-                      prepends `https://` to a scheme-less endpoint, which the cleartext
-                      in-cluster `s3` service rejects. Default `http://s3.hanzo.svc:9000`.
-                    type: string
-                  s3Path:
-                    description: S3 key prefix, e.g. `console/app`.
-                    type: string
-                  s3Region:
-                    description: S3 region. Default `us-east-1`.
-                    type: string
-                  storage:
-                    description: PVC size/class for the `app-db` working volume. `None` → emptyDir.
-                    nullable: true
-                    properties:
-                      retentionPolicy:
-                        type: string
-                      size:
-                        description: Quantity string (e.g. `"10Gi"`).
-                        type: string
-                      storageClassName:
-                        type: string
-                      volumeName:
-                        description: |-
-                          Name of the `volumeClaimTemplate` (and the auto-injected data mount).
-                          Defaults to `"data"`. This is an IMMUTABLE StatefulSet field, so a
-                          datastore adopting a pre-existing StatefulSet MUST set this to the
-                          existing template's name (e.g. `sql-data` / `kv-data`) — otherwise the
-                          apply is rejected (`updates to statefulset spec ... are forbidden`) and
-                          the workload stops reconciling. New datastores can omit it.
-                        nullable: true
-                        type: string
-                    required:
-                    - size
-                    type: object
                 type: object
               ports:
                 items:
