@@ -1,7 +1,7 @@
-//! KV reconciler — newtype facade over Datastore. Valkey workloads
-//! (hanzoai/kv) declared as a `KV` CR materialize as an ordinary Datastore
-//! with `type=valkey` forced server-side: a `KV` CR cannot accidentally
-//! become a PostgreSQL or MinIO datastore.
+//! KV reconciler — newtype facade over the shared datastore machinery. Valkey
+//! workloads (hanzoai/kv) declared as a `KV` CR materialize with
+//! `Engine::Valkey` pinned by the Kind: a `KV` CR cannot become a PostgreSQL or
+//! MinIO datastore because the engine is the Kind, not a field.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,12 +14,9 @@ use kube::{Client, ResourceExt};
 use tracing::{error, info};
 
 use crate::core::{OperatorError, Result};
-use crate::crd::KV;
+use crate::crd::{Engine, KV};
 
 use super::{datastore, owner_ref_for};
-
-/// Canonical `spec.type` for KV facade CRs.
-const DATASTORE_TYPE: &str = "valkey";
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -34,10 +31,16 @@ pub async fn reconcile(cr: Arc<KV>, ctx: Arc<Ctx>) -> Result<Action> {
         .ok_or_else(|| OperatorError::Config("KV has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "KV");
-    let mut ds_spec = cr.spec.0.clone();
-    ds_spec.type_ = DATASTORE_TYPE.to_string();
-    datastore::reconcile_datastore_inner_pub(&ctx.client, &name, &namespace, &ds_spec, owner)
-        .await?;
+    let ds_spec = cr.spec.0.clone();
+    datastore::reconcile_datastore_inner_pub(
+        &ctx.client,
+        &name,
+        &namespace,
+        &ds_spec,
+        Engine::Valkey,
+        owner,
+    )
+    .await?;
     // Report Ready on the facade CR just like the canonical Datastore does
     // (the newtype facade previously never wrote status).
     datastore::write_status::<KV>(
@@ -45,6 +48,7 @@ pub async fn reconcile(cr: Arc<KV>, ctx: Arc<Ctx>) -> Result<Action> {
         &name,
         &namespace,
         &ds_spec,
+        Engine::Valkey,
         cr.metadata.generation.unwrap_or(0),
     )
     .await;
@@ -72,22 +76,23 @@ pub async fn run_kv_controller(client: Client, namespace: String, api_group: Str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::crd::{DatastoreSpec, KVSpec, StorageSpec};
+    use crate::controllers::datastore::connection_string_for;
+    use crate::crd::{DBSpec, Engine, KVSpec, StorageSpec};
 
+    // A `KV` CR is pinned to Valkey by its Kind — the reconcile always drives
+    // `Engine::Valkey`, so the workload speaks the Redis DSN on 6379.
     #[test]
-    fn kv_forces_valkey_type() {
-        let inner = DatastoreSpec {
-            type_: "postgresql".to_string(),
+    fn kv_facade_is_valkey() {
+        let facade = KVSpec(DBSpec {
             storage: StorageSpec {
                 size: "1Gi".to_string(),
                 ..Default::default()
             },
             ..Default::default()
-        };
-        let facade = KVSpec(inner);
-        let mut ds = facade.0.clone();
-        ds.type_ = DATASTORE_TYPE.to_string();
-        assert_eq!(ds.type_, "valkey");
+        });
+        assert_eq!(
+            connection_string_for(&facade.0, Engine::Valkey, "cache", "hanzo"),
+            "redis://cache.hanzo.svc:6379"
+        );
     }
 }

@@ -1,7 +1,7 @@
-//! S3 reconciler — newtype facade over Datastore. MinIO workloads
-//! (hanzoai/s3) declared as an `S3` CR materialize as an ordinary Datastore
-//! with `type=minio` forced server-side: an `S3` CR cannot accidentally
-//! become a different datastore type.
+//! S3 reconciler — newtype facade over the shared datastore machinery. MinIO
+//! workloads (hanzoai/s3) declared as an `S3` CR materialize with
+//! `Engine::Minio` pinned by the Kind: an `S3` CR cannot become a different
+//! datastore engine because the engine is the Kind, not a field.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,12 +14,9 @@ use kube::{Client, ResourceExt};
 use tracing::{error, info};
 
 use crate::core::{OperatorError, Result};
-use crate::crd::S3;
+use crate::crd::{Engine, S3};
 
 use super::{datastore, owner_ref_for};
-
-/// Canonical `spec.type` for S3 facade CRs.
-const DATASTORE_TYPE: &str = "minio";
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -34,10 +31,16 @@ pub async fn reconcile(cr: Arc<S3>, ctx: Arc<Ctx>) -> Result<Action> {
         .ok_or_else(|| OperatorError::Config("S3 has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "S3");
-    let mut ds_spec = cr.spec.0.clone();
-    ds_spec.type_ = DATASTORE_TYPE.to_string();
-    datastore::reconcile_datastore_inner_pub(&ctx.client, &name, &namespace, &ds_spec, owner)
-        .await?;
+    let ds_spec = cr.spec.0.clone();
+    datastore::reconcile_datastore_inner_pub(
+        &ctx.client,
+        &name,
+        &namespace,
+        &ds_spec,
+        Engine::Minio,
+        owner,
+    )
+    .await?;
     // Report Ready on the facade CR just like the canonical Datastore does
     // (the newtype facade previously never wrote status).
     datastore::write_status::<S3>(
@@ -45,6 +48,7 @@ pub async fn reconcile(cr: Arc<S3>, ctx: Arc<Ctx>) -> Result<Action> {
         &name,
         &namespace,
         &ds_spec,
+        Engine::Minio,
         cr.metadata.generation.unwrap_or(0),
     )
     .await;
@@ -72,22 +76,23 @@ pub async fn run_s3_controller(client: Client, namespace: String, api_group: Str
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::crd::{DatastoreSpec, S3Spec, StorageSpec};
+    use crate::controllers::datastore::connection_string_for;
+    use crate::crd::{DBSpec, Engine, S3Spec, StorageSpec};
 
+    // An `S3` CR is pinned to MinIO by its Kind — the reconcile always drives
+    // `Engine::Minio`, so the workload speaks the HTTP DSN on 9000.
     #[test]
-    fn s3_forces_minio_type() {
-        let inner = DatastoreSpec {
-            type_: "valkey".to_string(),
+    fn s3_facade_is_minio() {
+        let facade = S3Spec(DBSpec {
             storage: StorageSpec {
                 size: "100Gi".to_string(),
                 ..Default::default()
             },
             ..Default::default()
-        };
-        let facade = S3Spec(inner);
-        let mut ds = facade.0.clone();
-        ds.type_ = DATASTORE_TYPE.to_string();
-        assert_eq!(ds.type_, "minio");
+        });
+        assert_eq!(
+            connection_string_for(&facade.0, Engine::Minio, "blobs", "hanzo"),
+            "http://blobs.hanzo.svc:9000"
+        );
     }
 }

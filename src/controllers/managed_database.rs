@@ -1,10 +1,11 @@
 //! ManagedDatabase reconciler — per-tenant isolated data workload.
 //!
-//! `ManagedDatabase` is the paid/isolated-tenant facade over `Datastore`. It
-//! carries a full inner `DatastoreSpec` (the tenant picks the engine —
-//! postgresql / valkey / docdb / minio) and reuses the exact StatefulSet +
-//! Service + headless + PVC machinery the `Datastore` controller emits. Unlike
-//! the `SQL`/`KV`/`DocDB`/`S3` facades it does NOT force a fixed `spec.type`.
+//! `ManagedDatabase` is the paid/isolated-tenant facade over the shared
+//! datastore machinery. It carries a tenant-chosen `spec.engine` plus a full
+//! `DBSpec` and reuses the exact StatefulSet + Service + headless + PVC
+//! machinery the `Datastore` controller emits. Unlike the `SQL`/`KV`/`DocDB`/
+//! `S3` facades — whose engine is fixed by their Kind — it honors the tenant's
+//! `engine` selector.
 //!
 //! The reconcile stamps tenant identity onto the workload labels
 //! (`app.kubernetes.io/part-of` + `<api-group>/tenant`) so the control plane
@@ -41,9 +42,10 @@ pub async fn reconcile(cr: Arc<ManagedDatabase>, ctx: Arc<Ctx>) -> Result<Action
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "ManagedDatabase");
 
-    // Inner DatastoreSpec flows through verbatim — the tenant's chosen engine
-    // (postgresql/valkey/docdb/minio) is honored, not overridden.
-    let mut ds_spec = cr.spec.0.clone();
+    // The tenant's chosen engine is honored, not overridden; the workload spec
+    // flows through verbatim.
+    let engine = cr.spec.engine;
+    let mut ds_spec = cr.spec.db.clone();
     // Group every tenant database under one part-of for fleet-wide selection,
     // unless the tenant set an explicit override.
     if ds_spec.part_of.is_empty() {
@@ -60,6 +62,7 @@ pub async fn reconcile(cr: Arc<ManagedDatabase>, ctx: Arc<Ctx>) -> Result<Action
         &name,
         &namespace,
         &ds_spec,
+        engine,
         owner,
         &extra_labels,
     )
@@ -71,6 +74,7 @@ pub async fn reconcile(cr: Arc<ManagedDatabase>, ctx: Arc<Ctx>) -> Result<Action
         &name,
         &namespace,
         &ds_spec,
+        engine,
         cr.metadata.generation.unwrap_or(0),
     )
     .await;
@@ -104,11 +108,10 @@ pub async fn run_managed_database_controller(client: Client, namespace: String, 
 #[cfg(test)]
 mod tests {
     use crate::controllers::datastore::connection_string_for;
-    use crate::crd::{DatastoreSpec, StorageSpec};
+    use crate::crd::{DBSpec, Engine, StorageSpec};
 
-    fn spec(type_: &str) -> DatastoreSpec {
-        DatastoreSpec {
-            type_: type_.to_string(),
+    fn spec() -> DBSpec {
+        DBSpec {
             storage: StorageSpec {
                 size: "10Gi".to_string(),
                 ..Default::default()
@@ -117,31 +120,33 @@ mod tests {
         }
     }
 
+    // A ManagedDatabase honors its tenant-chosen engine: the DSN scheme + port
+    // track whichever `Engine` the tenant selected.
     #[test]
     fn dsn_scheme_and_port_track_engine() {
         assert_eq!(
-            connection_string_for(&spec("postgresql"), "tenant-a", "hanzo"),
+            connection_string_for(&spec(), Engine::Postgres, "tenant-a", "hanzo"),
             "postgresql://tenant-a.hanzo.svc:5432"
         );
         assert_eq!(
-            connection_string_for(&spec("valkey"), "tenant-a", "hanzo"),
+            connection_string_for(&spec(), Engine::Valkey, "tenant-a", "hanzo"),
             "redis://tenant-a.hanzo.svc:6379"
         );
         assert_eq!(
-            connection_string_for(&spec("docdb"), "tenant-a", "hanzo"),
+            connection_string_for(&spec(), Engine::Docdb, "tenant-a", "hanzo"),
             "mongodb://tenant-a.hanzo.svc:27017"
         );
         assert_eq!(
-            connection_string_for(&spec("minio"), "tenant-a", "hanzo"),
+            connection_string_for(&spec(), Engine::Minio, "tenant-a", "hanzo"),
             "http://tenant-a.hanzo.svc:9000"
         );
     }
 
     #[test]
     fn dsn_never_carries_credentials() {
-        let mut s = spec("postgresql");
+        let mut s = spec();
         s.credentials_secret = "tenant-a-db".to_string();
-        let dsn = connection_string_for(&s, "tenant-a", "hanzo");
+        let dsn = connection_string_for(&s, Engine::Postgres, "tenant-a", "hanzo");
         assert!(!dsn.contains('@'), "DSN must not embed credentials: {dsn}");
     }
 }

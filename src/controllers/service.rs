@@ -151,16 +151,21 @@ fn render_replicate_yml(p: &PersistenceSpec) -> String {
 /// The pod volume for the live DB file: PVC if `storage` is set, else
 /// emptyDir. Shared by main + init + sidecar.
 fn app_db_volume(name: &str, p: &PersistenceSpec) -> crd_types::Volume {
-    let source = if p.storage.is_some() {
-        serde_json::json!({
-            "persistentVolumeClaim": { "claimName": app_db_pvc_name(name) }
-        })
+    if p.storage.is_some() {
+        crd_types::Volume {
+            name: APP_DB_VOLUME.to_string(),
+            persistent_volume_claim: Some(crd_types::PersistentVolumeClaimVolumeSource {
+                claim_name: app_db_pvc_name(name),
+                read_only: None,
+            }),
+            ..Default::default()
+        }
     } else {
-        serde_json::json!({ "emptyDir": {} })
-    };
-    crd_types::Volume {
-        name: APP_DB_VOLUME.to_string(),
-        source,
+        crd_types::Volume {
+            name: APP_DB_VOLUME.to_string(),
+            empty_dir: Some(crd_types::EmptyDirVolumeSource::default()),
+            ..Default::default()
+        }
     }
 }
 
@@ -168,7 +173,11 @@ fn app_db_volume(name: &str, p: &PersistenceSpec) -> crd_types::Volume {
 fn replicate_config_volume(name: &str) -> crd_types::Volume {
     crd_types::Volume {
         name: REPLICATE_CONFIG_VOLUME.to_string(),
-        source: serde_json::json!({ "configMap": { "name": replicate_config_name(name) } }),
+        config_map: Some(crd_types::ConfigMapVolumeSource {
+            name: replicate_config_name(name),
+            ..Default::default()
+        }),
+        ..Default::default()
     }
 }
 
@@ -751,7 +760,7 @@ mod tests {
             }],
             volumes: vec![crd_types::Volume {
                 name: "data".to_string(),
-                source: serde_json::json!({}),
+                ..Default::default()
             }],
             volume_mounts: vec![crd_types::VolumeMount {
                 name: "data".to_string(),

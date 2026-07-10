@@ -477,23 +477,52 @@ pub struct BackupSpec {
     pub retention_days: Option<i32>,
 }
 
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "Datastore",
-    plural = "datastores",
-    namespaced,
-    status = "DatastoreStatus",
-    shortname = "hds",
-    printcolumn = r#"{"name":"Type","type":"string","jsonPath":".spec.type"}"#,
-    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
-    printcolumn = r#"{"name":"Ready","type":"integer","jsonPath":".status.readyReplicas"}"#
-)]
+/// The datastore engine — the single source of truth for "which datastore".
+/// Fixed by Kind for `SQL`/`KV`/`DocDB`/`S3`/`Datastore`; carried as a
+/// tenant-chosen field only by `ManagedDatabase` (the one Kind whose engine is
+/// not fixed by its Kind). Every per-engine default (image, port, data path,
+/// DSN scheme, component label) keys off this value — see
+/// `controllers::datastore`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct DatastoreSpec {
-    #[serde(rename = "type")]
-    pub type_: String,
+pub enum Engine {
+    /// PostgreSQL (`hanzoai/sql`).
+    #[serde(rename = "postgresql")]
+    #[default]
+    Postgres,
+    /// Valkey (`hanzoai/kv`).
+    Valkey,
+    /// FerretDB over Postgres — MongoDB wire protocol (`hanzoai/docdb`).
+    Docdb,
+    /// MinIO S3 (`hanzoai/s3`).
+    Minio,
+    /// hanzoai/datastore analytics engine (ClickHouse).
+    Datastore,
+}
+
+impl Engine {
+    /// Canonical identity string — the `app.kubernetes.io/component` label and
+    /// the default service-port name. Preserved 1:1 from the retired
+    /// `spec.type` discriminator so an adopted StatefulSet's pod spec stays
+    /// byte-identical (no needless rollout).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Engine::Postgres => "postgresql",
+            Engine::Valkey => "valkey",
+            Engine::Docdb => "docdb",
+            Engine::Minio => "minio",
+            Engine::Datastore => "datastore",
+        }
+    }
+}
+
+/// The shared datastore workload VALUE: everything the StatefulSet + Service +
+/// PVC machinery needs, independent of engine. The engine is expressed by the
+/// Kind (`SQL`/`KV`/`DocDB`/`S3`/`Datastore`) or, for `ManagedDatabase`, by an
+/// explicit `engine` field — never braided into this value as a discriminator.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DBSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ImageSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,6 +573,23 @@ pub struct DatastoreSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
 }
+
+/// `Datastore` Kind — the `hanzoai/datastore` analytics engine (ClickHouse).
+/// A concrete engine, not a generic catch-all: the engine IS the Kind.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "Datastore",
+    plural = "datastores",
+    namespaced,
+    status = "DatastoreStatus",
+    shortname = "hds",
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Ready","type":"integer","jsonPath":".status.readyReplicas"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct DatastoreSpec(pub DBSpec);
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1244,7 +1290,7 @@ pub struct BaseStatus {
     shortname = "sql"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct SQLSpec(pub DatastoreSpec);
+pub struct SQLSpec(pub DBSpec);
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
@@ -1257,7 +1303,7 @@ pub struct SQLSpec(pub DatastoreSpec);
     shortname = "kv"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct KVSpec(pub DatastoreSpec);
+pub struct KVSpec(pub DBSpec);
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
@@ -1269,8 +1315,12 @@ pub struct KVSpec(pub DatastoreSpec);
     status = "DatastoreStatus",
     shortname = "docdb"
 )]
+// DocDB composes SQL: FerretDB speaks the MongoDB wire protocol OVER Postgres,
+// so a DocDB value IS a SQL value shape (`DocDBSpec(SQLSpec(DBSpec))`). The
+// controller unwraps to the shared `DBSpec` and materializes the single
+// `hanzoai/docdb` StatefulSet (FerretDB + its embedded Postgres backend).
 #[serde(rename_all = "camelCase")]
-pub struct DocDBSpec(pub DatastoreSpec);
+pub struct DocDBSpec(pub SQLSpec);
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
@@ -1322,14 +1372,14 @@ pub struct LLMSpec(pub ServiceSpec);
     shortname = "s3"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct S3Spec(pub DatastoreSpec);
+pub struct S3Spec(pub DBSpec);
 
 /// Per-tenant isolated database. Paid/isolated tenants get a dedicated
-/// `Datastore`-family workload (StatefulSet + Service + headless + PVC); the
-/// tenant picks the engine via the inner `DatastoreSpec.type` (postgresql /
-/// valkey / docdb / minio). Unlike the `SQL`/`KV`/`DocDB`/`S3` facades it does
-/// NOT force a fixed engine — the inner type flows through verbatim.
-/// Reconciled by `controllers::managed_database`.
+/// `Datastore`-family workload (StatefulSet + Service + headless + PVC). Unlike
+/// the `SQL`/`KV`/`DocDB`/`S3` facades — whose engine is fixed by their Kind —
+/// `ManagedDatabase` lets the tenant pick the engine at runtime, so it is the
+/// one Kind that carries an explicit `engine` selector alongside the shared
+/// workload spec. Reconciled by `controllers::managed_database`.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
     group = "hanzo.ai",
@@ -1341,7 +1391,17 @@ pub struct S3Spec(pub DatastoreSpec);
     shortname = "mdb"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedDatabaseSpec(pub DatastoreSpec);
+pub struct ManagedDatabaseSpec {
+    /// Tenant-selected engine. The other datastore Kinds fix their engine by
+    /// Kind; this is the one Kind whose engine is a first-class value.
+    #[serde(default)]
+    pub engine: Engine,
+    /// The shared datastore workload spec — flattened so a `ManagedDatabase`
+    /// CR's `spec` carries the `storage`/`image`/… fields at top level, exactly
+    /// as the `Datastore` family does.
+    #[serde(flatten)]
+    pub db: DBSpec,
+}
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
