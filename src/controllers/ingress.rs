@@ -9,11 +9,11 @@ use k8s_openapi::api::networking::v1::{
     IngressServiceBackend, IngressSpec as K8sIngressSpec, IngressTLS, ServiceBackendPort,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
-use kube::api::Api;
+use kube::api::{Api, DeleteParams, ListParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, ResourceExt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tracing::{error, info, warn};
 
 use crate::apply;
@@ -58,6 +58,7 @@ async fn reconcile_inner(
     };
 
     let ings: Api<Ingress> = Api::namespaced(client.clone(), namespace);
+    let mut desired: BTreeSet<String> = BTreeSet::new();
     for (idx, domain) in spec.domains.iter().enumerate() {
         let ing = build_domain_ingress(
             name,
@@ -70,16 +71,95 @@ async fn reconcile_inner(
             spec.labels.as_ref(),
             &owner,
         );
+        desired.insert(ing.name_any());
         apply::apply(&ings, &ing).await?;
     }
+
+    let pruned = prune_superseded(&ings, &owner, &desired).await?;
 
     info!(
         name,
         namespace,
         domains = spec.domains.len(),
+        pruned,
         "Ingress reconciled"
     );
     Ok(())
+}
+
+/// Delete the Ingress shards this CR previously wrote that the current
+/// generation no longer declares. A shard becomes superseded when its host
+/// moves index within the CR's `domains` array, the host is dropped from the
+/// CR (a backend cutover), or the child-name scheme changed across operator
+/// versions. In every case the stale shard keeps a valid `ownerReference` to
+/// the still-live CR, so k8s garbage collection never fires — owner-ref GC only
+/// triggers on CR *deletion*. Left alone, the stale shard stays live at equal
+/// priority and keeps routing a cut-over host to its OLD backend.
+///
+/// Safety boundary — a shard is deleted only when ALL of these hold. It carries
+/// `app.kubernetes.io/managed-by=hanzo-operator` (server-side selector), so the
+/// operator never touches an Ingress it does not manage. One of its
+/// `ownerReferences` UIDs equals THIS CR's UID, so the sweep is scoped to this
+/// CR — never a sibling CR, a foreign object, or a host another CR owns. Its
+/// name is NOT in `desired`, so the current generation is always kept and the
+/// sweep is idempotent. Without a CR UID the sweep cannot scope safely and is a
+/// no-op.
+async fn prune_superseded(
+    ings: &Api<Ingress>,
+    owner: &OwnerReference,
+    desired: &BTreeSet<String>,
+) -> Result<usize> {
+    if owner.uid.is_empty() {
+        return Ok(0);
+    }
+    let live = ings
+        .list(&ListParams::default().labels("app.kubernetes.io/managed-by=hanzo-operator"))
+        .await?;
+    let dp = DeleteParams::default();
+    let mut pruned = 0usize;
+    for ing in live {
+        let ing_name = match ing.metadata.name.clone() {
+            Some(n) => n,
+            None => continue,
+        };
+        let doomed = {
+            let owner_uids: Vec<&str> = ing
+                .metadata
+                .owner_references
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(|r| r.uid.as_str())
+                .collect();
+            is_superseded(&ing_name, &owner_uids, &owner.uid, desired)
+        };
+        if !doomed {
+            continue;
+        }
+        match ings.delete(&ing_name, &dp).await {
+            Ok(_) => {
+                info!(ingress = %ing_name, "pruned superseded Ingress shard");
+                pruned += 1;
+            }
+            // Already gone (concurrent reconcile / manual cleanup): idempotent.
+            Err(kube::Error::Api(ae)) if ae.code == 404 => {}
+            Err(e) => return Err(OperatorError::KubeApi(e)),
+        }
+    }
+    Ok(pruned)
+}
+
+/// Pure prune decision, separated from the delete effect so the safety rules are
+/// unit-tested without a kube client. Returns true iff the shard `name` (with
+/// `owner_uids` drawn from its `ownerReferences`) is owned by the CR identified
+/// by `cr_uid` yet absent from the current-generation `desired` set.
+fn is_superseded(
+    name: &str,
+    owner_uids: &[&str],
+    cr_uid: &str,
+    desired: &BTreeSet<String>,
+) -> bool {
+    !cr_uid.is_empty() && !desired.contains(name) && owner_uids.contains(&cr_uid)
 }
 
 /// Materialize one k8s `Ingress` from a single `DomainConfig`. Pure (no cluster
@@ -340,6 +420,83 @@ mod tests {
         // Non-wildcard domains must sanitize exactly as before, so existing
         // Ingress child names (hanzo-domains-*) never churn.
         assert_eq!(sanitize_label("api.cloud.hanzo.ai"), "api-cloud-hanzo-ai");
+    }
+
+    // Prune decision — the `platform.hanzo.ai` cutover leak and its boundaries.
+    // The current generation writes `hanzo-domains-2-platform-hanzo-ai`; the old
+    // index shard (`-4-`) and the pre-index-scheme shard both linger with a valid
+    // ownerReference to the still-live `hanzo-domains` CR (uid `cr-uid`).
+
+    const CR_UID: &str = "cr-uid";
+
+    fn desired() -> BTreeSet<String> {
+        BTreeSet::from(["hanzo-domains-2-platform-hanzo-ai".to_string()])
+    }
+
+    #[test]
+    fn current_generation_shard_is_kept() {
+        assert!(!is_superseded(
+            "hanzo-domains-2-platform-hanzo-ai",
+            &[CR_UID],
+            CR_UID,
+            &desired(),
+        ));
+    }
+
+    #[test]
+    fn superseded_index_shard_is_pruned() {
+        // `hanzo-domains-4-platform-hanzo-ai` — old index, same CR, not desired.
+        assert!(is_superseded(
+            "hanzo-domains-4-platform-hanzo-ai",
+            &[CR_UID],
+            CR_UID,
+            &desired(),
+        ));
+    }
+
+    #[test]
+    fn old_scheme_shard_is_pruned() {
+        // `hanzo-domains-platform-hanzo-ai` — pre-index naming, same CR.
+        assert!(is_superseded(
+            "hanzo-domains-platform-hanzo-ai",
+            &[CR_UID],
+            CR_UID,
+            &desired(),
+        ));
+    }
+
+    #[test]
+    fn sibling_cr_shard_is_never_touched() {
+        // Owned by a different CR (different uid) — out of scope.
+        assert!(!is_superseded(
+            "other-domains-0-platform-hanzo-ai",
+            &["other-cr-uid"],
+            CR_UID,
+            &desired(),
+        ));
+    }
+
+    #[test]
+    fn unowned_ingress_is_never_touched() {
+        // Carries the managed-by label but no ownerReference to this CR
+        // (hand-made or pre-owner-ref) — ownership unproven, so never deleted.
+        assert!(!is_superseded(
+            "hanzo-domains-9-platform-hanzo-ai",
+            &[],
+            CR_UID,
+            &desired(),
+        ));
+    }
+
+    #[test]
+    fn empty_cr_uid_prunes_nothing() {
+        // No CR UID means the sweep cannot scope safely — no-op.
+        assert!(!is_superseded(
+            "hanzo-domains-4-platform-hanzo-ai",
+            &[""],
+            "",
+            &desired(),
+        ));
     }
 }
 
