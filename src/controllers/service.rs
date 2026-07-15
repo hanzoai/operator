@@ -11,6 +11,7 @@
 //! the legacy Go operator silently dropping these. The Rust port carries
 //! tests asserting the round-trip.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -299,10 +300,28 @@ pub struct Ctx {
     /// `UPGRADE_FSM_ENABLED`). Off ⇒ every Service applies `spec.image` directly
     /// (historical behavior) regardless of its `spec.upgradePolicy`.
     pub upgrade_enabled: bool,
+    /// Shared leader-election flag. `leader.rs::run()` keeps looping (is_leader=
+    /// false) on lease loss rather than returning, so a lease-lost operator would
+    /// otherwise keep reconciling and fight the new leader's FSM image-flips. The
+    /// Service reconcile re-checks this every reconcile and no-ops when not the
+    /// leader (fail-closed split-brain guard, MED-2).
+    pub leader_flag: Arc<AtomicBool>,
 }
 
 /// Reconcile a canonical `Service` CR.
 pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Action> {
+    // Split-brain guard (MED-2): only the lease holder mutates. Controllers are
+    // spawned once leadership is first acquired, but `leader.rs::run()` keeps
+    // looping with is_leader=false on lease LOSS instead of returning — so a
+    // lease-lost operator would keep reconciling and drive the FSM against the
+    // new leader (fighting image-flips). Re-check every reconcile and no-op when
+    // not the leader; a short requeue picks the CR back up when leadership
+    // returns. Fail-closed: a non-leader flips no image and creates no pre-flight.
+    if !ctx.leader_flag.load(Ordering::Relaxed) {
+        debug!("not leader; skipping Service reconcile (fail-closed split-brain guard)");
+        return Ok(Action::requeue(Duration::from_secs(15)));
+    }
+
     let name = cr.name_any();
     let namespace = cr
         .namespace()
@@ -336,6 +355,7 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     if let Some(conv) = &drive.converge {
         if let Err(e) = upgrade::converge_preflight(
             &ctx.client,
+            &namespace,
             &name,
             &conv.target,
             conv.want,
@@ -774,7 +794,12 @@ pub fn on_error_service(_obj: Arc<ServiceCR>, err: &OperatorError, _ctx: Arc<Ctx
 }
 
 /// Run the canonical Service controller.
-pub async fn run_service_controller(client: Client, namespace: String, api_group: String) {
+pub async fn run_service_controller(
+    client: Client,
+    namespace: String,
+    api_group: String,
+    leader_flag: Arc<AtomicBool>,
+) {
     let api: Api<ServiceCR> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {
@@ -794,6 +819,7 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
         client,
         api_group,
         upgrade_enabled,
+        leader_flag,
     });
     Controller::new(api, Config::default())
         .run(reconcile_service, on_error_service, ctx)
@@ -831,17 +857,66 @@ struct ConvergeReq {
     inputs: Option<PreflightInputs>,
 }
 
-/// The inactive-gate path: carry prior FSM status through untouched and apply
-/// `spec.image` directly (historical blind-apply behavior).
+/// The inactive-gate path: apply `spec.image` directly (historical blind-apply
+/// behavior). If the FSM was mid-flight when it went inactive (the cluster gate
+/// flipped off, or the CR disabled its policy), sweep any orphaned pre-flight
+/// resources — the clone PVC + VolumeSnapshot (full copies of live tenant data),
+/// the candidate pod (real creds), and its egress NetworkPolicy — and clear the
+/// now-meaningless in-flight status (MED-4). A never-upgraded Service has no
+/// pre-flight status, so it takes the no-op path (no sweep, no LIST).
 fn upgrade_inactive(prior: &ServiceStatus) -> UpgradeDrive {
+    let had_inflight = prior.upgrade.is_some();
     UpgradeDrive {
         effective_image: None,
+        // Clear a frozen in-flight status; the FSM no longer manages it, and it
+        // re-derives from scratch if the gate comes back on.
+        next_upgrade: None,
+        last_good_image: prior.last_good_image.clone(),
+        upgrade_history: prior.upgrade_history.clone(),
+        converge: had_inflight.then(|| ConvergeReq {
+            target: String::new(),
+            want: false,
+            inputs: None,
+        }),
+        requeue_secs: 60,
+    }
+}
+
+/// A refused upgrade (HIGH-1 validation failed): hold production on the current
+/// image (NEVER flip to the candidate), create NO pre-flight resources, and sweep
+/// any a previously-valid attempt left behind (real creds + a clone of live
+/// data). The prior FSM status carries through so fixing the spec resumes it.
+fn upgrade_refused(running: Option<&str>, prior: &ServiceStatus) -> UpgradeDrive {
+    let hold = running
+        .or(prior.last_good_image.as_deref())
+        .map(str::to_string);
+    UpgradeDrive {
+        effective_image: hold,
         next_upgrade: prior.upgrade.clone(),
         last_good_image: prior.last_good_image.clone(),
         upgrade_history: prior.upgrade_history.clone(),
-        converge: None,
+        converge: Some(ConvergeReq {
+            target: String::new(),
+            want: false,
+            inputs: None,
+        }),
         requeue_secs: 60,
     }
+}
+
+/// True when `spec.volumes` hand-declares the live `<name>-app-db` PVC (the
+/// volume the operator auto-injects onto the Deployment for persistence). It must
+/// NEVER appear in `spec.volumes`: `build_preflight_inputs` copies `spec.volumes`
+/// into the pre-flight pod, so a declared live PVC would be mounted READ-WRITE
+/// into the pre-flight instead of the snapshot clone (HIGH-1). Pure over the spec.
+fn declares_live_app_db(spec: &ServiceSpec, name: &str) -> bool {
+    let live = app_db_pvc_name(name);
+    spec.volumes.iter().any(|v| {
+        v.persistent_volume_claim
+            .as_ref()
+            .map(|pvc| pvc.claim_name == live)
+            .unwrap_or(false)
+    })
 }
 
 /// Drive the managed-upgrade FSM one reconcile. Gated on the cluster env AND the
@@ -889,7 +964,35 @@ async fn drive_upgrade_fsm(
         rollout_deadline_secs: policy
             .rollout_deadline_seconds
             .unwrap_or(upgrade::DEFAULT_ROLLOUT_DEADLINE_SECS),
+        soak_seconds: policy.soak_seconds.unwrap_or(upgrade::DEFAULT_SOAK_SECS),
     };
+
+    // HIGH-1: refuse an unsafe pre-flight BEFORE the FSM engages. A stateful
+    // pre-flight boots the real image with the real master key over a clone of
+    // live data, so it MUST carry a boot-only marker (`bootEnv`), and
+    // `spec.volumes` must never smuggle the live data PVC into the pre-flight.
+    // Guard only when an upgrade is actually pending or in flight — never on
+    // initial create or steady state (which run no pre-flight): a running
+    // Deployment whose desired image is a NEW target (not a revert to last-good),
+    // or an already in-flight attempt.
+    let upgrade_active = prior.upgrade.is_some()
+        || (running.is_some()
+            && running.as_deref() != Some(desired.as_str())
+            && prior.last_good_image.as_deref() != Some(desired.as_str()));
+    if upgrade_active {
+        if let Some(reason) = upgrade::upgrade_refusal(
+            stateful,
+            policy.boot_env.is_empty(),
+            declares_live_app_db(spec, name),
+        ) {
+            warn!(
+                name,
+                reason,
+                "managed upgrade REFUSED — holding production on the current image (no pre-flight created)"
+            );
+            return Ok(upgrade_refused(running.as_deref(), prior));
+        }
+    }
 
     // Observe only what the current phase requires (a pre-flight pod outcome, or
     // whether the rolling candidate pods are crash-looping).
@@ -1554,5 +1657,139 @@ mod tests {
                 .get("app.kubernetes.io/name"),
             Some(&"iam".to_string())
         );
+    }
+
+    // ---- MED-2: per-reconcile leader fail-closed ----
+
+    /// A non-leader must no-op (fail-closed) — no image flip, no pre-flight, no
+    /// cluster mutation. The guard returns BEFORE any spec/cluster work, so a
+    /// non-leader reconcile is `Ok` while a leader reconcile proceeds past the
+    /// guard (and here errors on the CR's missing namespace, proving the guard is
+    /// what short-circuits — not an earlier failure).
+    #[tokio::test]
+    async fn not_leader_short_circuits_before_any_work() {
+        // Building a kube::Client wires the rustls HTTPS connector, which needs a
+        // process CryptoProvider (installed in main()); install it here too
+        // (idempotent — a repeat call returns Err, ignored).
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let client = kube::Client::try_from(kube::Config::new(
+            "http://127.0.0.1:1".parse().expect("uri"),
+        ))
+        .expect("build client");
+        let ctx = |leader: bool| {
+            Arc::new(Ctx {
+                client: client.clone(),
+                api_group: "hanzo.ai".to_string(),
+                upgrade_enabled: true,
+                leader_flag: Arc::new(AtomicBool::new(leader)),
+            })
+        };
+        // ServiceCR::new sets no namespace; the namespace check is AFTER the guard.
+        let cr = Arc::new(ServiceCR::new("cloud", base_spec()));
+
+        // Not leader ⇒ short requeue, Ok, zero work.
+        assert!(
+            reconcile_service(cr.clone(), ctx(false)).await.is_ok(),
+            "a non-leader reconcile must no-op (Ok), never reach the FSM/apply"
+        );
+        // Leader ⇒ proceeds past the guard and fails the namespace check (proving
+        // the guard did NOT short-circuit the leader).
+        assert!(
+            reconcile_service(cr, ctx(true)).await.is_err(),
+            "a leader reconcile proceeds past the guard"
+        );
+    }
+
+    // ---- HIGH-1: live app-db PVC detection ----
+
+    #[test]
+    fn declares_live_app_db_detects_a_hand_declared_live_pvc() {
+        let mut spec = base_spec();
+        // A benign, non-live PVC is fine.
+        spec.volumes = vec![crd_types::Volume {
+            name: "cache".to_string(),
+            persistent_volume_claim: Some(crd_types::PersistentVolumeClaimVolumeSource {
+                claim_name: "some-other-pvc".to_string(),
+                read_only: None,
+            }),
+            ..Default::default()
+        }];
+        assert!(!declares_live_app_db(&spec, "console"));
+        // The live `<name>-app-db` PVC smuggled into spec.volumes MUST be caught.
+        spec.volumes.push(crd_types::Volume {
+            name: "smuggled".to_string(),
+            persistent_volume_claim: Some(crd_types::PersistentVolumeClaimVolumeSource {
+                claim_name: app_db_pvc_name("console"),
+                read_only: None,
+            }),
+            ..Default::default()
+        });
+        assert!(
+            declares_live_app_db(&spec, "console"),
+            "the live <name>-app-db PVC in spec.volumes must be detected (HIGH-1)"
+        );
+    }
+
+    // ---- HIGH-1: a refused upgrade holds and sweeps ----
+
+    #[test]
+    fn upgrade_refused_holds_running_and_sweeps_never_flips() {
+        let prior = ServiceStatus {
+            last_good_image: Some("img:v1".to_string()),
+            ..Default::default()
+        };
+        let d = upgrade_refused(Some("img:v1"), &prior);
+        // Holds the current image — NEVER flips to the candidate (spec.image).
+        assert_eq!(d.effective_image.as_deref(), Some("img:v1"));
+        // Requests a sweep (want=false) so no pre-flight resources are created/kept.
+        let conv = d.converge.expect("a refused upgrade requests a sweep");
+        assert!(!conv.want, "refused ⇒ want=false (create nothing, sweep)");
+        assert!(conv.inputs.is_none());
+    }
+
+    // ---- MED-4: disable-path sweep of orphaned pre-flight resources ----
+
+    #[test]
+    fn upgrade_inactive_sweeps_and_clears_a_frozen_inflight_status() {
+        // The FSM went inactive (gate off / policy disabled) mid-Preflighting.
+        let prior = ServiceStatus {
+            upgrade: Some(UpgradeStatus {
+                target_image: "img:v2".to_string(),
+                phase: Some(UpgradePhase::Preflighting),
+                ..Default::default()
+            }),
+            last_good_image: Some("img:v1".to_string()),
+            ..Default::default()
+        };
+        let d = upgrade_inactive(&prior);
+        // The orphaned clone PVC + snapshot + candidate pod + egress policy are swept.
+        let conv = d
+            .converge
+            .expect("a frozen in-flight status requests a sweep");
+        assert!(!conv.want, "sweep (want=false), create nothing");
+        // The now-meaningless in-flight status is cleared; last-good is preserved.
+        assert!(d.next_upgrade.is_none(), "frozen in-flight status cleared");
+        assert_eq!(d.last_good_image.as_deref(), Some("img:v1"));
+        assert_eq!(
+            d.effective_image, None,
+            "inactive ⇒ apply spec.image directly"
+        );
+    }
+
+    #[test]
+    fn upgrade_inactive_is_a_noop_when_never_upgraded() {
+        // No in-flight status ⇒ nothing to sweep (no LIST), so the fleet-wide
+        // inactive path stays cheap.
+        let prior = ServiceStatus {
+            last_good_image: Some("img:v1".to_string()),
+            ..Default::default()
+        };
+        let d = upgrade_inactive(&prior);
+        assert!(
+            d.converge.is_none(),
+            "no in-flight status ⇒ no sweep / no LIST"
+        );
+        assert!(d.next_upgrade.is_none());
+        assert_eq!(d.effective_image, None);
     }
 }

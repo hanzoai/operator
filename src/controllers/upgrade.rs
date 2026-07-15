@@ -41,8 +41,9 @@ use k8s_openapi::api::core::v1::{
     Container, PersistentVolumeClaim, Pod, PodSpec, Probe, ResourceRequirements, Volume,
     VolumeMount,
 };
+use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicySpec};
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
 use kube::api::{Api, DeleteParams, ListParams};
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 use kube::ResourceExt;
@@ -59,6 +60,11 @@ pub const DEFAULT_ROLLOUT_DEADLINE_SECS: i64 = 300;
 pub const DEFAULT_PREFLIGHT_DEADLINE_SECS: i64 = 300;
 /// Floor on either deadline — a too-short deadline would flap a healthy roll.
 pub const MIN_DEADLINE_SECS: i64 = 30;
+/// Default soak window: the candidate must stay continuously healthy in
+/// production for this long AFTER the rollout completes before the upgrade is
+/// committed (Succeeded + `lastGoodImage` advanced). Catches a candidate that
+/// rolls out healthy then crash-loops under load. `0` opts out.
+pub const DEFAULT_SOAK_SECS: i64 = 60;
 /// Cap on retained `status.upgradeHistory` entries (bounded to keep the CR small).
 pub const MAX_HISTORY: usize = 10;
 
@@ -103,6 +109,10 @@ pub struct Cfg {
     pub preflight_needed: bool,
     pub preflight_deadline_secs: i64,
     pub rollout_deadline_secs: i64,
+    /// Seconds of continuous production health the candidate must hold after the
+    /// rollout completes before the upgrade commits. `0` ⇒ commit on first
+    /// healthy observation.
+    pub soak_seconds: i64,
 }
 
 /// The FSM's decision: the image the Deployment must run now, the next persisted
@@ -278,61 +288,149 @@ fn preflight_failed(obs: &Observed, u: &UpgradeStatus, msg: &'static str) -> Pla
     }
 }
 
-/// Drive the Rolling phase: succeed when the candidate is healthy in production,
-/// auto-rollback on crashloop or deadline.
+/// Drive the Rolling phase: the candidate must roll out healthy AND stay healthy
+/// through a soak window before the upgrade commits; auto-rollback on crashloop
+/// or deadline. The soak (MED-3) catches a candidate that rolls out healthy then
+/// crash-loops under load — it is rolled back instead of poisoning last-good.
 fn drive_rolling(obs: &Observed, cfg: &Cfg, u: &UpgradeStatus) -> Plan {
     let target = u.target_image.clone();
 
-    // Success: the Deployment runs the candidate AND is healthy.
-    if obs.running == Some(u.target_image.as_str()) && obs.prod_healthy {
+    // The candidate is healthy on the Deployment. Require a soak window of
+    // CONTINUOUS health (anchored at the first healthy observation) before
+    // committing — the deadline no longer applies once healthy (there is no
+    // downtime to bound), only crashloop can still roll it back.
+    if obs.running == Some(target.as_str()) && obs.prod_healthy {
+        let anchor = soak_anchor(u, obs.now);
+        if soaked(anchor, obs.now, cfg.soak_seconds) {
+            return Plan {
+                effective_image: target.clone(),
+                next_upgrade: None, // Stable
+                record: Some(make_record(
+                    &target,
+                    obs.last_good,
+                    "Succeeded",
+                    obs.now,
+                    "candidate rolled out healthy and held through the soak window",
+                )),
+                mark_last_good: Some(target), // advance baseline — proven healthy + stable
+                reason: "rollout healthy through soak; upgrade succeeded",
+            };
+        }
+        // Healthy but the soak window has not yet elapsed — hold on the candidate,
+        // anchoring (or preserving) the soak start.
+        let mut next = u.clone();
+        next.stable_since = anchor.to_string();
+        next.message = "candidate healthy; soaking before commit".to_string();
         return Plan {
-            effective_image: target.clone(),
-            next_upgrade: None, // Stable
-            record: Some(make_record(
-                &target,
-                obs.last_good,
-                "Succeeded",
-                obs.now,
-                "candidate rolled out healthy",
-            )),
-            mark_last_good: Some(target), // advance baseline — proven healthy
-            reason: "rollout healthy; upgrade succeeded",
+            effective_image: target,
+            next_upgrade: Some(next),
+            record: None,
+            mark_last_good: None,
+            reason: "candidate healthy; soaking before commit",
         };
     }
 
-    // Failure: crashloop (fast path) or deadline exceeded ⇒ auto-rollback.
+    // Not healthy on the candidate. Auto-rollback on crashloop (fast path) or when
+    // the deadline to reach a healthy state has passed.
     if obs.rolling_crashloop || expired(u, obs.now) {
-        // `last_good` is guaranteed Some to reach Rolling; fall back defensively
-        // to the current image rather than panic on a corrupt status.
-        let lg = obs.last_good.or(obs.running).unwrap_or(&target);
         let reason = if obs.rolling_crashloop {
             "candidate crash-looping; auto-rolling back to last-good"
         } else {
             "rollout deadline exceeded; auto-rolling back to last-good"
         };
-        return Plan {
-            effective_image: lg.to_string(), // FLIP BACK to last-good
-            next_upgrade: Some(rolling_back(&target, obs.now, cfg, &u.started_at)),
-            record: None,
-            mark_last_good: None,
-            reason,
+        // The rollback target MUST be the proven baseline — NEVER the candidate
+        // (flipping onto the very image that is failing is not a rollback). A
+        // Rolling phase is only reachable with a baseline; an absent `last_good`
+        // is a corrupt status, so fail CLOSED to terminal rather than pick the
+        // candidate as a fake recovery target (LOW-5).
+        return match obs.last_good {
+            Some(lg) => Plan {
+                effective_image: lg.to_string(), // FLIP BACK to last-good
+                next_upgrade: Some(rolling_back(&target, obs.now, cfg, &u.started_at)),
+                record: None,
+                mark_last_good: None,
+                reason,
+            },
+            None => halt_no_baseline(obs, u, reason),
         };
     }
 
-    // Still rolling within the deadline.
+    // Still rolling within the deadline, not yet healthy — clear any soak anchor
+    // (a candidate that reached health then fell back must re-soak from scratch).
+    let mut next = u.clone();
+    next.stable_since = String::new();
+    next.message = "health-gating rollout".to_string();
     Plan {
         effective_image: target,
-        next_upgrade: Some(u.clone()),
+        next_upgrade: Some(next),
         record: None,
         mark_last_good: None,
         reason: "health-gating rollout",
     }
 }
 
+/// The soak-window start instant: the persisted `stable_since` if present and
+/// parseable, else `now` (the first healthy observation, or a re-anchor when the
+/// stored value is corrupt — fail-safe: a corrupt anchor forces a fresh full
+/// soak rather than a premature commit).
+fn soak_anchor(u: &UpgradeStatus, now: Timestamp) -> Timestamp {
+    if u.stable_since.is_empty() {
+        now
+    } else {
+        u.stable_since.parse::<Timestamp>().unwrap_or(now)
+    }
+}
+
+/// True when the candidate has been continuously healthy since `anchor` for at
+/// least `soak_secs`. `soak_secs <= 0` ⇒ commit immediately (soak opted out).
+fn soaked(anchor: Timestamp, now: Timestamp, soak_secs: i64) -> bool {
+    now.duration_since(anchor).as_secs() >= soak_secs.max(0)
+}
+
+/// A crashloop/deadline fired in Rolling (or a rollback was due in RollingBack)
+/// but the status carries NO `last_good` baseline — a corrupt or hand-edited
+/// status (both phases are only reachable with a baseline). There is no
+/// known-good image to roll back to, so fail CLOSED: land in terminal Failed and
+/// hold whatever prod currently runs, WITHOUT flipping onto the candidate as a
+/// fake rollback target and WITHOUT marking anything last-good. A human must
+/// intervene; the FSM does not oscillate.
+fn halt_no_baseline(obs: &Observed, u: &UpgradeStatus, reason: &'static str) -> Plan {
+    let hold = obs
+        .running
+        .or(obs.last_good)
+        .unwrap_or(obs.desired)
+        .to_string();
+    Plan {
+        effective_image: hold,
+        next_upgrade: Some(failed(
+            &u.target_image,
+            "no last-good baseline to roll back to (corrupt status); upgrade halted",
+        )),
+        record: Some(make_record(
+            &u.target_image,
+            obs.last_good,
+            "RolledBack",
+            obs.now,
+            "no last-good baseline; upgrade halted without flipping onto the candidate",
+        )),
+        mark_last_good: None,
+        reason,
+    }
+}
+
 /// Drive the RollingBack phase: hold the Deployment on last-good until it is
 /// healthy again, then conclude in the terminal Failed state.
 fn drive_rolling_back(obs: &Observed, u: &UpgradeStatus) -> Plan {
-    let lg = obs.last_good.or(obs.running).unwrap_or(&u.target_image);
+    // The rollback target is the proven baseline — NEVER the candidate (LOW-5).
+    // RollingBack is only reachable with a baseline; an absent `last_good` is a
+    // corrupt status, so fail CLOSED rather than "roll back" onto the candidate.
+    let Some(lg) = obs.last_good else {
+        return halt_no_baseline(
+            obs,
+            u,
+            "rolling back but no last-good baseline (corrupt status)",
+        );
+    };
     if obs.running == Some(lg) && obs.prod_healthy {
         return Plan {
             effective_image: lg.to_string(),
@@ -360,9 +458,12 @@ fn drive_rolling_back(obs: &Observed, u: &UpgradeStatus) -> Plan {
 /// Terminal Failed: production stays on last-good; the failed target is never
 /// re-attempted. Only a NEW `spec.image` (a supersede) reopens the FSM.
 fn terminal_failed(obs: &Observed, u: &UpgradeStatus) -> Plan {
+    // Hold on last-good. NEVER re-select the failed candidate as the hold image
+    // (LOW-5): fall back to the current running image only when it is not the
+    // candidate, else to desired.
     let stay = obs
         .last_good
-        .or(obs.running)
+        .or_else(|| obs.running.filter(|r| *r != u.target_image.as_str()))
         .unwrap_or(obs.desired)
         .to_string();
     Plan {
@@ -423,12 +524,14 @@ fn deadline_str(now: Timestamp, secs: i64) -> String {
 }
 
 /// True when `now` is past `u.deadline_at`. A missing/unparseable deadline is
-/// treated as NOT expired — the FSM then relies on the explicit Ready/Failed
-/// signals rather than failing an upgrade on a clock-parse error.
+/// treated as EXPIRED — a safety FSM fails CLOSED (LOW-6): a corrupt deadline
+/// rolls the candidate back rather than letting it run unbounded. In normal
+/// operation every Preflighting/Rolling status carries a valid deadline set by
+/// `deadline_str`, so this only bites a hand-edited/corrupt status.
 fn expired(u: &UpgradeStatus, now: Timestamp) -> bool {
     match u.deadline_at.parse::<Timestamp>() {
         Ok(deadline) => now > deadline,
-        Err(_) => false,
+        Err(_) => true,
     }
 }
 
@@ -441,6 +544,7 @@ fn preflighting(name: &str, target: &str, now: Timestamp, cfg: &Cfg) -> UpgradeS
         preflight_pod: preflight_pod_name(name, target),
         preflight_clone: preflight_clone_name(name, target),
         preflight_snapshot: preflight_snapshot_name(name, target),
+        stable_since: String::new(),
         message: "pre-flighting candidate over real data".to_string(),
     }
 }
@@ -502,6 +606,39 @@ pub fn push_history(history: &mut Vec<UpgradeRecord>, record: UpgradeRecord) {
     }
 }
 
+/// Refuse an unsafe managed-upgrade configuration BEFORE any pre-flight runs
+/// (HIGH-1). Pure over the spec-derived values so the guard is unit-tested
+/// without a cluster. `Some(reason)` ⇒ the controller holds production on the
+/// current image and does not create the pre-flight pod; `None` ⇒ the upgrade
+/// may proceed.
+///
+/// Two refusals, checked in order:
+///   1. `spec.volumes` declares the live app-db PVC — it would be carried
+///      READ-WRITE into the pre-flight pod, defeating the clone-not-live
+///      isolation (the pre-flight must boot a snapshot CLONE, never live data).
+///   2. A stateful upgrade with no `bootEnv` — the pre-flight boots the real
+///      image with the real master key (`envFrom`) over a clone of live data;
+///      without a boot-only marker to suppress side effects it would run live
+///      migrations / notifications / billing. The deny-all-egress NetworkPolicy
+///      is the containment; `bootEnv` is the required belt-and-braces.
+pub fn upgrade_refusal(
+    stateful: bool,
+    boot_env_empty: bool,
+    declares_live_app_db: bool,
+) -> Option<&'static str> {
+    if declares_live_app_db {
+        return Some(
+            "spec.volumes declares the live app-db PVC; a managed-upgrade pre-flight must boot a snapshot CLONE of the data, never the live volume",
+        );
+    }
+    if stateful && boot_env_empty {
+        return Some(
+            "stateful managed upgrade requires spec.upgradePolicy.bootEnv (a boot-only marker, e.g. CLOUD_ENV=smoke) so the pre-flight suppresses live side effects",
+        );
+    }
+    None
+}
+
 // ============================================================================
 // Deterministic pre-flight resource names
 // ============================================================================
@@ -533,6 +670,10 @@ pub fn preflight_clone_name(name: &str, target: &str) -> String {
 
 pub fn preflight_snapshot_name(name: &str, target: &str) -> String {
     pf_name(name, target, "-snap")
+}
+
+pub fn preflight_netpol_name(name: &str, target: &str) -> String {
+    pf_name(name, target, "-egress")
 }
 
 // ============================================================================
@@ -723,6 +864,49 @@ pub fn build_preflight_clone_pvc(
     }
 }
 
+/// Match labels selecting exactly the one pre-flight pod for `(name, target)`.
+/// The two pre-flight labels are unique to the pre-flight pod — production pods
+/// never carry them — so a policy selecting on them never touches a live
+/// workload (even though the pod also shares the app's `standard_labels`).
+fn preflight_pod_match_labels(name: &str, target: &str) -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    m.insert(PREFLIGHT_OF_LABEL.to_string(), name.to_string());
+    m.insert(PREFLIGHT_TARGET_LABEL.to_string(), target_hash(target));
+    m
+}
+
+/// Build the deny-all-egress `NetworkPolicy` scoping the pre-flight candidate pod
+/// (HIGH-1). The CSI clone isolates the pod's DATA, but the candidate boots the
+/// real image with the real master key (`envFrom`) and the real ServiceAccount —
+/// everything reached over the network is LIVE (external-DB migrations,
+/// replicate/S3 push, KMS writes, IAM registration, notifications/billing/
+/// webhooks). A boot-to-ready check needs no egress, so this policy selects the
+/// pre-flight pod (by its unique pre-flight labels, never a production pod) and
+/// denies ALL egress. The kubelet readiness probe is ingress from the node and
+/// is unaffected, so the boot check still works. Owned + labelled like the
+/// pod/clone/snapshot so `converge_preflight` creates and sweeps it identically.
+pub fn build_preflight_netpol(name: &str, target: &str, i: &PreflightInputs) -> NetworkPolicy {
+    NetworkPolicy {
+        metadata: ObjectMeta {
+            name: Some(preflight_netpol_name(name, target)),
+            namespace: Some(i.namespace.clone()),
+            labels: Some(pf_labels(&i.labels, name, target)),
+            owner_references: Some(vec![i.owner.clone()]),
+            ..Default::default()
+        },
+        spec: Some(NetworkPolicySpec {
+            pod_selector: Some(LabelSelector {
+                match_labels: Some(preflight_pod_match_labels(name, target)),
+                ..Default::default()
+            }),
+            // Egress isolation with an EMPTY egress rule set ⇒ deny ALL egress.
+            policy_types: Some(vec!["Egress".to_string()]),
+            egress: Some(vec![]),
+            ..Default::default()
+        }),
+    }
+}
+
 /// Observe the pre-flight candidate pod. An absent pod is `Booting` (the
 /// converge step will (re)create it) — never a failure. A transient API error is
 /// also `Booting` so a blip cannot fail an upgrade.
@@ -752,23 +936,21 @@ pub async fn observe_preflight(
 /// an operator restart.
 pub async fn converge_preflight(
     client: &kube::Client,
+    namespace: &str,
     name: &str,
     target: &str,
     want: bool,
     inputs: Option<&PreflightInputs>,
 ) -> Result<()> {
-    let namespace = inputs
-        .map(|i| i.namespace.clone())
-        .or_else(|| infer_namespace(client))
-        .unwrap_or_else(|| "default".to_string());
-
     let keep_hash = if want {
         Some(target_hash(target))
     } else {
         None
     };
-    // Sweep stale/all pre-flight resources for this Service.
-    delete_stale_preflight(client, &namespace, name, keep_hash.as_deref()).await?;
+    // Sweep stale/all pre-flight resources for this Service (pod, clone, snapshot,
+    // egress NetworkPolicy). When `want == false` this is the disable/inactive
+    // sweep (MED-4): everything for this Service is removed by label.
+    delete_stale_preflight(client, namespace, name, keep_hash.as_deref()).await?;
 
     if !want {
         return Ok(());
@@ -777,16 +959,28 @@ pub async fn converge_preflight(
         return Ok(());
     };
 
+    // Deny-all-egress NetworkPolicy FIRST so egress is denied before the candidate
+    // pod is admitted (HIGH-1: no window where the booting candidate has egress).
+    let nps: Api<NetworkPolicy> = Api::namespaced(client.clone(), namespace);
+    if nps
+        .get_opt(&preflight_netpol_name(name, target))
+        .await?
+        .is_none()
+    {
+        let np = build_preflight_netpol(name, target, i);
+        apply::apply(&nps, &np).await?;
+    }
+
     // Stateful: snapshot the live PVC + a clone to boot against.
     if i.is_stateful() {
         let (g, v, k) = SNAPSHOT_GVK;
         let ar = ApiResource::from_gvk(&GroupVersionKind::gvk(g, v, k));
-        let snaps: Api<DynamicObject> = Api::namespaced_with(client.clone(), &namespace, &ar);
+        let snaps: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
         let snap = build_preflight_snapshot(name, target, i);
         if let Err(e) = apply::apply_dynamic(&snaps, &snap).await {
             tracing::warn!(error = %e, "pre-flight VolumeSnapshot apply failed (snapshot CRD may be absent); pre-flight will time out fail-closed");
         }
-        let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &namespace);
+        let pvcs: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), namespace);
         let clone = build_preflight_clone_pvc(name, target, i);
         // A clone PVC is immutable once bound; create-if-absent.
         if pvcs
@@ -799,7 +993,7 @@ pub async fn converge_preflight(
     }
 
     // The candidate pod — create-if-absent (a Pod spec is effectively immutable).
-    let pods: Api<Pod> = Api::namespaced(client.clone(), &namespace);
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
     if pods
         .get_opt(&preflight_pod_name(name, target))
         .await?
@@ -830,6 +1024,15 @@ async fn delete_stale_preflight(
         for p in list {
             if should_delete(&p.labels().get(PREFLIGHT_TARGET_LABEL).cloned(), keep_hash) {
                 let _ = pods.delete(&p.name_any(), &dp).await;
+            }
+        }
+    }
+    // Deny-egress NetworkPolicies.
+    let nps: Api<NetworkPolicy> = Api::namespaced(client.clone(), namespace);
+    if let Ok(list) = nps.list(&lp).await {
+        for np in list {
+            if should_delete(&np.labels().get(PREFLIGHT_TARGET_LABEL).cloned(), keep_hash) {
+                let _ = nps.delete(&np.name_any(), &dp).await;
             }
         }
     }
@@ -865,15 +1068,6 @@ fn should_delete(label_hash: &Option<String>, keep_hash: Option<&str>) -> bool {
     }
 }
 
-/// Best-effort operator namespace from the in-cluster service-account file, used
-/// only as a cleanup fallback when no inputs are available.
-fn infer_namespace(_client: &kube::Client) -> Option<String> {
-    std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,10 +1077,23 @@ mod tests {
     }
 
     fn cfg(preflight: bool) -> Cfg {
+        // Soak disabled in the transition/sequence fixtures — those assert the
+        // state machine's transitions, not the soak window (which has its own
+        // tests via `cfg_soak`). Soak=0 ⇒ commit on first healthy observation.
         Cfg {
             preflight_needed: preflight,
             preflight_deadline_secs: 300,
             rollout_deadline_secs: 300,
+            soak_seconds: 0,
+        }
+    }
+
+    fn cfg_soak(preflight: bool, soak_seconds: i64) -> Cfg {
+        Cfg {
+            preflight_needed: preflight,
+            preflight_deadline_secs: 300,
+            rollout_deadline_secs: 300,
+            soak_seconds,
         }
     }
 
@@ -1117,6 +1324,176 @@ mod tests {
         assert_eq!(p.next_upgrade.unwrap().phase, Some(UpgradePhase::Rolling));
     }
 
+    // ---------- soak window (MED-3): no last-good poisoning ----------
+
+    #[test]
+    fn rolling_healthy_but_unsoaked_holds_and_anchors_soak() {
+        // First healthy observation with a soak window: hold on the candidate and
+        // record the soak anchor — NOT yet Succeeded, last-good NOT advanced.
+        let u = rolling_status();
+        let o = obs("img:v2", Some("img:v2"), Some("img:v1"), true, Some(&u));
+        let p = plan(&o, &cfg_soak(true, 60));
+        assert_eq!(p.effective_image, "img:v2", "still on the candidate");
+        let next = p.next_upgrade.unwrap();
+        assert_eq!(
+            next.phase,
+            Some(UpgradePhase::Rolling),
+            "stays Rolling during the soak"
+        );
+        assert!(!next.stable_since.is_empty(), "soak anchor recorded");
+        assert_eq!(
+            p.mark_last_good, None,
+            "last-good is NOT advanced before the soak elapses"
+        );
+        assert!(p.record.is_none());
+    }
+
+    #[test]
+    fn rolling_soak_complete_succeeds_and_marks_last_good() {
+        // Continuously healthy for 65s with a 60s soak → committed.
+        let mut u = rolling_status();
+        u.stable_since = "2026-07-14T11:59:30Z".to_string();
+        let mut o = obs("img:v2", Some("img:v2"), Some("img:v1"), true, Some(&u));
+        o.now = ts("2026-07-14T12:00:35Z"); // 65s of continuous health
+        let p = plan(&o, &cfg_soak(true, 60));
+        assert_eq!(p.effective_image, "img:v2");
+        assert!(p.next_upgrade.is_none(), "soak complete ⇒ Stable");
+        assert_eq!(p.mark_last_good.as_deref(), Some("img:v2"));
+        assert_eq!(p.record.unwrap().result, "Succeeded");
+    }
+
+    #[test]
+    fn rolling_unhealthy_resets_the_soak_anchor() {
+        // A candidate that reached health (anchor set) then drops unhealthy (not a
+        // crashloop, within the deadline) must re-soak from scratch.
+        let mut u = rolling_status();
+        u.stable_since = "2026-07-14T11:59:30Z".to_string();
+        let o = obs("img:v2", Some("img:v2"), Some("img:v1"), false, Some(&u));
+        let p = plan(&o, &cfg_soak(true, 60));
+        assert_eq!(
+            p.effective_image, "img:v2",
+            "still rolling on the candidate"
+        );
+        let next = p.next_upgrade.unwrap();
+        assert_eq!(next.phase, Some(UpgradePhase::Rolling));
+        assert!(
+            next.stable_since.is_empty(),
+            "soak anchor reset on an unhealthy observation"
+        );
+        assert_eq!(p.mark_last_good, None);
+    }
+
+    #[test]
+    fn rolling_crash_during_soak_rolls_back_and_never_marks_good() {
+        // THE MED-3 property: a candidate that rolled out healthy (anchor set) then
+        // crash-loops under load DURING the soak is rolled back to last-good and is
+        // NEVER marked good — no last-good poisoning.
+        let mut u = rolling_status();
+        u.stable_since = "2026-07-14T11:59:30Z".to_string();
+        let mut o = obs("img:v2", Some("img:v2"), Some("img:v1"), false, Some(&u));
+        o.rolling_crashloop = true;
+        let p = plan(&o, &cfg_soak(true, 60));
+        assert_eq!(
+            p.effective_image, "img:v1",
+            "INVARIANT: a crash during soak reverts to last-good"
+        );
+        assert_eq!(
+            p.next_upgrade.unwrap().phase,
+            Some(UpgradePhase::RollingBack)
+        );
+        assert_eq!(
+            p.mark_last_good, None,
+            "a briefly-healthy candidate that crashed is NEVER marked good"
+        );
+    }
+
+    #[test]
+    fn rolling_healthy_past_deadline_soaks_rather_than_rolling_back() {
+        // Once healthy, the rollout deadline no longer forces a rollback (there is
+        // no downtime to bound) — only a crashloop can. A healthy candidate still
+        // mid-soak past the deadline keeps soaking.
+        let mut u = rolling_status(); // deadline 12:05:00
+        u.stable_since = "2026-07-14T12:04:50Z".to_string();
+        let mut o = obs("img:v2", Some("img:v2"), Some("img:v1"), true, Some(&u));
+        o.now = ts("2026-07-14T12:05:10Z"); // past the deadline, healthy 20s, soak 60
+        let p = plan(&o, &cfg_soak(true, 60));
+        assert_eq!(
+            p.effective_image, "img:v2",
+            "healthy candidate past the deadline keeps soaking, NOT rolled back"
+        );
+        assert_eq!(p.next_upgrade.unwrap().phase, Some(UpgradePhase::Rolling));
+        assert_eq!(p.mark_last_good, None);
+    }
+
+    // ---------- corrupt status: never roll back onto the candidate (LOW-5) ----------
+
+    #[test]
+    fn rolling_crashloop_with_no_baseline_halts_terminal_not_rollback() {
+        // last_good absent (corrupt status) + running == candidate + crashloop: the
+        // old `last_good.or(running)` fallback would "roll back" onto the crashing
+        // candidate. Now it fails CLOSED to terminal Failed — never a RollingBack
+        // toward the candidate, never marks it good.
+        let u = rolling_status();
+        let mut o = obs("img:v2", Some("img:v2"), None, false, Some(&u));
+        o.rolling_crashloop = true;
+        let p = plan(&o, &cfg(true));
+        assert_eq!(
+            p.next_upgrade.unwrap().phase,
+            Some(UpgradePhase::Failed),
+            "no baseline ⇒ terminal Failed, NOT a RollingBack targeting the candidate"
+        );
+        assert_eq!(p.mark_last_good, None, "the candidate is never marked good");
+    }
+
+    #[test]
+    fn rollingback_with_no_baseline_halts_terminal_not_onto_candidate() {
+        // last_good absent + running == candidate + healthy: the old code would
+        // "complete" the rollback onto the candidate and mark it. Now it fails
+        // closed to terminal Failed.
+        let u = rollingback_status();
+        let o = obs("img:v2", Some("img:v2"), None, true, Some(&u));
+        let p = plan(&o, &cfg(true));
+        assert_eq!(p.next_upgrade.unwrap().phase, Some(UpgradePhase::Failed));
+        assert_eq!(p.mark_last_good, None);
+    }
+
+    // ---------- unparseable deadline fails CLOSED (LOW-6) ----------
+
+    #[test]
+    fn unparseable_rolling_deadline_is_treated_as_expired() {
+        // A corrupt/empty deadline must fail CLOSED (roll back), not run unbounded.
+        let mut u = rolling_status();
+        u.deadline_at = "not-a-timestamp".to_string();
+        let o = obs("img:v2", Some("img:v2"), Some("img:v1"), false, Some(&u));
+        let p = plan(&o, &cfg(true));
+        assert_eq!(
+            p.effective_image, "img:v1",
+            "unparseable deadline ⇒ expired ⇒ rollback to last-good"
+        );
+        assert_eq!(
+            p.next_upgrade.unwrap().phase,
+            Some(UpgradePhase::RollingBack)
+        );
+    }
+
+    #[test]
+    fn unparseable_preflight_deadline_fails_closed() {
+        let mut u = preflighting_status();
+        u.deadline_at = String::new(); // empty ⇒ unparseable ⇒ expired
+        let mut o = obs("img:v2", Some("img:v1"), Some("img:v1"), true, Some(&u));
+        o.preflight = BootOutcome::Booting;
+        let p = plan(&o, &cfg(true));
+        assert_eq!(
+            p.effective_image, "img:v1",
+            "never flips — production stays on the current image"
+        );
+        assert_eq!(
+            p.next_upgrade.unwrap().phase,
+            Some(UpgradePhase::Failed),
+            "an unparseable pre-flight deadline fails closed"
+        );
+    }
+
     // ---------- rollback ----------
 
     fn rollingback_status() -> UpgradeStatus {
@@ -1326,6 +1703,7 @@ mod tests {
             preflight_pod_name,
             preflight_clone_name,
             preflight_snapshot_name,
+            preflight_netpol_name,
         ] {
             let n = f(long, "img:v2");
             assert!(n.len() <= 63, "{n} exceeds 63 chars");
@@ -1498,6 +1876,63 @@ mod tests {
             Some(UpgradePhase::Preflighting)
         );
         assert_eq!(w.upgrade.as_ref().unwrap().target_image, "img:v3");
+    }
+
+    #[test]
+    fn sequence_soak_catches_a_late_crash_and_keeps_prod_on_last_good() {
+        // The MED-3 lifecycle: the candidate rolls out healthy, begins its soak,
+        // then crash-loops under load DURING the soak. It is auto-rolled-back and
+        // last-good is NEVER advanced to it (no poisoning).
+        let cfg = cfg_soak(true, 60);
+        let t0 = ts("2026-07-14T12:00:00Z");
+        let mut w = World::fresh();
+        w.step("img:v1", false, BootOutcome::Booting, false, t0, &cfg);
+        w.step("img:v1", true, BootOutcome::Booting, false, t0, &cfg);
+        assert_eq!(w.last_good.as_deref(), Some("img:v1"));
+        // Upgrade to v2: pre-flight passes, flip to v2.
+        w.step("img:v2", true, BootOutcome::Booting, false, t0, &cfg); // start pre-flight
+        let p = w.step("img:v2", false, BootOutcome::Ready, false, t0, &cfg); // flip → Rolling
+        assert_eq!(p.effective_image, "img:v2");
+        // v2 healthy → soak begins; NOT yet committed.
+        let p = w.step("img:v2", true, BootOutcome::Booting, false, t0, &cfg);
+        assert_eq!(p.effective_image, "img:v2");
+        assert!(
+            w.upgrade.is_some(),
+            "still Rolling — soaking, not yet Succeeded"
+        );
+        assert_eq!(
+            w.last_good.as_deref(),
+            Some("img:v1"),
+            "last-good NOT advanced mid-soak"
+        );
+        // 30s later, still healthy but the 60s soak has not elapsed.
+        let t30 = ts("2026-07-14T12:00:30Z");
+        w.step("img:v2", true, BootOutcome::Booting, false, t30, &cfg);
+        assert!(w.upgrade.is_some(), "still soaking at 30s < 60s");
+        assert_eq!(w.last_good.as_deref(), Some("img:v1"));
+        // At 40s the candidate crash-loops under load → auto-rollback.
+        let t40 = ts("2026-07-14T12:00:40Z");
+        let p = w.step("img:v2", false, BootOutcome::Booting, true, t40, &cfg);
+        assert_eq!(
+            p.effective_image, "img:v1",
+            "crash during soak ⇒ revert to last-good"
+        );
+        assert_eq!(
+            w.upgrade.as_ref().unwrap().phase,
+            Some(UpgradePhase::RollingBack)
+        );
+        // Rollback completes; last-good never became v2.
+        let p = w.step("img:v2", true, BootOutcome::Booting, false, t40, &cfg);
+        assert_eq!(p.effective_image, "img:v1");
+        assert_eq!(
+            w.upgrade.as_ref().unwrap().phase,
+            Some(UpgradePhase::Failed)
+        );
+        assert_eq!(
+            w.last_good.as_deref(),
+            Some("img:v1"),
+            "INVARIANT: a briefly-healthy candidate NEVER poisons last-good"
+        );
     }
 
     #[test]
@@ -1705,5 +2140,89 @@ mod tests {
             labels.get(PREFLIGHT_TARGET_LABEL).map(String::as_str),
             Some(target_hash("img:v2").as_str())
         );
+    }
+
+    // ---------- HIGH-1: deny-all-egress NetworkPolicy on the pre-flight pod ----------
+
+    #[test]
+    fn preflight_netpol_denies_all_egress_and_selects_only_the_preflight_pod() {
+        // The candidate boots the real image with the real master key + SA — the
+        // clone isolates DATA, this policy isolates the NETWORK so no live side
+        // effect (external-DB migration, S3 push, KMS write, IAM register,
+        // notification/billing/webhook) can execute during the pre-flight.
+        let mut i = stateful_inputs();
+        // Even when the pod shares the app's `app.kubernetes.io/name`, the policy
+        // must NOT select on it (that would deny production egress).
+        i.labels
+            .insert("app.kubernetes.io/name".to_string(), "cloud".to_string());
+        let np = build_preflight_netpol("cloud", "img:v2", &i);
+        let spec = np.spec.unwrap();
+
+        // Egress-only isolation with an EMPTY egress rule set ⇒ deny ALL egress.
+        assert_eq!(
+            spec.policy_types.as_deref(),
+            Some(&["Egress".to_string()][..])
+        );
+        assert_eq!(
+            spec.egress.as_ref().map(|e| e.len()),
+            Some(0),
+            "empty egress rule set ⇒ deny all egress"
+        );
+
+        // Selects ONLY the pre-flight pod (its two unique pre-flight labels),
+        // never a production pod that shares the app label.
+        let sel = spec.pod_selector.unwrap().match_labels.unwrap();
+        assert_eq!(
+            sel.get(PREFLIGHT_OF_LABEL).map(String::as_str),
+            Some("cloud")
+        );
+        assert_eq!(
+            sel.get(PREFLIGHT_TARGET_LABEL).map(String::as_str),
+            Some(target_hash("img:v2").as_str())
+        );
+        assert!(
+            !sel.contains_key("app.kubernetes.io/name"),
+            "must NOT select on the shared app label (would deny production egress)"
+        );
+
+        // Owned + labelled like the pod so `converge_preflight` sweeps it the same.
+        assert!(np.metadata.owner_references.is_some());
+        let labels = np.metadata.labels.unwrap();
+        assert_eq!(
+            labels.get(PREFLIGHT_OF_LABEL).map(String::as_str),
+            Some("cloud")
+        );
+        assert_eq!(
+            labels.get(PREFLIGHT_TARGET_LABEL).map(String::as_str),
+            Some(target_hash("img:v2").as_str())
+        );
+    }
+
+    // ---------- HIGH-1: pre-flight refusal guard ----------
+
+    #[test]
+    fn upgrade_refusal_requires_boot_env_for_a_stateful_upgrade() {
+        assert!(
+            upgrade_refusal(true, true, false).is_some(),
+            "stateful + no bootEnv ⇒ refused"
+        );
+        assert!(
+            upgrade_refusal(true, false, false).is_none(),
+            "stateful + bootEnv ⇒ allowed"
+        );
+        assert!(
+            upgrade_refusal(false, true, false).is_none(),
+            "stateless + no bootEnv ⇒ allowed (boot-only, no live data to protect)"
+        );
+    }
+
+    #[test]
+    fn upgrade_refusal_rejects_a_declared_live_app_db_volume() {
+        // A hand-declared live app-db PVC is refused regardless of stateful/bootEnv
+        // — it would smuggle the live volume into the pre-flight, defeating the
+        // clone-not-live isolation. Checked first (highest precedence).
+        assert!(upgrade_refusal(true, false, true).is_some());
+        assert!(upgrade_refusal(false, false, true).is_some());
+        assert!(upgrade_refusal(false, true, true).is_some());
     }
 }
