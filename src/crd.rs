@@ -389,10 +389,22 @@ pub struct UpgradePolicySpec {
     /// Boot-only env overlaid on the pre-flight candidate pod so it runs its
     /// migrate + mount path WITHOUT real side effects (no prod notifications /
     /// billing / outbound). e.g. `CLOUD_ENV=smoke`. The pre-flight pod is never
-    /// wired to a Service, mounts a CLONE (never the live PVC), and — with this
-    /// env — makes no outbound calls. Set your app's boot-only marker here.
+    /// wired to a Service, is isolated by a deny-all-egress NetworkPolicy, mounts
+    /// a CLONE (never the live PVC), and — with this env — makes no outbound
+    /// calls. REQUIRED for a stateful FSM-enabled Service (the pre-flight boots
+    /// the real image with the real master key over a clone of live data): the
+    /// operator refuses to start such an upgrade without it. Set your app's
+    /// boot-only marker here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub boot_env: Vec<EnvVar>,
+    /// Seconds the candidate must remain continuously healthy in production
+    /// (the soak window) AFTER the rollout completes before the upgrade is judged
+    /// Succeeded and `lastGoodImage` advances. Catches a candidate that rolls out
+    /// healthy then crash-loops under load — it is rolled back instead of
+    /// poisoning last-good. Default 60. `0` opts out (commit on first healthy
+    /// observation, the pre-soak behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub soak_seconds: Option<i64>,
     /// `VolumeSnapshotClass` for the pre-flight CSI snapshot of the live data
     /// PVC. Empty ⇒ the cluster's default VolumeSnapshotClass. A stateful
     /// pre-flight with no snapshot support FAILS the upgrade CLOSED (never flips
@@ -448,6 +460,14 @@ pub struct UpgradeStatus {
     /// completion.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preflight_snapshot: String,
+    /// RFC3339 — when the rolling candidate was FIRST observed healthy in
+    /// production. The soak window (`upgradePolicy.soakSeconds`) must elapse from
+    /// this instant of continuous health before the upgrade is judged Succeeded
+    /// and `lastGoodImage` advances. Reset to empty whenever the candidate is
+    /// observed unhealthy, so a flapping candidate never commits. Present only in
+    /// Rolling, after the first healthy observation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stable_since: String,
     /// Human-readable last transition reason.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub message: String,
