@@ -129,8 +129,7 @@ impl Config {
                 .unwrap_or(d.pull_source_namespace),
             pull_source_name: std::env::var("TENANT_PULL_SOURCE_NAME")
                 .unwrap_or(d.pull_source_name),
-            pull_config_key: std::env::var("TENANT_PULL_CONFIG_KEY")
-                .unwrap_or(d.pull_config_key),
+            pull_config_key: std::env::var("TENANT_PULL_CONFIG_KEY").unwrap_or(d.pull_config_key),
         }
     }
 

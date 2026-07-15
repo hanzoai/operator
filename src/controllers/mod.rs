@@ -67,6 +67,15 @@ pub mod apps;
 // ManagedDatabase facade — per-tenant isolated Datastore workload.
 pub mod managed_database;
 
+// App Kind — the role-dispatch super-facade (`apps.hanzo.ai`, kind `App`). The
+// App-collapse: the fleet's workload CRs are `kind: App`, one deployable whose
+// `spec.role` selects a reconcile PROFILE. Reconciles by DELEGATING to the
+// existing `service`/`datastore`/`dns`/`ingress` `reconcile_*_inner_pub`
+// functions with the App's own owner reference — no reimplementation; SSA-by-name
+// adopts and re-parents the existing workloads (Service→App) with no downtime.
+// (Distinct from `apps` above, which is the platform-`apps`-table image driver.)
+pub mod app;
+
 // AgentDeployment — the autonomous-bot lifecycle (cloud Agent + visor-bound
 // @hanzo/bot machine). Reconcile ACTIONS reach cloud /v1/agents + visor
 // /v1/machines over HTTP; provisioning is opt-in + fail-safe (AGENT_DEPLOY_MODE).

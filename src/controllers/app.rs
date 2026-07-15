@@ -174,8 +174,8 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
                 owner,
             )
             .await?;
-            let status = workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment)
-                .await;
+            let status =
+                workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment).await;
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Datastore(engine) => {
@@ -196,8 +196,8 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
         Dispatch::Dns => {
             let spec: DNSSpec = project(&cr.spec)?;
             dns::reconcile_dns_inner_pub(&ctx.client, &name, &namespace, &spec, owner).await?;
-            let status = workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment)
-                .await;
+            let status =
+                workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment).await;
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Ingress => {
@@ -206,7 +206,13 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
                 .await?;
             // Ingress materializes shards, not one workload — a successful apply
             // is the readiness signal.
-            let status = marker_status(&cr, Phase::Running, true, "Reconciled", "Ingress reconciled");
+            let status = marker_status(
+                &cr,
+                Phase::Running,
+                true,
+                "Reconciled",
+                "Ingress reconciled",
+            );
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Delegated(kind) => {
@@ -356,7 +362,13 @@ async fn workload_status(
 /// delegated/NoOp/unknown roles): a fixed phase + one `Ready` condition carrying
 /// the reason/message, with the transition time carried from the prior status so
 /// a steady-state reconcile does not churn the CR.
-fn marker_status(cr: &App, phase: Phase, ready: bool, reason: &str, message: &str) -> ServiceStatus {
+fn marker_status(
+    cr: &App,
+    phase: Phase,
+    ready: bool,
+    reason: &str,
+    message: &str,
+) -> ServiceStatus {
     let observed_generation = cr.meta().generation.unwrap_or(0);
     let mut status = ServiceStatus {
         phase: Some(phase),
@@ -697,7 +709,10 @@ spec:
     #[test]
     fn datastore_projection_carries_every_field_and_forces_engine() {
         let app = app_from_yaml(SQL_CR);
-        assert_eq!(classify(app.spec.role.as_deref()), Dispatch::Datastore(Engine::Postgres));
+        assert_eq!(
+            classify(app.spec.role.as_deref()),
+            Dispatch::Datastore(Engine::Postgres)
+        );
         // The DBSpec the datastore reconcile receives must carry storage (required),
         // creds, aliases, and the overlapping ServiceSpec fields — projected from
         // the WHOLE App spec (core + extras), not just the core.
@@ -722,7 +737,10 @@ spec:
         let app = app_from_yaml(SERVICE_CR);
         assert_eq!(classify(app.spec.role.as_deref()), Dispatch::Service);
         let s = &app.spec.service;
-        assert!(s.persistence.as_ref().is_some_and(|p| p.enabled), "persistence preserved");
+        assert!(
+            s.persistence.as_ref().is_some_and(|p| p.enabled),
+            "persistence preserved"
+        );
         assert_eq!(s.persistence.as_ref().unwrap().bucket, "chat-db");
         assert!(s.pdb.as_ref().is_some_and(|p| p.enabled), "pdb preserved");
         assert!(s.surge_colocation, "surgeColocation preserved");
@@ -732,7 +750,11 @@ spec:
         assert_eq!(s.volume_mounts.len(), 1, "volumeMounts preserved");
         assert_eq!(s.strategy, "RollingUpdate");
         // No stray fields leaked into extra — a pure service CR flattens wholly.
-        assert!(app.spec.extra.is_empty(), "service CR has no unknowns: {:?}", app.spec.extra);
+        assert!(
+            app.spec.extra.is_empty(),
+            "service CR has no unknowns: {:?}",
+            app.spec.extra
+        );
     }
 
     #[test]
@@ -741,13 +763,17 @@ spec:
         // reason ServiceSpec.image gained #[serde(default)]).
         let dns = app_from_yaml(DNS_CR);
         assert_eq!(classify(dns.spec.role.as_deref()), Dispatch::Dns);
-        assert_eq!(dns.spec.service.image.repository, "", "no image ⇒ default empty");
+        assert_eq!(
+            dns.spec.service.image.repository, "",
+            "no image ⇒ default empty"
+        );
         let dspec: DNSSpec = project(&dns.spec).expect("dns App must project to DNSSpec");
         assert!(dspec.ingress.as_ref().is_some_and(|i| i.enabled));
 
         let ing = app_from_yaml(INGRESS_CR);
         assert_eq!(classify(ing.spec.role.as_deref()), Dispatch::Ingress);
-        let ispec: IngressKindSpec = project(&ing.spec).expect("ingress App must project to IngressKindSpec");
+        let ispec: IngressKindSpec =
+            project(&ing.spec).expect("ingress App must project to IngressKindSpec");
         assert_eq!(ispec.domains.len(), 1);
         assert_eq!(ispec.domains[0].domain, "*.hanzo.app");
         assert_eq!(ispec.cluster_issuer, "letsencrypt-prod");
@@ -771,7 +797,10 @@ spec:
   partOf: data
 "#;
         let app = app_from_yaml(kv);
-        assert_eq!(classify(app.spec.role.as_deref()), Dispatch::Datastore(Engine::Valkey));
+        assert_eq!(
+            classify(app.spec.role.as_deref()),
+            Dispatch::Datastore(Engine::Valkey)
+        );
         let db: DBSpec = project(&app.spec).expect("kv → DBSpec");
         assert_eq!(db.storage.volume_name.as_deref(), Some("kv-data"));
         assert_eq!(db.credentials_secret, "kv-credentials");
@@ -804,4 +833,3 @@ spec:
         assert_eq!(owner.block_owner_deletion, Some(true));
     }
 }
-

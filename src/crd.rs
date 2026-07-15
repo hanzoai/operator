@@ -491,6 +491,13 @@ pub struct UpgradeRecord {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceSpec {
+    /// `#[serde(default)]`: image is optional at the wire level so the `App`
+    /// Kind (which flattens `ServiceSpec`) deserializes the imageless role
+    /// profiles — a `role: dns` / `role: ingress` App CR carries NO `image`
+    /// (its image is fixed by the delegate controller). Rejects no existing
+    /// `Service`/`App` CR (every workload profile still sets it) and matches the
+    /// merged universe App schema, which models `image` as non-required.
+    #[serde(default)]
     pub image: ImageSpec,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replicas: Option<i32>,
@@ -2307,4 +2314,74 @@ pub struct AgentDeploymentStatus {
     pub observed_generation: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub message: String,
+}
+
+// ============================================================================
+// App Kind — the ONE Hanzo workload CRD (apps.hanzo.ai). The 29th Kind: a
+// role-dispatch super-facade that collapses the former Service/Datastore/…
+// Kinds into a single deployable whose `spec.role` selects a reconcile PROFILE
+// (a value, not a place). App IS a renamed Service — its workload core is
+// literally `ServiceSpec`, flattened — so every field a fleet App CR carries is
+// already handled by an existing reconcile. Absent role ⇒ the Service profile
+// (the hot path: 62 of the 67 live App CRs carry no role). Role-specific fields
+// (a datastore's `storage`/`type`, an ingress's `domains`) are NOT modeled here
+// — they ride as preserved unknowns (`x-kubernetes-preserve-unknown-fields`,
+// injected on the spec by the CRD generator) and are projected onto the
+// delegate spec at dispatch time. Reconciled by `controllers::app`, which
+// dispatches on `spec.role` to the existing `reconcile_*_inner_pub` functions.
+// ============================================================================
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "App",
+    plural = "apps",
+    singular = "app",
+    namespaced,
+    status = "ServiceStatus",
+    shortname = "app",
+    printcolumn = r#"{"name":"Role","type":"string","jsonPath":".spec.role"}"#,
+    printcolumn = r#"{"name":"Phase","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Ready","type":"integer","jsonPath":".status.readyReplicas"}"#,
+    printcolumn = r#"{"name":"Image","type":"string","jsonPath":".spec.image.repository"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSpec {
+    /// The role PROFILE that reconciles this App — the single field that replaced
+    /// the ~28 former hanzo.ai/v1 Kinds (values, not places). Absent/`generic`/
+    /// `service` and the schema-identical `llm`/`iam`/`kms`/`explorer`/`function`/
+    /// `indexer`/`observability`/`queue`/`spa`/`static` select the generic Service
+    /// profile; `sql`/`kv`/`docdb`/`s3`/`datastore`/`managedDatabase` the datastore
+    /// profile; `dns`/`ingress` their controllers. Every other value delegates to
+    /// its dedicated controller (or a NoOp stub). An unrecognized value reconciles
+    /// fail-safe (status marks it, requeue — never a delete, never a panic). It is
+    /// an OPEN string (not the closed enum) so this fail-safe path is reachable at
+    /// runtime rather than rejected at admission; see `controllers::app::classify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+
+    /// The generic workload core — the superset spec every profile draws from.
+    /// Flattened so an App CR carries `image`/`env`/`ports`/`persistence`/… at the
+    /// top level exactly as the former `Service` Kind did. For a service-role App
+    /// this IS the reconcile input verbatim; datastore/dns/ingress roles project
+    /// the full spec (this + `extra`) onto their delegate spec at dispatch.
+    #[serde(flatten)]
+    pub service: ServiceSpec,
+
+    /// Role-specific fields not in the generic core (a datastore's
+    /// `storage`/`type`/`credentialsSecret`/`serviceAliases`, an ingress's
+    /// `domains`/`clusterIssuer`/`ingressClassName`). Captured verbatim so the
+    /// dispatch can project them onto the delegate spec, and PRESERVED end-to-end:
+    /// the CRD carries `x-kubernetes-preserve-unknown-fields: true`, so the
+    /// apiserver never prunes them. `#[schemars(skip)]` keeps them out of the
+    /// structural schema — the preserve-unknown flag is the ONE mechanism that
+    /// carries them, matching the merged universe CRD (which models only the
+    /// ServiceSpec field set + `role`). This is the exact bug (HIGH-2) that sank
+    /// the reduced fork: a modeled-but-unpreserved spec prunes the datastore
+    /// fields. Preserve-unknown + this catch-all keep every field.
+    #[serde(flatten)]
+    #[schemars(skip)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }

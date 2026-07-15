@@ -341,6 +341,13 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
+        // App Kind — the role-dispatch super-facade. The App-collapse: the fleet's
+        // workload CRs are `kind: App`; this controller dispatches on `spec.role`
+        // to the existing per-profile reconciles (service/datastore/dns/ingress)
+        // threaded with the App's owner reference, so SSA-by-name adopts the
+        // existing Deployment/StatefulSet (Service→App) with no recreate. It is the
+        // sole hanzo.ai workload reconciler for the collapsed fleet.
+        controllers::app::run_app_controller(client.clone(), namespace.clone(), api_group.clone()),
         // AgentDeployment — autonomous-bot lifecycle. Watches the CRD; its
         // reconcile ACTIONS reach cloud /v1/agents + visor /v1/machines over
         // HTTP. Provisioning is opt-in + fail-safe: without AGENT_DEPLOY_CLOUD_URL
