@@ -53,7 +53,7 @@ use crate::apply;
 use crate::core::health::{self, BootOutcome};
 use crate::core::Result;
 use crate::crd::{UpgradePhase, UpgradeRecord, UpgradeStatus};
-use crate::manifests::{LABEL_INSTANCE, LABEL_NAME};
+use crate::manifests::{LABEL_COMPONENT, LABEL_INSTANCE, LABEL_NAME, LABEL_PART_OF, LABEL_VERSION};
 
 /// Default health-gated rollout deadline before auto-rollback.
 pub const DEFAULT_ROLLOUT_DEADLINE_SECS: i64 = 300;
@@ -724,25 +724,40 @@ impl PreflightInputs {
 const CLONE_VOLUME: &str = "preflight-data";
 const SNAPSHOT_GVK: (&str, &str, &str) = ("snapshot.storage.k8s.io", "v1", "VolumeSnapshot");
 
-/// The complete label set for a pre-flight resource: the caller's descriptive
-/// base plus the two pre-flight identity keys. By construction it NEVER carries
-/// the Service-selector keys (`app.kubernetes.io/name`, `.../instance`): if it
-/// did, the production ClusterIP Service would select the candidate pod as a live
-/// endpoint (HIGH-1: kube-proxy load-balances real user traffic onto the unproven
-/// candidate, which serves stale clone reads and silently discards writes) and an
-/// app-labelled egress-allow NetworkPolicy would re-grant the candidate the DB/
-/// KMS/S3 egress the deny-all is meant to remove (HIGH-2: NetworkPolicy egress is
-/// additive — a union across policies — so a deny-all cannot override an allow).
-/// Identity comes from the two pre-flight-only keys below; the selector keys are
-/// stripped unconditionally so the invariant holds for ANY base passed in.
+/// The complete label set for a pre-flight resource: `managed-by` (from the
+/// caller's minimal base) plus the two pre-flight identity keys — and NOTHING
+/// else. By construction it NEVER carries a key a production Service or an
+/// app-labelled NetworkPolicy selects on:
+/// - the Service-selector keys (`app.kubernetes.io/name`, `.../instance`): if it
+///   did, the production ClusterIP Service would select the candidate pod as a
+///   live endpoint (HIGH-1: kube-proxy load-balances real user traffic onto the
+///   unproven candidate, which serves stale clone reads and silently discards
+///   writes);
+/// - the SHARED descriptive keys (`.../component`, `.../part-of`, `.../version`):
+///   a headless discovery Service or a baseline egress-allow NetworkPolicy keyed
+///   on `part-of`/`component` (e.g. "all hanzo pods may reach the DB") would
+///   re-grant the candidate the DB/KMS/S3 egress the deny-all is meant to remove
+///   (HIGH-2: NetworkPolicy egress is additive — a union across policies — so a
+///   deny-all cannot override an allow). These keys serve ZERO function on a
+///   throwaway pre-flight resource (the netpol/sweep/GC key ONLY on the two
+///   `preflight-*` labels), so they are pure selector surface.
+///
+/// Identity comes from the two pre-flight-only keys below; every selector/
+/// descriptive key is stripped UNCONDITIONALLY so the invariant holds for ANY
+/// base passed in (defense in depth — the source already hands us a minimal base).
 fn pf_labels(
     base: &BTreeMap<String, String>,
     name: &str,
     target: &str,
 ) -> BTreeMap<String, String> {
     let mut l = base.clone();
+    // Strip every key a production Service or app-labelled NetworkPolicy selects
+    // on. Only `managed-by` (attribution, non-selecting) survives from the base.
     l.remove(LABEL_NAME);
     l.remove(LABEL_INSTANCE);
+    l.remove(LABEL_COMPONENT);
+    l.remove(LABEL_PART_OF);
+    l.remove(LABEL_VERSION);
     l.insert(PREFLIGHT_OF_LABEL.to_string(), name.to_string());
     l.insert(PREFLIGHT_TARGET_LABEL.to_string(), target_hash(target));
     l
@@ -2346,12 +2361,23 @@ mod tests {
         // resource carried those, the EndpointSlice controller would add the
         // unproven candidate as a live Service endpoint (HIGH-1) and an
         // app-labelled egress-allow policy would re-grant it egress (HIGH-2). The
-        // input carries the FULL standard label set (name + instance included).
+        // SHARED descriptive keys (component/part-of/version) are the SAME re-open
+        // vector via a descriptive-label selector (a headless discovery Service or
+        // a `part-of`-keyed egress-allow), so they must be dropped too. The input
+        // carries the FULL standard label set (name + instance + all three
+        // descriptive keys) so the strip is genuinely exercised.
         let i = stateful_inputs();
         let selector = crate::manifests::selector_labels("cloud");
         assert!(
             selector.contains_key(LABEL_NAME) && selector.contains_key(LABEL_INSTANCE),
             "sanity: the Service selector is the two name/instance keys"
+        );
+        assert!(
+            i.labels.contains_key(LABEL_COMPONENT)
+                && i.labels.contains_key(LABEL_PART_OF)
+                && i.labels.contains_key(LABEL_VERSION),
+            "sanity: the adversarial base carries component/part-of/version so the \
+             strip is exercised, not vacuous"
         );
 
         // Every pre-flight resource kind must drop both selector keys and keep the
@@ -2374,6 +2400,28 @@ mod tests {
             assert!(
                 !labels.contains_key(LABEL_INSTANCE),
                 "{kind}: must NOT carry app.kubernetes.io/instance"
+            );
+            // …and NOT the SHARED descriptive keys — a descriptive-label selector
+            // (headless discovery Service / `part-of`-keyed egress-allow) would
+            // otherwise re-open HIGH-1/HIGH-2. They serve zero function here.
+            assert!(
+                !labels.contains_key(LABEL_COMPONENT),
+                "{kind}: must NOT carry app.kubernetes.io/component"
+            );
+            assert!(
+                !labels.contains_key(LABEL_PART_OF),
+                "{kind}: must NOT carry app.kubernetes.io/part-of"
+            );
+            assert!(
+                !labels.contains_key(LABEL_VERSION),
+                "{kind}: must NOT carry app.kubernetes.io/version"
+            );
+            // Exactly the three functional keys remain — nothing decorative.
+            assert_eq!(
+                labels.len(),
+                3,
+                "{kind}: pre-flight carries EXACTLY {{managed-by, preflight-of, \
+                 preflight-target}}, got {labels:?}"
             );
             // Dedicated identity present so netpol/GC/sweep still target it.
             assert_eq!(
@@ -2421,14 +2469,25 @@ mod tests {
         );
     }
 
-    // ---------- HIGH-1: deny-all-egress NetworkPolicy on the pre-flight pod ----------
+    // -------- HIGH-1: egress-deny NetworkPolicy on the pre-flight pod --------
 
     #[test]
-    fn preflight_netpol_denies_all_egress_and_selects_only_the_preflight_pod() {
+    fn preflight_netpol_denies_egress_absent_an_additive_allow_and_selects_only_the_preflight_pod()
+    {
         // The candidate boots the real image with the real master key + SA — the
         // clone isolates DATA, this policy isolates the NETWORK so no live side
         // effect (external-DB migration, S3 push, KMS write, IAM register,
         // notification/billing/webhook) can execute during the pre-flight.
+        //
+        // PRECONDITION (why the name says "absent an additive allow"): NetworkPolicy
+        // egress is a UNION across every policy that selects a pod. This policy's
+        // empty egress rule set contributes NO allow, so in ISOLATION the pod has
+        // zero egress — but it cannot OVERRIDE an allow in another policy that also
+        // selects the pod. The label minimization (managed-by + preflight-* only)
+        // closes the descriptive-label re-selection path; a namespace-wide
+        // `podSelector: {}` egress-allow still selects it and is the documented
+        // enable-gate. This test asserts the POLICY SHAPE (empty egress + selects
+        // only the two preflight keys), not the emergent zero-egress guarantee.
         let mut i = stateful_inputs();
         // Even when the pod shares the app's `app.kubernetes.io/name`, the policy
         // must NOT select on it (that would deny production egress).
@@ -2437,7 +2496,8 @@ mod tests {
         let np = build_preflight_netpol("cloud", "img:v2", &i);
         let spec = np.spec.unwrap();
 
-        // Egress-only isolation with an EMPTY egress rule set ⇒ deny ALL egress.
+        // Egress-only isolation with an EMPTY egress rule set ⇒ deny all egress
+        // FROM THIS POLICY (zero egress overall only absent an additive allow).
         assert_eq!(
             spec.policy_types.as_deref(),
             Some(&["Egress".to_string()][..])
@@ -2445,7 +2505,7 @@ mod tests {
         assert_eq!(
             spec.egress.as_ref().map(|e| e.len()),
             Some(0),
-            "empty egress rule set ⇒ deny all egress"
+            "empty egress rule set ⇒ this policy grants no egress"
         );
 
         // Selects ONLY the pre-flight pod (its two unique pre-flight labels),
