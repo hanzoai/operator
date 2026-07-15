@@ -430,10 +430,20 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     // across the fleet). Writing only on real change breaks the loop.
     if status_changed(&status, &prior_status) {
         let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
-        let patch = serde_json::json!({"status": status});
+        // Optimistic-concurrency precondition (LOW-2): pin the observed
+        // resourceVersion so a stale ex-leader writing in the ~10s lease-overlap
+        // window 409s here instead of clobbering the live leader's status (a
+        // possible unnecessary rollback-of-healthy). The live leader always holds
+        // the fresh RV from its watch cache, so its write is unaffected; a 409 is
+        // warn-logged and picked up on the next reconcile. Falls back to no
+        // precondition only if the object somehow carries no resourceVersion.
+        let patch = match cr.meta().resource_version.as_deref() {
+            Some(rv) => serde_json::json!({"metadata": {"resourceVersion": rv}, "status": status}),
+            None => serde_json::json!({"status": status}),
+        };
         let pp = PatchParams::apply(apply::FIELD_MANAGER);
         if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
-            warn!(error = %e, "failed to update Service status (CRD may not be installed)");
+            warn!(error = %e, "failed to update Service status (stale resourceVersion 409, or CRD not installed)");
         } else {
             debug!(name, namespace, ?phase, "Service status updated");
         }
@@ -832,6 +842,164 @@ pub async fn run_service_controller(
 }
 
 // ============================================================================
+// Pre-flight orphan GC (MED-1) — the startup + periodic reclaimer.
+//
+// `converge_preflight` sweeps a Service's OWN pre-flight every reconcile, but a
+// disable-sweep that silently failed (`delete_stale_preflight` swallows errors,
+// then `upgrade_inactive` clears `status.upgrade` so no later reconcile retries),
+// or an operator crash mid-pre-flight before the status was written, leaves the
+// clone PVC + VolumeSnapshot (FULL copies of live tenant data) and the
+// real-credential candidate pod with NO reconcile that ever retries. Owner-ref GC
+// does not help while the Service still exists (upgrade finished, CR stays). This
+// loop re-derives orphan-ness from the live Service status, so it is robust to
+// ALL orphan sources. The pre-flight resource MECHANICS live in `upgrade`; the
+// ORPHAN POLICY (below) lives with the Service controller that owns the status.
+// ============================================================================
+
+/// The pre-flight liveness of a Service, as the orphan GC sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PreflightLiveness {
+    /// The Service is actively pre-flighting this exact target-image hash.
+    InFlight(String),
+    /// The Service exists but is not pre-flighting (upgrade done/failed/never),
+    /// or the Service is gone — any pre-flight resource for it is an orphan.
+    NotInFlight,
+    /// The Service status could not be read (transient API error) — fail-closed:
+    /// never reclaim on uncertainty.
+    Unknown,
+}
+
+/// Map a Service status to its pre-flight liveness. A Service is pre-flighting
+/// iff `status.upgrade.phase == Preflighting`; its in-flight hash is then
+/// `target_hash(upgrade.target_image)` — the SAME hash the pre-flight resources
+/// carry in `hanzo.ai/preflight-target`, so a matching resource is kept and a
+/// superseded/stale one is reclaimed. Once the roll leaves Preflighting the
+/// converge step has already swept the pre-flight, so any that remain are
+/// orphans. Pure.
+fn liveness_from_status(status: &ServiceStatus) -> PreflightLiveness {
+    match status.upgrade.as_ref() {
+        Some(u) if u.phase == Some(UpgradePhase::Preflighting) => {
+            PreflightLiveness::InFlight(upgrade::target_hash(&u.target_image))
+        }
+        _ => PreflightLiveness::NotInFlight,
+    }
+}
+
+/// True when a pre-flight resource carrying `resource_hash` is an orphan given
+/// its owning Service's liveness. Fail-closed: `Unknown` ⇒ never an orphan.
+/// Pure — the unit of test for the GC decision.
+fn is_preflight_orphan(resource_hash: &str, live: &PreflightLiveness) -> bool {
+    match live {
+        PreflightLiveness::InFlight(h) => resource_hash != h,
+        PreflightLiveness::NotInFlight => true,
+        PreflightLiveness::Unknown => false,
+    }
+}
+
+/// True when `created` is within `grace_secs` of `now`. The GC skips a pre-flight
+/// resource this young so a periodic sweep never races a reconcile that just
+/// created the pre-flight but has not yet written `status=Preflighting` (within
+/// one reconcile, converge creates the resources BEFORE the status patch). A
+/// missing timestamp is treated as old enough (a live object always has one).
+/// Pure.
+fn within_grace(created: Option<jiff::Timestamp>, now: jiff::Timestamp, grace_secs: i64) -> bool {
+    match created {
+        Some(c) => now.duration_since(c).as_secs() < grace_secs,
+        None => false,
+    }
+}
+
+/// Read a Service's live pre-flight liveness. `Ok(None)` (Service gone) ⇒
+/// `NotInFlight` (reclaim its residue now rather than wait on owner-ref GC); an
+/// API error ⇒ `Unknown` (fail-closed keep).
+async fn service_preflight_liveness(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> PreflightLiveness {
+    let api: Api<ServiceCR> = Api::namespaced(client.clone(), namespace);
+    match api.get_opt(name).await {
+        Ok(Some(svc)) => liveness_from_status(&svc.status.unwrap_or_default()),
+        Ok(None) => PreflightLiveness::NotInFlight,
+        Err(e) => {
+            warn!(error = %e, namespace, name, "pre-flight GC: Service status read failed; keeping its pre-flight (fail-closed)");
+            PreflightLiveness::Unknown
+        }
+    }
+}
+
+/// One GC sweep: list every pre-flight resource in `namespace` (empty ⇒ all) and
+/// reclaim each orphan (older than `grace_secs`). One Service lookup per
+/// `(namespace, service)` is memoized across its resources. Returns the count
+/// reclaimed.
+async fn gc_orphan_preflight(client: &Client, namespace: &str, grace_secs: i64) -> usize {
+    let now = jiff::Timestamp::now();
+    let refs = upgrade::list_preflight(client, namespace).await;
+    let mut liveness: std::collections::HashMap<(String, String), PreflightLiveness> =
+        std::collections::HashMap::new();
+    let mut reclaimed = 0usize;
+    for r in &refs {
+        if within_grace(r.created, now, grace_secs) {
+            continue;
+        }
+        let key = (r.namespace.clone(), r.of.clone());
+        let live = match liveness.get(&key) {
+            Some(l) => l.clone(),
+            None => {
+                let l = service_preflight_liveness(client, &r.namespace, &r.of).await;
+                liveness.insert(key, l.clone());
+                l
+            }
+        };
+        if is_preflight_orphan(&r.hash, &live) {
+            upgrade::delete_preflight(client, r).await;
+            info!(
+                namespace = %r.namespace, name = %r.name, of = %r.of, kind = ?r.kind,
+                "reclaimed orphaned pre-flight resource (MED-1)"
+            );
+            reclaimed += 1;
+        }
+    }
+    if reclaimed > 0 {
+        info!(reclaimed, "pre-flight orphan GC swept");
+    }
+    reclaimed
+}
+
+/// Startup + periodic pre-flight orphan GC loop (MED-1). Sweeps once immediately
+/// (startup, before any leak can outlive a restart) then every
+/// `PREFLIGHT_GC_INTERVAL_SECS` (default 600, floor 30). Leader-gated
+/// (fail-closed: a non-leader never deletes, mirroring `reconcile_service`) and
+/// INDEPENDENT of `UPGRADE_FSM_ENABLED`: orphans left by a PRIOR enabled lifetime
+/// — including one where the gate was then turned back OFF — must still be
+/// reclaimed, and a clone PVC / VolumeSnapshot is a live-tenant-data exposure.
+/// Cheap no-op on a cluster that never ran the FSM (the label-filtered lists come
+/// back empty).
+pub async fn run_preflight_gc(client: Client, namespace: String, leader_flag: Arc<AtomicBool>) {
+    let interval_secs = std::env::var("PREFLIGHT_GC_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(600)
+        .max(30);
+    let grace_secs = std::env::var("PREFLIGHT_GC_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(300);
+    info!(
+        interval_secs,
+        grace_secs, "pre-flight orphan GC loop starting (leader-gated)"
+    );
+    loop {
+        if leader_flag.load(Ordering::Relaxed) {
+            gc_orphan_preflight(&client, &namespace, grace_secs).await;
+        } else {
+            debug!("pre-flight GC: not leader; skipping sweep (fail-closed)");
+        }
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
+}
+
+// ============================================================================
 // Managed-upgrade FSM driver — gathers live observations, runs the pure
 // `upgrade::plan`, and assembles the status deltas + pre-flight converge request.
 // The decision logic is pure (upgrade.rs); this is the thin imperative shell.
@@ -1154,7 +1322,12 @@ fn build_preflight_inputs(
         storage_size,
         storage_class,
         snapshot_class: policy.snapshot_class.clone(),
-        labels: manifests::standard_labels(name, &spec.component, &spec.part_of, &spec.image.tag),
+        // DESCRIPTIVE labels only — never the Service-selector keys. A pre-flight
+        // resource must not be selected by the production Service (HIGH-1) nor by
+        // an app-labelled egress-allow policy (HIGH-2). `pf_labels` also strips
+        // the selector keys as a structural belt, but the honest source is a set
+        // that never carried them.
+        labels: manifests::descriptive_labels(&spec.component, &spec.part_of, &spec.image.tag),
         owner: owner.clone(),
     }
 }
@@ -1791,5 +1964,109 @@ mod tests {
         );
         assert!(d.next_upgrade.is_none());
         assert_eq!(d.effective_image, None);
+    }
+
+    // ---------- MED-1: pre-flight orphan GC decision (pure) ----------
+
+    fn preflighting_status(target: &str) -> ServiceStatus {
+        ServiceStatus {
+            upgrade: Some(UpgradeStatus {
+                target_image: target.to_string(),
+                phase: Some(UpgradePhase::Preflighting),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn gc_reclaims_a_preflight_whose_service_has_no_inflight_upgrade() {
+        // The red-prescribed case: a Service with NO in-flight upgrade (upgrade
+        // finished/failed/never — status.upgrade is None) still has a pre-flight
+        // pod + clone PVC + VolumeSnapshot left behind (a silently-failed
+        // disable-sweep, or a crash before status was written). Every one is an
+        // orphan and the startup GC reclaims it.
+        let status = ServiceStatus {
+            last_good_image: Some("img:v1".to_string()),
+            upgrade: None,
+            ..Default::default()
+        };
+        let live = liveness_from_status(&status);
+        assert_eq!(live, PreflightLiveness::NotInFlight);
+        // Any leftover pre-flight resource (any target hash) is reclaimed.
+        assert!(is_preflight_orphan(&upgrade::target_hash("img:v2"), &live));
+        assert!(is_preflight_orphan("deadbeef", &live));
+    }
+
+    #[test]
+    fn gc_keeps_the_current_inflight_preflight_but_reclaims_a_superseded_one() {
+        // A Service actively Preflighting `img:v2` keeps exactly that target's
+        // pre-flight and reclaims a stale/superseded one (different hash).
+        let status = preflighting_status("img:v2");
+        let live = liveness_from_status(&status);
+        assert_eq!(
+            live,
+            PreflightLiveness::InFlight(upgrade::target_hash("img:v2"))
+        );
+        assert!(
+            !is_preflight_orphan(&upgrade::target_hash("img:v2"), &live),
+            "the current target's pre-flight is NOT an orphan"
+        );
+        assert!(
+            is_preflight_orphan(&upgrade::target_hash("img:v3"), &live),
+            "a superseded target's pre-flight IS an orphan"
+        );
+    }
+
+    #[test]
+    fn gc_treats_a_rolling_service_preflight_as_orphaned() {
+        // Once the roll leaves Preflighting the converge step has already swept the
+        // pre-flight, so any that remain (e.g. after a crash between sweep and
+        // status write) are orphans.
+        let status = ServiceStatus {
+            upgrade: Some(UpgradeStatus {
+                target_image: "img:v2".to_string(),
+                phase: Some(UpgradePhase::Rolling),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let live = liveness_from_status(&status);
+        assert_eq!(live, PreflightLiveness::NotInFlight);
+        assert!(is_preflight_orphan(&upgrade::target_hash("img:v2"), &live));
+    }
+
+    #[test]
+    fn gc_fails_closed_on_unknown_service_status() {
+        // A transient API error reading the Service ⇒ Unknown ⇒ never reclaim (a
+        // clone PVC of live data is worse to delete wrongly than to leak briefly).
+        assert!(!is_preflight_orphan(
+            &upgrade::target_hash("img:v2"),
+            &PreflightLiveness::Unknown
+        ));
+        assert!(!is_preflight_orphan(
+            "anything",
+            &PreflightLiveness::Unknown
+        ));
+    }
+
+    #[test]
+    fn gc_grace_window_skips_a_freshly_created_preflight() {
+        // A resource younger than the grace window is skipped so the periodic GC
+        // never races a reconcile that just created the pre-flight but has not yet
+        // persisted status=Preflighting.
+        let now = jiff::Timestamp::now();
+        let fresh = now
+            .checked_sub(jiff::SignedDuration::from_secs(10))
+            .unwrap();
+        let old = now
+            .checked_sub(jiff::SignedDuration::from_secs(600))
+            .unwrap();
+        assert!(within_grace(Some(fresh), now, 300), "10s < 300s ⇒ skip");
+        assert!(!within_grace(Some(old), now, 300), "600s > 300s ⇒ eligible");
+        assert!(
+            !within_grace(None, now, 300),
+            "no timestamp ⇒ not within grace (eligible)"
+        );
     }
 }

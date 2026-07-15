@@ -315,6 +315,15 @@ async fn run_all_controllers(
             api_group.clone(),
             leader_flag.clone()
         ),
+        // Pre-flight orphan GC (MED-1) — startup + periodic reclaimer of leaked
+        // managed-upgrade pre-flight resources (clone PVC / VolumeSnapshot are
+        // full copies of live tenant data). Leader-gated; a cheap no-op when the
+        // FSM never ran.
+        controllers::service::run_preflight_gc(
+            client.clone(),
+            namespace.clone(),
+            leader_flag.clone()
+        ),
         controllers::datastore::run_datastore_controller(
             client.clone(),
             namespace.clone(),
