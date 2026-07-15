@@ -154,12 +154,26 @@ where
 }
 
 /// Apply a DynamicObject (used for CRDs whose types are not statically known,
-/// like KMSSecret). `api` carries the ApiResource on its DynamicType.
+/// like KMSSecret). `api` carries the ApiResource on its DynamicType. Uses the
+/// canonical `hanzo-operator` field manager.
 pub async fn apply_dynamic(api: &Api<DynamicObject>, obj: &DynamicObject) -> Result<DynamicObject> {
+    apply_dynamic_as(api, obj, FIELD_MANAGER).await
+}
+
+/// Apply a DynamicObject under an explicit SSA field manager. A reconcile source
+/// distinct from the CR→child controllers (e.g. the native git→CR loop) applies
+/// under its OWN manager so its edits are attributable and never silently fight
+/// another manager's owned fields. Same force-conflicts semantics as
+/// [`apply_dynamic`].
+pub async fn apply_dynamic_as(
+    api: &Api<DynamicObject>,
+    obj: &DynamicObject,
+    field_manager: &str,
+) -> Result<DynamicObject> {
     let name = obj.metadata.name.clone().ok_or_else(|| {
         crate::core::OperatorError::Config("apply_dynamic: missing metadata.name".into())
     })?;
-    let pp = PatchParams::apply(FIELD_MANAGER).force();
+    let pp = PatchParams::apply(field_manager).force();
     let out = api.patch(&name, &pp, &Patch::Apply(obj)).await?;
     Ok(out)
 }
