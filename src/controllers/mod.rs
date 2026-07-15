@@ -57,6 +57,14 @@ pub mod nodefleet;
 // docs/APPS_LIFECYCLE.md.
 pub mod apps;
 
+// v0.6.24: native git → CR reconcile. Not a CRD Kind — its reconcile source is
+// GIT (`infra/k8s/operator/crs/*.yaml` on hanzoai/universe main). It server-side
+// -applies the in-scope CRs so the operator does the whole chain natively
+// (git → CR → workload), replacing the external `gitops-reconcile` CronJob.
+// Opt-in (GITOPS_RECONCILE_ENABLED) + fail-safe + NEVER prunes; see the module
+// docs for the cadence/scope/never-prune model.
+pub mod gitops;
+
 // ManagedDatabase facade — per-tenant isolated Datastore workload.
 pub mod managed_database;
 
