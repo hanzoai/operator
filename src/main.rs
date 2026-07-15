@@ -252,8 +252,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Graceful shutdown on Ctrl-C.
-        _ = tokio::signal::ctrl_c() => {
+        // Graceful shutdown on SIGINT (Ctrl-C) or SIGTERM (what k8s sends on pod
+        // stop). Handling SIGTERM lets the leader release its lease promptly on a
+        // rolling operator restart instead of the successor waiting out the full
+        // lease timeout (MED-2).
+        _ = shutdown_signal() => {
             info!("Received shutdown signal");
         }
     }
@@ -262,6 +265,26 @@ async fn main() -> anyhow::Result<()> {
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     info!("Operator stopped");
     Ok(())
+}
+
+/// Resolve when the process receives a termination signal: SIGINT (Ctrl-C) or
+/// SIGTERM (Kubernetes pod stop). Both drive the graceful shutdown that releases
+/// the leader lease.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Wait for leadership then run every controller in parallel.
@@ -289,7 +312,8 @@ async fn run_all_controllers(
         controllers::service::run_service_controller(
             client.clone(),
             namespace.clone(),
-            api_group.clone()
+            api_group.clone(),
+            leader_flag.clone()
         ),
         controllers::datastore::run_datastore_controller(
             client.clone(),
