@@ -506,7 +506,7 @@ async fn wait_for_rollout(deps: &Api<Deployment>, name: &str) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(ROLLOUT_TIMEOUT_SECS);
     loop {
         if let Ok(dep) = deps.get(name).await {
-            if rollout_complete(&dep) {
+            if crate::core::health::rollout_complete(&dep) {
                 return true;
             }
         }
@@ -515,34 +515,6 @@ async fn wait_for_rollout(deps: &Api<Deployment>, name: &str) -> bool {
         }
         tokio::time::sleep(Duration::from_secs(ROLLOUT_POLL_SECS)).await;
     }
-}
-
-/// Pure rollout-completeness check over a `Deployment` — the same condition
-/// `kubectl rollout status` waits on: the controller has observed the latest
-/// spec generation, every desired replica is updated and available, and no
-/// old replicas linger.
-fn rollout_complete(dep: &Deployment) -> bool {
-    let generation = dep.metadata.generation;
-    let spec_replicas = dep.spec.as_ref().and_then(|s| s.replicas).unwrap_or(1);
-    let status = match &dep.status {
-        Some(s) => s,
-        None => return false,
-    };
-    // The controller must have acted on the current spec.
-    if let (Some(gen), Some(observed)) = (generation, status.observed_generation) {
-        if observed < gen {
-            return false;
-        }
-    }
-    let updated = status.updated_replicas.unwrap_or(0);
-    let available = status.available_replicas.unwrap_or(0);
-    let total = status.replicas.unwrap_or(0);
-    // Every desired replica updated to the new template…
-    updated >= spec_replicas
-        // …no old replicas still around (total not exceeding desired)…
-        && total <= updated
-        // …and all desired replicas available.
-        && available >= spec_replicas
 }
 
 /// Emit a Kubernetes Event against the app's namespace, referencing the app by
@@ -761,87 +733,6 @@ mod tests {
         assert!(matches!(d, Decision::Patch { .. }));
     }
 
-    // ---- rollout_complete ----
-
-    #[test]
-    fn rollout_complete_true_when_converged() {
-        use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStatus};
-        let dep = Deployment {
-            metadata: ObjectMeta {
-                generation: Some(3),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(2),
-                ..Default::default()
-            }),
-            status: Some(DeploymentStatus {
-                observed_generation: Some(3),
-                updated_replicas: Some(2),
-                available_replicas: Some(2),
-                replicas: Some(2),
-                ..Default::default()
-            }),
-        };
-        assert!(rollout_complete(&dep));
-    }
-
-    #[test]
-    fn rollout_incomplete_when_observed_generation_behind() {
-        use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStatus};
-        let dep = Deployment {
-            metadata: ObjectMeta {
-                generation: Some(4),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(2),
-                ..Default::default()
-            }),
-            status: Some(DeploymentStatus {
-                observed_generation: Some(3), // controller hasn't seen new spec
-                updated_replicas: Some(2),
-                available_replicas: Some(2),
-                replicas: Some(2),
-                ..Default::default()
-            }),
-        };
-        assert!(!rollout_complete(&dep));
-    }
-
-    #[test]
-    fn rollout_incomplete_when_old_replicas_linger() {
-        use k8s_openapi::api::apps::v1::{DeploymentSpec, DeploymentStatus};
-        let dep = Deployment {
-            metadata: ObjectMeta {
-                generation: Some(2),
-                ..Default::default()
-            },
-            spec: Some(DeploymentSpec {
-                replicas: Some(2),
-                ..Default::default()
-            }),
-            status: Some(DeploymentStatus {
-                observed_generation: Some(2),
-                updated_replicas: Some(2),
-                available_replicas: Some(2),
-                replicas: Some(4), // 2 new + 2 old mid-rollout
-                ..Default::default()
-            }),
-        };
-        assert!(!rollout_complete(&dep));
-    }
-
-    #[test]
-    fn rollout_incomplete_when_no_status() {
-        use k8s_openapi::api::apps::v1::DeploymentSpec;
-        let dep = Deployment {
-            spec: Some(DeploymentSpec {
-                replicas: Some(1),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert!(!rollout_complete(&dep));
-    }
+    // rollout_complete moved to `core::health` (shared with the upgrade FSM);
+    // its unit tests live there now.
 }

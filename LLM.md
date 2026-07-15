@@ -409,3 +409,111 @@ roleRef+subject, platform-label+owner-ref, org resolution, white-label env,
 dockerconfigjson shape, hijack-manager isolation, source-bytes precedence;
 0 regressions). fmt-clean; no new clippy warnings (my file is clean; the 4
 pre-existing warnings in datastore.rs/manifests.rs are out of scope).
+
+## v0.7.0 — the three verbs: INSTALL, OPERATE, UPGRADE (deploy discipline in-operator)
+
+The operator now INSTALLS, OPERATES, and UPGRADES the platform — no human
+hand-patches a CR, hand-watches a rollout, or hand-writes an auto-rollback loop.
+The deploy discipline is encoded as a reconcile state machine.
+
+### UPGRADE — managed-upgrade FSM (the core)
+
+When a `Service` opts into `spec.upgradePolicy` (AND the operator's cluster gate
+`UPGRADE_FSM_ENABLED` is on), a change to `spec.image` rolls through a pure state
+machine instead of a blind apply. Files:
+- `src/controllers/upgrade.rs` — the pure decision core `plan(Observed, Cfg) ->
+  Plan` (the brain, unit-tested with values, no cluster) + the pre-flight
+  resource builders/converge/observe (the thin imperative shell).
+- `src/core/health.rs` — pure health predicates (`rollout_complete` — LIFTED here
+  from `apps.rs` so both call sites share ONE definition; `deployment_healthy`,
+  `pod_boot_outcome`, `pod_crashlooping`).
+- `src/controllers/service.rs` — `drive_upgrade_fsm` gathers live observations,
+  runs `plan`, and threads the decision into the Deployment image + status.
+
+**States** (`status.upgrade.phase`; absent ⇒ Stable): `Preflighting` → `Rolling`
+→ (Stable | `RollingBack` → `Failed`).
+
+**The gates, in order:**
+1. **Pre-flight** the candidate BEFORE flipping. For a stateful Service, boot it
+   against a CSI-`VolumeSnapshot` CLONE of the live data PVC (mounted at the
+   persistence `dataDir`), with the app's REAL master key (`envFrom`) + a
+   boot-only env overlay (`spec.upgradePolicy.bootEnv`, e.g. `CLOUD_ENV=smoke`),
+   `restartPolicy: Never`, no Service. This is the operator-side analog of
+   cloud's CI migration-smoke (`internal/migratetest` + release.yml two-boot),
+   but STRONGER — it tests the candidate over the ACTUAL current schema, not a
+   pinned baseline. A candidate that cannot boot over real data (an
+   index-before-ADD-COLUMN migration crash) FAILS the pre-flight and production
+   is NEVER flipped. Stateless Services pre-flight a boot-only pod (no clone).
+2. **Health-gate** the rollout: flip the Deployment image, watch readiness within
+   `rolloutDeadlineSeconds` (default 300).
+3. **Auto-rollback**: if the candidate crash-loops (fast path via
+   `pod_crashlooping`) or misses readiness by the deadline, revert the Deployment
+   to `status.lastGoodImage` and record the failure.
+
+**THE INVARIANT** (`never_leaves_prod_on_an_unproven_or_failed_candidate`):
+`effective_image == lastGood` in every state where the candidate is unproven or
+failed; it is the candidate ONLY in Rolling (after the pre-flight passed);
+`lastGood` advances to the candidate ONLY on proven success. A failed target
+lands in terminal `Failed`, keyed to the image — the operator holds prod on
+`lastGood` and NEVER re-flips it; only a NEW `spec.image` reopens the FSM (a
+supersede).
+
+**Resumable + split-brain-safe**: every input is read from `status.upgrade` +
+the live cluster, so `plan` re-derives the same action after an operator restart
+(the pre-flight pod is named deterministically by target hash). The Service
+controller runs only after the lease is held (`main.rs` blocks on `leader_flag`),
+so single-writer election is the fail-closed split-brain guard — a non-leader
+never reconciles.
+
+**Gate (fail-safe drop-in)**: OFF by default. Cluster kill-switch
+`UPGRADE_FSM_ENABLED=true` AND per-CR `spec.upgradePolicy.enabled=true` are BOTH
+required; otherwise the operator applies `spec.image` directly (historical
+behavior, zero change). First deploy of this binary is inert.
+
+**New CRD fields** (additive, backward-compatible): `spec.upgradePolicy`
+{`enabled`, `preflight`, `rolloutDeadlineSeconds`, `preflightDeadlineSeconds`,
+`bootEnv[]`, `snapshotClass`}; `status.lastGoodImage`, `status.upgrade`,
+`status.upgradeHistory[]`. Regenerate the `k8s/crds/all-*.yaml` bundles after any
+change (`generate-crd-yaml --api-group <g>`).
+
+### OPERATE
+
+The existing `Service` reconcile (Deployment/Service/Ingress/HPA/PDB/NP/KMSSecret)
+is unchanged; the FSM composes with it by overriding only the Deployment image
+(`reconcile_service_inner(..., effective_image)`).
+
+### INSTALL — `operator install` / `operator up` (the bootstrap seam)
+
+`src/install.rs` + `main.rs` subcommands (`hanzod install` execs into
+`operator install`):
+- `operator install [--image X] [--upgrade-fsm] [--crds-only]` — SSA-apply the
+  derived CRDs (from the `CustomResource` derives via `crd_bundle`, the ONE home
+  now shared with `generate-crd-yaml`) + the operator's own namespace /
+  ServiceAccount / ClusterRole / ClusterRoleBinding / Deployment. Idempotent.
+- `operator up [--image X] [--manifests DIR] [--upgrade-fsm]` — install, then
+  apply the platform's own App CRs from `DIR` (kind-agnostic dynamic apply via
+  discovery) so the running operator brings the stack up. `k3s`-bootstrap when no
+  cluster is a documented phased seam.
+
+The rendered operator ClusterRole includes the NEW pre-flight grants: core
+`pods` + `persistentvolumeclaims` (create/delete for the clone), and
+`snapshot.storage.k8s.io/volumesnapshots` (the CSI clone source). **The live
+operator ClusterRole in `hanzoai/universe` MUST be extended with these three
+before enabling the FSM in-cluster** (deploy-gate).
+
+### Shadow-proven vs live cutover
+
+SHADOW/UNIT-PROVEN (no live prod touched): the pure FSM across the full lifecycle
+(happy upgrade; migration-crash pre-flight never reaches prod; crashloop →
+auto-rollback → prod stays on lastGood; resume-after-restart), the pre-flight
+builders (clone-not-live-PVC, `restartPolicy: Never`, boot-env), health
+predicates, install manifests, and the CRD schema carrying the new fields.
+LIVE-CUTOVER-GATED (needs a real CSI driver with a VolumeSnapshotClass + the
+universe RBAC delta): the end-to-end CSI snapshot→clone→boot round-trip. The
+legacy Go operator stays in production; hanzod is SHADOW.
+
+Test count: 179 → 240 lib tests (+15 core::health, +37 controllers::upgrade incl.
+the full-lifecycle sequence tests + the invariant sweep + builder shapes, +6
+install; -4 apps rollout tests moved to core::health; 0 regressions). My files
+are fmt-clean + clippy-clean; the pre-existing datastore/manifests/ingress/tenant
+fmt+clippy drift on origin/main is untouched.
