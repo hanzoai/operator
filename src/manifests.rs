@@ -82,18 +82,37 @@ pub fn sanitize_label_value(v: &str) -> String {
         .to_string()
 }
 
-/// Build the standard `app.kubernetes.io/*` label set. Empty values omitted;
-/// the `version` label is sanitized via [`sanitize_label_value`].
-pub fn standard_labels(
-    name: &str,
+/// The single non-selector label EVERY operator-managed object carries:
+/// `app.kubernetes.io/managed-by = hanzo-operator`. It attributes the creator
+/// but is NOT a key any operator Service selects on (Services select on
+/// [`selector_labels`] = name+instance ONLY), so a pod carrying just this label
+/// can never be re-added to a production endpoint set nor re-selected by an
+/// app-labelled egress-allow. It is therefore the MINIMAL functional base for a
+/// pre-flight resource: the pre-flight identity comes from the two
+/// `hanzo.ai/preflight-*` keys, and `managed-by` is the only descriptive key that
+/// stays.
+pub fn managed_by_labels() -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    labels.insert(LABEL_MANAGED_BY.to_string(), MANAGED_BY_VALUE.to_string());
+    labels
+}
+
+/// The DESCRIPTIVE `app.kubernetes.io/*` labels: `managed-by` (+ `component`,
+/// `part-of`, `version` when non-empty). Deliberately EXCLUDES the two selector
+/// keys (`name`, `instance`) — these labels describe a workload but never select
+/// it. The `version` label is sanitized via [`sanitize_label_value`].
+///
+/// NOTE: a pre-flight resource does NOT use this full set — `component`,
+/// `part-of`, `version` are SHARED with production pods and would widen the
+/// selector surface a pre-flight pod exposes (an egress-allow or headless Service
+/// selecting `part-of` could re-reach the unproven candidate). The pre-flight
+/// carries only [`managed_by_labels`]; this richer set is for real workloads.
+pub fn descriptive_labels(
     component: &str,
     part_of: &str,
     version: &str,
 ) -> BTreeMap<String, String> {
-    let mut labels = BTreeMap::new();
-    labels.insert(LABEL_NAME.to_string(), name.to_string());
-    labels.insert(LABEL_INSTANCE.to_string(), name.to_string());
-    labels.insert(LABEL_MANAGED_BY.to_string(), MANAGED_BY_VALUE.to_string());
+    let mut labels = managed_by_labels();
     if !component.is_empty() {
         labels.insert(LABEL_COMPONENT.to_string(), component.to_string());
     }
@@ -106,6 +125,19 @@ pub fn standard_labels(
     if !version.is_empty() {
         labels.insert(LABEL_VERSION.to_string(), version);
     }
+    labels
+}
+
+/// Build the standard `app.kubernetes.io/*` label set: the selector keys
+/// ([`selector_labels`]) UNION the descriptive keys ([`descriptive_labels`]).
+pub fn standard_labels(
+    name: &str,
+    component: &str,
+    part_of: &str,
+    version: &str,
+) -> BTreeMap<String, String> {
+    let mut labels = selector_labels(name);
+    labels.extend(descriptive_labels(component, part_of, version));
     labels
 }
 
@@ -959,6 +991,46 @@ mod tests {
         let hg = out.http_get.expect("http probe must emit httpGet");
         assert_eq!(hg.port, IntOrString::Int(7700));
         assert!(out.exec.is_none() && out.tcp_socket.is_none());
+    }
+
+    // The ClusterIP Service builder must NEVER put clusterIP in the desired
+    // manifest. clusterIP is immutable and apiserver-assigned; a server-side
+    // apply that omits it lets the apiserver keep the live value, so adopting a
+    // Service across the `Service` CR → `App` handoff preserves its identity
+    // (same clusterIP, no Endpoint/DNS re-propagation gap). Emitting it would
+    // invite an immutable-field conflict → recreate → the ~50s cutover outage.
+    #[test]
+    fn build_service_omits_clusterip_so_ssa_preserves_the_live_one() {
+        let svc = build_service("chat", "hanzo", BTreeMap::new(), vec![], BTreeMap::new());
+        let spec = svc.spec.as_ref().expect("service has a spec");
+        assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
+        assert!(
+            spec.cluster_ip.is_none(),
+            "clusterIP is apiserver-owned; it must never be in the desired manifest"
+        );
+        assert!(spec.cluster_ips.is_none(), "clusterIPs must be omitted too");
+        // The operative property that makes SSA byte-stable on adoption: the
+        // serialized object carries no clusterIP key, so the apply never sets or
+        // changes the immutable field.
+        let json = serde_json::to_string(&svc).expect("service serializes");
+        assert!(
+            !json.contains("clusterIP"),
+            "serialized Service must not contain clusterIP: {json}"
+        );
+    }
+
+    // A headless Service, by contrast, DECLARES clusterIP:None — that sentinel is
+    // its identity and must be emitted. It is a distinct name (`*-hs`) from the
+    // ClusterIP Service, so the two never collide and flip None ↔ assigned.
+    #[test]
+    fn build_headless_service_declares_the_none_sentinel() {
+        let hs =
+            build_headless_service("sql-hs", "hanzo", BTreeMap::new(), vec![], BTreeMap::new());
+        assert_eq!(
+            hs.spec.as_ref().and_then(|s| s.cluster_ip.as_deref()),
+            Some("None"),
+            "a headless Service's identity IS clusterIP:None — it must be sent"
+        );
     }
 
     // The regression guard: a probe with NO usable handler (port 0, no

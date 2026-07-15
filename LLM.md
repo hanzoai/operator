@@ -368,3 +368,418 @@ Test count: 145 → 147 lib tests (+2 service: `should_colocate` gate +
 `colocation_affinity` soft/self/hostname shape; 0 regressions). My files
 compile + fmt-clean; the 2 pre-existing clippy doc-indent warnings in
 `datastore.rs` are untouched (out of scope).
+
+## v0.6.22 — Tenant onboarding controller (per-tenant one-click deploy)
+
+The sole go-live blocker for Hanzo PaaS: cloud's deploy path
+(`clients/platform/k8s.go` `waitForTenantRBAC`) BLOCKS on a
+SelfSubjectAccessReview poll until the operator has onboarded a
+freshly-created `tenant-<org>` namespace. `src/controllers/tenant.rs`
+(reconciled from branches `batcha/tenant-rolebinding` + `feat/tenant-pull-secret`)
+watches namespaces filtered to `hanzo.ai/managed-by=platform` and, for each,
+SSA-applies the two objects cloud waits on:
+
+1. a **namespaced** `RoleBinding` `cloud-api-platform` → ClusterRole
+   `hanzo-cloud-platform-tenant`, subject `hanzo/cloud-api` ServiceAccount —
+   NEVER a ClusterRoleBinding (that would be a cross-tenant deploy hole); the
+   grant is confined to the one tenant namespace and independently revocable.
+2. a `ghcr-pull` `kubernetes.io/dockerconfigjson` image-pull `Secret`, projected
+   from the KMS-synced source `hanzo/ghcr-secret`, so tenant pods can pull the
+   PRIVATE per-tenant build image `ghcr.io/hanzoai/tenant-<org>/*`. cloud-api
+   holds NO `secrets` grant — the operator is the designated K8s-secret handler.
+
+Both children carry the `hanzo.ai/managed-by=platform` label and a Namespace
+owner reference so they GC with the tenant. The Secret path is fail-OPEN (a
+missing/empty source is logged, the RoleBinding still lands so deploy AUTHZ is
+never blocked) and hijack-guarded (`managed-by=hanzo-operator-tenant-rbac` —
+never overwrites a Secret it does not own). `Config::from_env()` white-labels
+every name (SA, ClusterRole, source/target Secret) for the lux/zoo/osage
+universes. Gate: `TENANT_CONTROLLER` (default on).
+
+Contract completeness lives in `hanzoai/universe`
+(`infra/k8s/operator/deployment.yaml` + `rbac/cloud-platform-rbac.yaml`, both
+already declared): the `hanzo-cloud-platform-tenant` ClusterRole (services.hanzo.ai
++ resourcequotas/limitranges + datastores/docdbs/manageddatabases + secrets +
+pvc + kmssecrets), and the operator's own ClusterRole grants (`namespaces`
+get/list/watch, `rolebindings` CRUD, `clusterroles` `bind` scoped via
+`resourceNames: [hanzo-cloud-platform-tenant]`).
+
+Test count: 168 → 179 lib tests (+11 tenant: namespaced/confined binding,
+roleRef+subject, platform-label+owner-ref, org resolution, white-label env,
+dockerconfigjson shape, hijack-manager isolation, source-bytes precedence;
+0 regressions). fmt-clean; no new clippy warnings (my file is clean; the 4
+pre-existing warnings in datastore.rs/manifests.rs are out of scope).
+
+## v0.7.0 — the three verbs: INSTALL, OPERATE, UPGRADE (deploy discipline in-operator)
+
+The operator now INSTALLS, OPERATES, and UPGRADES the platform — no human
+hand-patches a CR, hand-watches a rollout, or hand-writes an auto-rollback loop.
+The deploy discipline is encoded as a reconcile state machine.
+
+### UPGRADE — managed-upgrade FSM (the core)
+
+When a `Service` opts into `spec.upgradePolicy` (AND the operator's cluster gate
+`UPGRADE_FSM_ENABLED` is on), a change to `spec.image` rolls through a pure state
+machine instead of a blind apply. Files:
+- `src/controllers/upgrade.rs` — the pure decision core `plan(Observed, Cfg) ->
+  Plan` (the brain, unit-tested with values, no cluster) + the pre-flight
+  resource builders/converge/observe (the thin imperative shell).
+- `src/core/health.rs` — pure health predicates (`rollout_complete` — LIFTED here
+  from `apps.rs` so both call sites share ONE definition; `deployment_healthy`,
+  `pod_boot_outcome`, `pod_crashlooping`).
+- `src/controllers/service.rs` — `drive_upgrade_fsm` gathers live observations,
+  runs `plan`, and threads the decision into the Deployment image + status.
+
+**States** (`status.upgrade.phase`; absent ⇒ Stable): `Preflighting` → `Rolling`
+→ (Stable | `RollingBack` → `Failed`).
+
+**The gates, in order:**
+1. **Pre-flight** the candidate BEFORE flipping. For a stateful Service, boot it
+   against a CSI-`VolumeSnapshot` CLONE of the live data PVC (mounted at the
+   persistence `dataDir`), with the app's REAL master key (`envFrom`) + a
+   boot-only env overlay (`spec.upgradePolicy.bootEnv`, e.g. `CLOUD_ENV=smoke`),
+   `restartPolicy: Never`, no Service. This is the operator-side analog of
+   cloud's CI migration-smoke (`internal/migratetest` + release.yml two-boot),
+   but STRONGER — it tests the candidate over the ACTUAL current schema, not a
+   pinned baseline. A candidate that cannot boot over real data (an
+   index-before-ADD-COLUMN migration crash) FAILS the pre-flight and production
+   is NEVER flipped. Stateless Services pre-flight a boot-only pod (no clone).
+2. **Health-gate** the rollout: flip the Deployment image, watch readiness within
+   `rolloutDeadlineSeconds` (default 300).
+3. **Auto-rollback**: if the candidate crash-loops (fast path via
+   `pod_crashlooping`) or misses readiness by the deadline, revert the Deployment
+   to `status.lastGoodImage` and record the failure.
+
+**THE INVARIANT** (`never_leaves_prod_on_an_unproven_or_failed_candidate`):
+`effective_image == lastGood` in every state where the candidate is unproven or
+failed; it is the candidate ONLY in Rolling (after the pre-flight passed);
+`lastGood` advances to the candidate ONLY on proven success. A failed target
+lands in terminal `Failed`, keyed to the image — the operator holds prod on
+`lastGood` and NEVER re-flips it; only a NEW `spec.image` reopens the FSM (a
+supersede).
+
+**Resumable + split-brain-safe**: every input is read from `status.upgrade` +
+the live cluster, so `plan` re-derives the same action after an operator restart
+(the pre-flight pod is named deterministically by target hash). The Service
+controller runs only after the lease is held (`main.rs` blocks on `leader_flag`),
+so single-writer election is the fail-closed split-brain guard — a non-leader
+never reconciles.
+
+**Gate (fail-safe drop-in)**: OFF by default. Cluster kill-switch
+`UPGRADE_FSM_ENABLED=true` AND per-CR `spec.upgradePolicy.enabled=true` are BOTH
+required; otherwise the operator applies `spec.image` directly (historical
+behavior, zero change). First deploy of this binary is inert.
+
+**New CRD fields** (additive, backward-compatible): `spec.upgradePolicy`
+{`enabled`, `preflight`, `rolloutDeadlineSeconds`, `preflightDeadlineSeconds`,
+`bootEnv[]`, `snapshotClass`}; `status.lastGoodImage`, `status.upgrade`,
+`status.upgradeHistory[]`. Regenerate the `k8s/crds/all-*.yaml` bundles after any
+change (`generate-crd-yaml --api-group <g>`).
+
+### OPERATE
+
+The existing `Service` reconcile (Deployment/Service/Ingress/HPA/PDB/NP/KMSSecret)
+is unchanged; the FSM composes with it by overriding only the Deployment image
+(`reconcile_service_inner(..., effective_image)`).
+
+### INSTALL — `operator install` / `operator up` (the bootstrap seam)
+
+`src/install.rs` + `main.rs` subcommands (`hanzod install` execs into
+`operator install`):
+- `operator install [--image X] [--upgrade-fsm] [--crds-only]` — SSA-apply the
+  derived CRDs (from the `CustomResource` derives via `crd_bundle`, the ONE home
+  now shared with `generate-crd-yaml`) + the operator's own namespace /
+  ServiceAccount / ClusterRole / ClusterRoleBinding / Deployment. Idempotent.
+- `operator up [--image X] [--manifests DIR] [--upgrade-fsm]` — install, then
+  apply the platform's own App CRs from `DIR` (kind-agnostic dynamic apply via
+  discovery) so the running operator brings the stack up. `k3s`-bootstrap when no
+  cluster is a documented phased seam.
+
+The rendered operator ClusterRole includes the NEW pre-flight grants: core
+`pods` + `persistentvolumeclaims` (create/delete for the clone), and
+`snapshot.storage.k8s.io/volumesnapshots` (the CSI clone source). **The live
+operator ClusterRole in `hanzoai/universe` MUST be extended with these three
+before enabling the FSM in-cluster** (deploy-gate).
+
+### Shadow-proven vs live cutover
+
+SHADOW/UNIT-PROVEN (no live prod touched): the pure FSM across the full lifecycle
+(happy upgrade; migration-crash pre-flight never reaches prod; crashloop →
+auto-rollback → prod stays on lastGood; resume-after-restart), the pre-flight
+builders (clone-not-live-PVC, `restartPolicy: Never`, boot-env), health
+predicates, install manifests, and the CRD schema carrying the new fields.
+LIVE-CUTOVER-GATED (needs a real CSI driver with a VolumeSnapshotClass + the
+universe RBAC delta): the end-to-end CSI snapshot→clone→boot round-trip. The
+legacy Go operator stays in production; hanzod is SHADOW.
+
+Test count: 179 → 240 lib tests (+15 core::health, +37 controllers::upgrade incl.
+the full-lifecycle sequence tests + the invariant sweep + builder shapes, +6
+install; -4 apps rollout tests moved to core::health; 0 regressions). My files
+are fmt-clean + clippy-clean; the pre-existing datastore/manifests/ingress/tenant
+fmt+clippy drift on origin/main is untouched.
+
+## v0.7.2 — native git → CR reconcile (folds the gitops-reconcile CronJob INTO the operator)
+
+The git→cluster apply step is now a NATIVE loop inside the operator, so the
+operator does the whole chain — **git → CR → workload** — in one process. It
+replaces the external `gitops-reconcile` CronJob
+(`hanzoai/universe/infra/k8s/gitops-reconcile`): a 5-min `alpine/k8s`
+`kubectl apply` stopgap that could not reconcile its own spec and carried a
+hand-maintained 24-item allow-list in its env.
+
+New component: `src/controllers/gitops.rs` (one cohesive file) + a small
+`apply::apply_dynamic_as(field_manager)` helper, wired into `main.rs`'s
+`tokio::join!` alongside every other controller (so it runs only on the elected
+leader) and gated OFF by default.
+
+- **Source** — `infra/k8s/operator/crs/*.yaml` on `hanzoai/universe` main, read
+  over the GitHub REST API with `reqwest` (the operator image ships no `git`):
+  Contents API lists the dir, git-blobs API fetches content. The token is the
+  same KMS-synced secret the CronJob used (`gitops-repo-creds`, mounted at
+  `/creds/token`; `GITOPS_TOKEN_FILE`), re-read each sweep so rotation needs no
+  restart. It rides an `Authorization` header — never a URL — and is wrapped in a
+  redacting `Token` newtype, so it can never land in a log line. Blobs are
+  content-addressed by SHA and cached, so a tight poll only refetches files that
+  actually changed (rate-limit-safe). `GITOPS_GITHUB_API` lets a
+  GitHub-compatible host (git.hanzo.ai) serve the same code later.
+- **Apply** — server-side apply (force-conflicts) under the distinct field
+  manager `hanzo-operator-gitops`, so a git-driven apply is attributable and
+  never fights a per-Kind reconcile. **Kind-agnostic:** each file's own
+  `apiVersion`/`kind` is applied, and the correct plural (e.g.
+  `hanzo.ai/v1 Ingress` → `ingresses`, not a naive `ingresss`) is resolved via
+  `kube::discovery::pinned_kind` — the same mechanism `kubectl` uses — cached per
+  Kind. Handles today's `Service`/`SQL`/`LLM`/`KV`/`DNS`/`Ingress` +
+  `secrets.lux.network KMSSecret` + core `PersistentVolumeClaim`, and the
+  forthcoming `App` (App-collapse) with ZERO code change.
+- **NEVER prune** — a CR removed from git is left alone, identical to
+  `reconcile.sh`. This is a property of the type, not a runtime check: the pure
+  `Plan` can only describe applies (no delete variant exists anywhere in the
+  module), so a removed file produces no plan entry at all. Locked by the
+  `plan_never_prunes_a_removed_file` test.
+- **Drift report** — every sweep GETs each object before applying and logs a
+  per-object `CREATE` / `UPDATE (reverted drift)` / in-sync line plus a summary.
+
+### Cadence — real-time, not 5-min cron
+
+A tight resync loop (default 45s, `GITOPS_RESYNC_SECS`, floored at 10s) is the
+baseline. `POST /reconcile` on the operator's existing health server triggers an
+INSTANT sweep — a git.hanzo.ai/GitHub push webhook can drive it — via a shared
+`tokio::sync::Notify`; each loop iteration wakes on whichever fires first (poll
+tick or webhook), so the poll is the guaranteed fallback and the webhook is the
+real-time path.
+
+### Scope — ownership, not a hand-maintained allow-list
+
+The DEFAULT scope is ownership-by-namespace: every platform CR in the operator's
+namespace (`hanzo`, `GITOPS_NAMESPACE`). All 78 crs/ CRs declare
+`namespace: hanzo`, so the namespace predicate cleanly IS the platform boundary
+(a CR in any other namespace, or cluster-scoped, is out of scope). The safety
+config `GITOPS_APPLY_SCOPE` (comma/space-separated CR names) optionally NARROWS
+to a vetted subset for a cautious first rollout — clear it (widen to the whole
+namespace) once trusted. This replaces the CronJob's `RECONCILE_ALLOWLIST`; the
+model is now ownership, the list is just an optional throttle.
+
+### Fail-safe
+
+Opt-in `GITOPS_RECONCILE_ENABLED=true` (default off — first deploy of this binary
+is inert; mirrors `KMS_ZAP_CONTROLLER`/`APPS_CONTROLLER`). Additive: it runs
+ALONGSIDE the CR→workload controllers and never blocks them. Every fallible op
+inside a sweep returns `Result` and is logged; the loop never `?`-propagates out
+of its body, never `unwrap`s, never panics — a clone/list/YAML/token failure is
+logged and retried next tick.
+
+### Enabling it (operator Deployment env in `hanzoai/universe`)
+
+```
+GITOPS_RECONCILE_ENABLED=true        # master enable (default off)
+# defaults are correct for prod; override only to change source/scope:
+# GITOPS_REPO=hanzoai/universe  GITOPS_BRANCH=main
+# GITOPS_CRS_PATH=infra/k8s/operator/crs  GITOPS_NAMESPACE=hanzo
+# GITOPS_TOKEN_FILE=/creds/token  GITOPS_RESYNC_SECS=45
+# GITOPS_APPLY_SCOPE="functions admin-guard ..."  # optional vetted subset first, then clear
+```
+Mount the existing `gitops-repo-creds` secret at `/creds` (the KMS sync already
+provisions it). **RBAC:** the operator's ClusterRole must grant `create`/`update`/
+`patch` (NO `delete`) on the CR groups it now writes — `hanzo.ai/*`,
+`secrets.lux.network/kmssecrets`, and core `persistentvolumeclaims` — i.e. the
+verbs the `gitops-reconcile` ServiceAccount held
+(`infra/k8s/operator/gitops-reconcile/rbac.yaml`). Fold those rules into the
+operator ClusterRole before enabling.
+
+### Cutover — DELETE the CronJob after 0.6.24 deploys (gated; NOT done here)
+
+Once `ghcr.io/hanzoai/operator:0.6.24` is live with
+`GITOPS_RECONCILE_ENABLED=true` and a sweep has logged "reconcile sweep
+complete", the external loop is redundant. Delete it (a `hanzoai/universe`
+manifest change + a prod action):
+
+```
+# in hanzoai/universe: remove infra/k8s/operator/gitops-reconcile from the
+# kustomization, then reap the objects it created:
+kubectl -n hanzo delete configmap gitops-reconcile gitops-reconcile-script
+kubectl -n hanzo delete role,rolebinding gitops-reconcile-canary
+kubectl delete clusterrole,clusterrolebinding gitops-reconcile
+kubectl -n hanzo delete serviceaccount gitops-reconcile
+# KEEP gitops-repo-creds + gitops-repo-creds-kms-sync — the operator mounts the
+# same token (one credential, one KMS sync).
+```
+
+Version note: this loop was cut from the v0.6.24 base and rebased forward onto
+v0.7.1 (v0.7.0's upgrade FSM + the App Kind), shipping as **v0.7.2**. It
+re-applies cleanly — `gitops.rs` is a new file, `apply::apply_dynamic_as` is a
+pure addition, and the `main.rs` wiring (the `HealthState` / `POST /reconcile`
+webhook + the `run_gitops_controller` join arm) composes with v0.7.0's
+`install`/`up` subcommands and the App controller without touching either.
+**INERT by default**: with `GITOPS_RECONCILE_ENABLED` unset the loop never starts,
+so the first 0.7.2 deploy is a no-op for the git path — the external
+`gitops-reconcile` CronJob stays the git→etcd path until the flag is flipped
+post-App-cutover.
+
+Test count: 253 → 268 lib tests (+15 gitops: file selection, kind-agnostic GVK
+parse, scope predicate incl. namespace boundary + vetted subset, never-prune
+invariant, drift skips, base64 blob decode, resync floor, token redaction; the
+App Kind's 13 tests and every prior suite intact; 0 regressions). `cargo build
+--release` + `cargo test --lib` green (268 passed / 0 failed); `gitops.rs` +
+`main.rs` fmt-clean + clippy-clean. Clippy repo-wide is blocked by the global
+`~/.cargo/config.toml` `rustc-wrapper=zccache` (feeds rustc as an input filename
+to clippy-driver); neutralizing the wrapper (`RUSTC_WRAPPER=""`) for one run
+confirms my files are warning-free. The pre-existing datastore/manifests
+fmt+clippy drift on origin/main is untouched.
+
+## Pre-flight hardening — labels, egress additivity, orphan GC (pre-enable blockers)
+
+Red re-review of the pre-flight surfaced blockers that only matter once
+`UPGRADE_FSM_ENABLED` is flipped ON (the shadow/off binary was already safe).
+All fixed; the gate stays OFF until the deploy-gates below are met on a live
+cluster.
+
+**Pre-flight labels are a MINIMAL functional set — never a shared selector key**
+(HIGH-1 + HIGH-2). A ClusterIP Service selects pods by EXACTLY
+`{app.kubernetes.io/name, app.kubernetes.io/instance}`; a pre-flight pod that
+carried those would be added by the EndpointSlice controller as a LIVE endpoint
+of the production Service (kube-proxy load-balances real user traffic onto the
+unproven candidate — stale clone reads, silently-discarded writes), and an
+app-labelled egress-allow NetworkPolicy would re-select it (egress is additive).
+The FIRST fix stripped `name`/`instance`. But the SHARED descriptive keys
+(`component`/`part-of`/`version`) are the SAME re-open vector via a
+descriptive-label selector — a headless discovery/metrics Service with
+`selector:{app.kubernetes.io/part-of: hanzo}` (→ EndpointSlice adds the candidate
+as a live endpoint, HIGH-1) or a baseline egress-allow NetworkPolicy
+`podSelector:{app.kubernetes.io/part-of: hanzo}` ("all hanzo pods may reach the
+DB" → egress union re-grants the candidate real DB egress, HIGH-2). Those keys
+serve ZERO function on a throwaway pre-flight resource (netpol/sweep/GC key ONLY
+on `preflight-of`/`preflight-target`), so they are pure selector surface and are
+dropped — MINIMIZE AT THE SOURCE, don't widen the enable checklist.
+
+Fix (double belt, matching the name/instance pattern): (1) `build_preflight_inputs`
+seeds the pre-flight `labels` from the new `manifests::managed_by_labels()` (JUST
+`app.kubernetes.io/managed-by` — attribution, non-selecting) rather than
+`descriptive_labels`; (2) `upgrade::pf_labels` ALSO strips `name`/`instance`
+**and** `component`/`part-of`/`version` unconditionally, so the invariant holds
+for ANY base. The dedicated set is EXACTLY three keys:
+`{hanzo.ai/preflight-of, hanzo.ai/preflight-target, app.kubernetes.io/managed-by}`.
+`descriptive_labels = managed_by_labels() ∪ {component,part-of,version}` and
+`standard_labels = selector_labels ∪ descriptive_labels` (DRY — one home for the
+`managed-by → hanzo-operator` mapping). Test:
+`preflight_labels_exclude_the_service_selector_keys` — all four resource kinds
+(pod/netpol/clone-PVC/snapshot) drop name/instance AND component/part-of/version,
+carry EXACTLY the three functional keys (`labels.len() == 3`), and the production
+Service selector is not a subset of the pre-flight labels (synthetic-endpoint
+check). The adversarial base is `standard_labels` (carries all five stripped
+keys) so the strip is genuinely exercised, not vacuous.
+
+**Egress additivity is stated honestly, and the empty-selector residual is a
+deploy-gate** (HIGH-2). NetworkPolicy egress is a UNION across every policy that
+selects a pod; an empty egress rule set grants NO egress but cannot OVERRIDE an
+`allow` in another policy. With the pre-flight pod carrying dedicated labels, an
+app-labelled egress-allow can no longer re-select it — but a namespace-wide
+`podSelector: {}` egress-allow (e.g. an allow-DNS-to-all baseline) still does,
+and labels cannot escape that. So `build_preflight_netpol` now documents the
+additivity PRECONDITION instead of asserting a guarantee, and the test is named
+`…denies_all_egress…` no longer implies an unconditional guarantee (the
+comment/precondition is explicit). DEPLOY-GATE (pre-enable, per target
+namespace): **no `podSelector: {}` egress-allow policy selects the pre-flight
+pod.** A DEDICATED strict-default-deny namespace for the pre-flight was assessed
+and rejected as infeasible in the operator model: the VolumeSnapshot, its source
+PVC, and the clone-from-snapshot PVC are all namespace-local and the candidate
+pod must mount the clone in that namespace — CSI has no clean cross-namespace
+snapshot/restore — so the pre-flight MUST run in the app's namespace. The
+namespace-egress-allow check is therefore the enable-gate.
+
+**Orphan GC — startup + periodic** (MED-1). `converge_preflight` sweeps a
+Service's own pre-flight each reconcile, but a disable-sweep that silently failed
+(`delete_stale_preflight` swallows errors, then `upgrade_inactive` clears
+`status.upgrade` so no later reconcile retries), or an operator crash
+mid-pre-flight before status was written, leaks a clone PVC + VolumeSnapshot
+(FULL copies of live tenant data) + the real-credential candidate pod with no
+retry. `controllers::service::run_preflight_gc` (wired into `main.rs`, leader-
+gated, INDEPENDENT of `UPGRADE_FSM_ENABLED` so a gate-OFF-after-leak still
+reclaims) lists every `hanzo.ai/preflight-of` resource cluster-wide
+(`upgrade::list_preflight`) and reclaims each whose owning Service has no
+matching in-flight pre-flight. The orphan decision is PURE + tested
+(`liveness_from_status` → `is_preflight_orphan`): a Service is "in-flight" iff
+`status.upgrade.phase == Preflighting` with a matching target hash; anything else
+(done/failed/Rolling/gone) ⇒ orphan; a Service whose status can't be read ⇒
+`Unknown` ⇒ never reclaimed (fail-closed). A `PREFLIGHT_GC_GRACE_SECS` (default
+300) window skips freshly-created resources so the periodic sweep never races a
+reconcile mid-create. Env: `PREFLIGHT_GC_INTERVAL_SECS` (default 600, floor 30),
+`PREFLIGHT_GC_GRACE_SECS` (default 300). No new RBAC (list/delete on
+pods/pvc/networkpolicies/volumesnapshots already granted).
+
+**Pre-flight pod does not automount the SA token** (LOW-1):
+`automountServiceAccountToken: false` on the pre-flight PodSpec — a boot-to-ready
+check needs no k8s API access, and an unmounted token is unusable if egress ever
+leaks. Fail-closed (an app that needs the token to boot fails the pre-flight).
+
+**Status writeback carries a resourceVersion precondition** (LOW-2): the Service
+status patch pins the observed `resourceVersion`, so a stale ex-leader writing in
+the ~10s lease-overlap window 409s instead of clobbering the live leader
+(availability-only; the invariant was already safe).
+
+### Enable checklist (pre-flight over live data — all gates, in order)
+1. `UPGRADE_FSM_ENABLED=true` on the operator Deployment AND per-CR
+   `spec.upgradePolicy.enabled=true`.
+2. Universe operator ClusterRole extended with the pre-flight grants (pods +
+   persistentvolumeclaims create/delete, `snapshot.storage.k8s.io` volumesnapshots).
+3. A real CSI driver + `VolumeSnapshotClass` in each target namespace.
+4. **No Service selector AND no egress-allow NetworkPolicy selects the pre-flight
+   pod** in each target namespace — by `podSelector: {}` (namespace-wide) OR by
+   ANY label the pre-flight pod carries. Label minimization drops name/instance +
+   component/part-of/version, so the only labels left to select on are
+   `managed-by` + the two `preflight-*` keys (which no production Service/policy
+   selects); the residual is the namespace-wide `podSelector: {}` egress-allow,
+   which labels cannot escape (the egress-additivity gate).
+5. Live real-namespace egress smoke: confirm the candidate pod boots to ready
+   with NO live side effect (no external-DB migration, S3 push, KMS write, IAM
+   register) — the one thing unit tests cannot prove.
+
+RED RE-REVIEWS the pre-flight labels + orphan GC before enable.
+
+Test count: 286 → 293 lib tests (+2 controllers::upgrade
+[`preflight_labels_exclude_the_service_selector_keys`,
+`preflight_pod_does_not_automount_the_sa_token`] + 5 controllers::service
+[orphan-GC decision: reclaim-no-inflight, keep-current/reclaim-superseded,
+rolling-is-orphan, fail-closed-unknown, grace-window]; extended
+`preflight_resources_carry_the_owner_and_label` to assert selector-key ABSENCE;
+0 regressions). fmt-clean + clippy-clean (the 4 pre-existing
+datastore.rs/manifests.rs warnings on origin/main are untouched). CRD schema
+unchanged (no bundle regen).
+
+**Descriptive-label minimization (MEDIUM-1, pre-enable)**. The name/instance
+strip closed one selector; the SHARED `component`/`part-of`/`version` keys were
+still on the pre-flight pod and re-open the SAME HIGH-1/HIGH-2 via a
+descriptive-label selector (a `part-of`-keyed discovery Service or egress-allow —
+enable-gate #4's old `podSelector: {}`-only wording did NOT catch these). Fixed
+by minimizing at the source (`build_preflight_inputs` → `managed_by_labels()`)
+plus a structural strip in `pf_labels` (drops component/part-of/version alongside
+name/instance) — the same double belt red credited for name/instance. The
+pre-flight set is now EXACTLY `{managed-by, preflight-of, preflight-target}`
+(asserted by `labels.len() == 3` per resource). The netpol test was renamed
+`preflight_netpol_denies_egress_absent_an_additive_allow_and_selects_only_the_preflight_pod`
+(the empty egress rule set denies egress only ABSENT an additive allow — a policy
+SHAPE assertion, not the emergent zero-egress guarantee). No new test functions
+(existing test strengthened + one renamed) → count stays 293; fmt-clean +
+clippy-clean (my files add zero warnings; the 4 pre-existing
+datastore.rs/manifests.rs warnings are untouched). CRD schema unchanged. Gate
+stays OFF; the remaining enable-gates are pure live-cluster smokes (CSI
+round-trip, real-namespace egress, universe RBAC).

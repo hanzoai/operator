@@ -22,6 +22,26 @@ const LEASE_DURATION_SECONDS: i32 = 30;
 const RENEW_INTERVAL_SECS: u64 = 10;
 const RETRY_INTERVAL_SECS: u64 = 15;
 
+/// Format a microsecond-rounded timestamp as a k8s `MicroTime` string: RFC3339
+/// with EXACTLY 6 fractional digits.
+///
+/// jiff's `Timestamp` Display trims trailing zeros (`.457070` -> `.45707`, and
+/// a whole-second instant drops the fraction entirely), but the apiserver
+/// validates a Lease's `renewTime`/`acquireTime` against the fixed Go layout
+/// `2006-01-02T15:04:05.000000Z07:00` and 422-rejects anything without exactly
+/// six fractional digits. That rejection failed every lease renew, thrashing
+/// leader election (`leaseTransitions` climbing, reconciliation starved). We
+/// take the micro-rounded Display and right-pad (or truncate) the fraction to
+/// six, so the value is always accepted. Display never trims *leading* zeros,
+/// so re-padding on the right faithfully reconstructs the microsecond value.
+fn micro_time_string(ts: jiff::Timestamp) -> String {
+    let s = ts.to_string();
+    let body = s.strip_suffix('Z').unwrap_or(&s);
+    let (secs, frac) = body.split_once('.').unwrap_or((body, ""));
+    let frac6: String = frac.chars().chain(std::iter::repeat('0')).take(6).collect();
+    format!("{secs}.{frac6}Z")
+}
+
 /// Per-operator configuration for leader election. Each operator picks a
 /// unique `lease_name` (e.g. `lux-operator-leader`, `hanzo-operator-leader`)
 /// so multiple operators can coexist in the same cluster without contending
@@ -150,7 +170,7 @@ impl LeaderElection {
                 if holder == Some(self.identity.as_str()) {
                     let patch = serde_json::json!({
                         "spec": {
-                            "renewTime": now.to_string(),
+                            "renewTime": micro_time_string(now),
                         }
                     });
                     leases
@@ -162,8 +182,8 @@ impl LeaderElection {
                         "spec": {
                             "holderIdentity": self.identity,
                             "leaseDurationSeconds": LEASE_DURATION_SECONDS,
-                            "acquireTime": now.to_string(),
-                            "renewTime": now.to_string(),
+                            "acquireTime": micro_time_string(now),
+                            "renewTime": micro_time_string(now),
                             "leaseTransitions": transitions + 1,
                         }
                     });
@@ -252,5 +272,35 @@ mod tests {
             identity_prefix: "operator-".into(),
         };
         assert_eq!(cfg.identity_prefix, "operator-");
+    }
+
+    #[test]
+    fn micro_time_string_is_always_six_fractional_digits() {
+        // (nanoseconds within the second, expected fractional part). All inputs
+        // are microsecond-multiples (production rounds to micros before calling).
+        let cases = [
+            (457_070_000, "457070"), // jiff Display trims to ".45707" — the exact 422 bug
+            (500_000_000, "500000"), // Display trims to ".5"
+            (0, "000000"),           // whole second — Display drops the fraction entirely
+            (45_707_000, "045707"),  // leading zero kept, no trailing zero
+            (1_000, "000001"),       // one microsecond
+            (999_999_000, "999999"), // max microseconds
+        ];
+        for (nanos, want_frac) in cases {
+            let ts = jiff::Timestamp::new(0, nanos).unwrap();
+            let s = micro_time_string(ts);
+            let frac = s.strip_suffix('Z').unwrap().split_once('.').unwrap().1;
+            assert_eq!(
+                frac.len(),
+                6,
+                "{s}: k8s MicroTime needs exactly 6 fractional digits"
+            );
+            assert!(
+                frac.chars().all(|c| c.is_ascii_digit()),
+                "{s}: fraction all digits"
+            );
+            assert_eq!(frac, want_frac, "input nanos={nanos}");
+            assert!(s.ends_with(&format!(".{want_frac}Z")));
+        }
     }
 }

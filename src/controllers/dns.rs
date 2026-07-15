@@ -133,7 +133,7 @@ async fn reconcile_inner(
     let mut svc = manifests::build_service(name, namespace, labels, svc_ports, sel);
     svc.metadata.owner_references = Some(vec![owner.clone()]);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &svc).await?;
+    apply::apply_service(&svcs, &svc).await?;
 
     debug!(name, namespace, zones = spec.zones.len(), "DNS reconciled");
     Ok(())

@@ -16,6 +16,7 @@ mod core;
 mod crd;
 mod crd_types;
 mod gitops;
+mod install;
 mod manifests;
 mod registry;
 mod zapclient;
@@ -23,10 +24,14 @@ mod zapclient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use clap::Parser;
 use kube::Client;
 use std::net::SocketAddr;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::api_group::ApiGroup;
@@ -46,7 +51,7 @@ struct Args {
 
     /// API group for CRDs. Overrides compile-time default `hanzo.ai`.
     /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`.
-    #[arg(long, env = "OPERATOR_API_GROUP")]
+    #[arg(long, env = "OPERATOR_API_GROUP", global = true)]
     api_group: Option<String>,
 
     /// Health-check listener address.
@@ -62,9 +67,64 @@ struct Args {
     #[arg(
         long,
         env = "OPERATOR_NAMESPACE",
-        default_value = "hanzo-operator-system"
+        default_value = "hanzo-operator-system",
+        global = true
     )]
     operator_namespace: String,
+
+    /// Optional subcommand. Absent ⇒ run the reconcile loop (the operator).
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// The install verb — bootstrap the operator into a cluster. Absent ⇒ the
+/// binary runs the reconcile loop.
+#[derive(clap::Subcommand, Debug, Clone)]
+enum Command {
+    /// Install the derived CRDs + the operator's own RBAC/Deployment into the
+    /// current-context cluster (`hanzod install` execs into this).
+    Install(InstallOpts),
+    /// Bootstrap: install the CRDs + operator, then apply the platform's own App
+    /// CRs so the running operator brings the whole stack up (`hanzo up`).
+    Up(UpOpts),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct InstallOpts {
+    /// Operator image for the rendered Deployment. Default: this binary's own
+    /// pinned version (`ghcr.io/hanzoai/operator:v<version>`).
+    #[arg(long, env = "OPERATOR_IMAGE")]
+    image: Option<String>,
+    /// Enable the managed-upgrade FSM on the installed operator
+    /// (`UPGRADE_FSM_ENABLED=true`). Default off — a safe drop-in.
+    #[arg(long)]
+    upgrade_fsm: bool,
+    /// Install ONLY the CRDs (skip the operator Deployment/RBAC).
+    #[arg(long)]
+    crds_only: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct UpOpts {
+    /// Operator image for the rendered Deployment. Default: this binary's own
+    /// pinned version.
+    #[arg(long, env = "OPERATOR_IMAGE")]
+    image: Option<String>,
+    /// Enable the managed-upgrade FSM on the installed operator. Default off.
+    #[arg(long)]
+    upgrade_fsm: bool,
+    /// Directory of platform App-CR YAML to apply (the stack the operator brings
+    /// up). Absent ⇒ install the operator only.
+    #[arg(long)]
+    manifests: Option<std::path::PathBuf>,
+}
+
+/// Shared state for the health/webhook server: leadership (for `/readyz`) and
+/// the gitops reconcile trigger (for `POST /reconcile`).
+#[derive(Clone)]
+struct HealthState {
+    leader: Arc<AtomicBool>,
+    reconcile_now: Arc<Notify>,
 }
 
 async fn healthz() -> &'static str {
@@ -72,13 +132,24 @@ async fn healthz() -> &'static str {
 }
 
 async fn readyz(
-    axum::extract::State(state): axum::extract::State<Arc<AtomicBool>>,
+    axum::extract::State(state): axum::extract::State<HealthState>,
 ) -> (axum::http::StatusCode, &'static str) {
-    if state.load(Ordering::Relaxed) {
+    if state.leader.load(Ordering::Relaxed) {
         (axum::http::StatusCode::OK, "ready")
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not leader")
     }
+}
+
+/// Webhook — trigger an IMMEDIATE gitops reconcile. A git push (git.hanzo.ai /
+/// GitHub) POSTs here for an instant sync; the tight poll loop is the guaranteed
+/// fallback. Best-effort: notifying when the gitops loop is disabled, or this
+/// replica is not the leader, is a harmless no-op.
+async fn reconcile_webhook(
+    axum::extract::State(state): axum::extract::State<HealthState>,
+) -> (axum::http::StatusCode, &'static str) {
+    state.reconcile_now.notify_one();
+    (axum::http::StatusCode::ACCEPTED, "reconcile queued")
 }
 
 #[tokio::main]
@@ -109,6 +180,12 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::try_default().await?;
     info!("Connected to Kubernetes cluster");
 
+    // Install verbs — bootstrap the operator into the cluster, then exit. Absent
+    // ⇒ fall through to the reconcile loop (the running operator).
+    if let Some(command) = args.command.clone() {
+        return run_command(command, &client, &api_group.group, &args.operator_namespace).await;
+    }
+
     // Shutdown channel.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -127,12 +204,24 @@ async fn main() -> anyhow::Result<()> {
         info!("Leader election disabled, running as leader");
     }
 
-    // Health server.
+    // Native gitops reconcile: opt-in feature flag + the shared webhook trigger
+    // (POST /reconcile → instant sweep). The handle is created regardless of the
+    // flag; notifying a disabled loop is a harmless no-op.
+    let gitops_enabled = std::env::var("GITOPS_RECONCILE_ENABLED")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let reconcile_now = Arc::new(Notify::new());
+
+    // Health + webhook server.
     let health_addr: SocketAddr = args.health_addr.parse()?;
     let health_app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .with_state(leader_flag.clone());
+        .route("/reconcile", post(reconcile_webhook))
+        .with_state(HealthState {
+            leader: leader_flag.clone(),
+            reconcile_now: reconcile_now.clone(),
+        });
 
     let group = api_group.group.clone();
     let namespace = args.namespace.clone();
@@ -151,7 +240,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Controllers — wait for leadership then run all of them.
-        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone()) => {
+        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone(), gitops_enabled) => {
             warn!("Controllers exited");
         }
 
@@ -165,8 +254,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Graceful shutdown on Ctrl-C.
-        _ = tokio::signal::ctrl_c() => {
+        // Graceful shutdown on SIGINT (Ctrl-C) or SIGTERM (what k8s sends on pod
+        // stop). Handling SIGTERM lets the leader release its lease promptly on a
+        // rolling operator restart instead of the successor waiting out the full
+        // lease timeout (MED-2).
+        _ = shutdown_signal() => {
             info!("Received shutdown signal");
         }
     }
@@ -177,12 +269,34 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolve when the process receives a termination signal: SIGINT (Ctrl-C) or
+/// SIGTERM (Kubernetes pod stop). Both drive the graceful shutdown that releases
+/// the leader lease.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
 /// Wait for leadership then run every controller in parallel.
 async fn run_all_controllers(
     client: Client,
     namespace: String,
     api_group: String,
     leader_flag: Arc<AtomicBool>,
+    reconcile_now: Arc<Notify>,
+    gitops_enabled: bool,
 ) {
     // Block until we become the leader.
     loop {
@@ -200,7 +314,17 @@ async fn run_all_controllers(
         controllers::service::run_service_controller(
             client.clone(),
             namespace.clone(),
-            api_group.clone()
+            api_group.clone(),
+            leader_flag.clone()
+        ),
+        // Pre-flight orphan GC (MED-1) — startup + periodic reclaimer of leaked
+        // managed-upgrade pre-flight resources (clone PVC / VolumeSnapshot are
+        // full copies of live tenant data). Leader-gated; a cheap no-op when the
+        // FSM never ran.
+        controllers::service::run_preflight_gc(
+            client.clone(),
+            namespace.clone(),
+            leader_flag.clone()
         ),
         controllers::datastore::run_datastore_controller(
             client.clone(),
@@ -302,6 +426,13 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
+        // App Kind — the role-dispatch super-facade. The App-collapse: the fleet's
+        // workload CRs are `kind: App`; this controller dispatches on `spec.role`
+        // to the existing per-profile reconciles (service/datastore/dns/ingress)
+        // threaded with the App's owner reference, so SSA-by-name adopts the
+        // existing Deployment/StatefulSet (Service→App) with no recreate. It is the
+        // sole hanzo.ai workload reconciler for the collapsed fleet.
+        controllers::app::run_app_controller(client.clone(), namespace.clone(), api_group.clone()),
         // AgentDeployment — autonomous-bot lifecycle. Watches the CRD; its
         // reconcile ACTIONS reach cloud /v1/agents + visor /v1/machines over
         // HTTP. Provisioning is opt-in + fail-safe: without AGENT_DEPLOY_CLOUD_URL
@@ -336,5 +467,80 @@ async fn run_all_controllers(
                 .map(|v| v == "true")
                 .unwrap_or(false),
         ),
+        // Tenant controller — projects the namespace-scoped
+        // `cloud-api-platform` RoleBinding + `ghcr-pull` image-pull Secret into
+        // every platform-managed tenant namespace so an onboarded org gets
+        // one-click `/v1/platform` deploy scoped to ITS OWN namespace (never a
+        // ClusterRoleBinding). Cloud's deploy path BLOCKS on it (waitForTenantRBAC).
+        // Enabled by default; set TENANT_CONTROLLER=false to disable.
+        controllers::tenant::run_tenant_controller(
+            client.clone(),
+            std::env::var("TENANT_CONTROLLER")
+                .map(|v| v != "false")
+                .unwrap_or(true),
+        ),
+        // Native git → CR reconcile — the whole chain (git → CR → workload) in
+        // one process. Opt-in (GITOPS_RECONCILE_ENABLED, default off) + fail-safe
+        // + NEVER prunes; replaces the external gitops-reconcile CronJob. Each
+        // iteration wakes on the poll tick OR the POST /reconcile webhook
+        // (whichever first) so a git push reconciles instantly, the poll is the
+        // guaranteed fallback. See controllers/gitops.rs for the scope model.
+        controllers::gitops::run_gitops_controller(client.clone(), reconcile_now, gitops_enabled),
     );
+}
+
+/// Execute an install verb, then exit. Every step is a server-side apply, so
+/// `install` / `up` are idempotent and safe to re-run.
+async fn run_command(
+    command: Command,
+    client: &Client,
+    group: &str,
+    operator_namespace: &str,
+) -> anyhow::Result<()> {
+    match command {
+        Command::Install(o) => {
+            let n = install::install_crds(client, group).await?;
+            info!(count = n, group, "installed CRDs");
+            if o.crds_only {
+                info!("--crds-only: skipped the operator Deployment/RBAC");
+            } else {
+                let image = o.image.unwrap_or_else(default_operator_image);
+                install::install_operator(client, operator_namespace, &image, group, o.upgrade_fsm)
+                    .await?;
+                info!(
+                    namespace = operator_namespace,
+                    image = %image,
+                    upgrade_fsm = o.upgrade_fsm,
+                    "installed operator (RBAC + Deployment)"
+                );
+            }
+        }
+        Command::Up(o) => {
+            let n = install::install_crds(client, group).await?;
+            info!(count = n, group, "installed CRDs");
+            let image = o.image.unwrap_or_else(default_operator_image);
+            install::install_operator(client, operator_namespace, &image, group, o.upgrade_fsm)
+                .await?;
+            info!(namespace = operator_namespace, image = %image, "installed operator");
+            match &o.manifests {
+                Some(dir) => {
+                    let applied = install::apply_manifest_dir(client, dir).await?;
+                    info!(count = applied, dir = %dir.display(), "applied platform App CRs; the operator will bring them up");
+                }
+                None => info!(
+                    "operator is up — apply the platform App CRs (--manifests <dir>) to bring the stack up"
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Default operator image: this binary's own pinned version (never `:latest`).
+fn default_operator_image() -> String {
+    format!(
+        "{}:v{}",
+        install::DEFAULT_OPERATOR_IMAGE,
+        env!("CARGO_PKG_VERSION")
+    )
 }

@@ -4,7 +4,7 @@
 //! reconcile is an SSA round — the operator owns its declared fields, and
 //! anything edited out-of-band reverts on next loop.
 
-use k8s_openapi::api::core::v1::ConfigMap;
+use k8s_openapi::api::core::v1::{ConfigMap, Service};
 use kube::api::{Api, DeleteParams, Patch, PatchParams};
 use kube::core::DynamicObject;
 use kube::Resource;
@@ -29,6 +29,50 @@ where
     let pp = PatchParams::apply(FIELD_MANAGER).force();
     let out = api.patch(&name, &pp, &Patch::Apply(obj)).await?;
     Ok(out)
+}
+
+/// Server-side apply a core v1 Service — the ONE way the operator writes a
+/// Service. A Service's clusterIP is its stable identity: the immutable,
+/// apiserver-assigned address every Endpoints/kube-proxy/DNS record resolves to.
+/// Adopting a Service across a controller handoff (legacy `Service` CR → `App`)
+/// must PRESERVE that value — same name ⇒ SSA merges the new ownerRef/labels
+/// while the apiserver keeps the live clusterIP. A Service is therefore ADOPTED
+/// IN PLACE, never delete+recreated: a recreate mints a fresh clusterIP and
+/// strands every Endpoint/DNS record for ~50s while they re-propagate (the
+/// App-collapse cutover: `Service/chat` clusterIP 10.124.38.86 → 10.124.49.126).
+/// There is deliberately no `apply_or_recreate` counterpart for Services.
+///
+/// Fail-secure: an apiserver-assigned clusterIP present in the DESIRED object is
+/// scrubbed before the apply (see [`scrub_assigned_cluster_ip`]), so SSA never
+/// sends the immutable field even if a builder regresses and hard-codes one —
+/// the apiserver stays the sole owner of the live value. The headless `"None"`
+/// sentinel is a declared shape, not an assigned address, so it is preserved.
+pub async fn apply_service(api: &Api<Service>, svc: &Service) -> Result<Service> {
+    let mut desired = svc.clone();
+    scrub_assigned_cluster_ip(&mut desired);
+    apply(api, &desired).await
+}
+
+/// Drop an apiserver-ASSIGNED clusterIP (and the parallel `clusterIPs`) from a
+/// desired Service so a server-side apply never sets or changes the immutable
+/// field — the apiserver keeps the live value and adoption preserves identity.
+/// The headless sentinel `spec.clusterIP: "None"` is a declared shape rather than
+/// an assigned address, so it is KEPT (it must be sent for the Service to stay
+/// headless). Pure over the object, so "adopt preserves clusterIP" is unit-
+/// testable without a cluster.
+pub(crate) fn scrub_assigned_cluster_ip(svc: &mut Service) {
+    let Some(spec) = svc.spec.as_mut() else {
+        return;
+    };
+    // A headless Service's identity IS clusterIP:None — a declared shape the
+    // apply must carry, never an assigned address to preserve.
+    if spec.cluster_ip.as_deref() == Some("None") {
+        return;
+    }
+    // Any concrete address is apiserver-owned: leave it out of the desired state
+    // so SSA cannot touch the immutable field.
+    spec.cluster_ip = None;
+    spec.cluster_ips = None;
 }
 
 /// Server-side apply a ConfigMap, refusing to clobber a populated ConfigMap
@@ -154,17 +198,18 @@ where
 }
 
 /// Apply a DynamicObject (used for CRDs whose types are not statically known,
-/// like KMSSecret). `api` carries the ApiResource on its DynamicType.
+/// like KMSSecret). `api` carries the ApiResource on its DynamicType. Uses the
+/// canonical `hanzo-operator` field manager.
 pub async fn apply_dynamic(api: &Api<DynamicObject>, obj: &DynamicObject) -> Result<DynamicObject> {
     apply_dynamic_as(api, obj, FIELD_MANAGER).await
 }
 
-/// Apply a DynamicObject under an explicit SSA field manager. The GitSource
-/// controller applies git-sourced manifests under the `gitops` manager (not
-/// `hanzo-operator`) so field ownership of a CR's spec is attributable to the
-/// pull-sync — distinct from the operator's own child-object management, and
-/// matching the field manager the retired reconcile cron used. The SSA
-/// mechanics live here in ONE place, parameterized by manager.
+/// Apply a DynamicObject under an explicit SSA field manager. A reconcile source
+/// distinct from the CR→child controllers (e.g. the native git→CR loop) applies
+/// under its OWN manager so its edits are attributable and never silently fight
+/// another manager's owned fields. Same force-conflicts semantics as
+/// [`apply_dynamic`]. The GitSource controller uses the `gitops` manager here,
+/// matching the field manager the retired reconcile cron used.
 pub async fn apply_dynamic_as(
     api: &Api<DynamicObject>,
     obj: &DynamicObject,
@@ -230,5 +275,77 @@ mod tests {
             "Operation cannot be fulfilled: the object has been modified"
         )));
         assert!(!is_structural_conflict(&OperatorError::Config("x".into())));
+    }
+
+    // ---- Service adoption: clusterIP is a preserved value, never re-minted ----
+
+    use k8s_openapi::api::core::v1::ServiceSpec;
+
+    fn svc_with_cluster_ip(cluster_ip: Option<&str>, ips: Option<Vec<&str>>) -> Service {
+        Service {
+            spec: Some(ServiceSpec {
+                type_: Some("ClusterIP".into()),
+                cluster_ip: cluster_ip.map(str::to_string),
+                cluster_ips: ips.map(|v| v.into_iter().map(str::to_string).collect()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    // An apiserver-assigned clusterIP in the desired object is stripped, so the
+    // SSA patch never carries the immutable field — the apiserver keeps the live
+    // value and adoption is byte-stable (no fresh IP, no endpoint gap). This is
+    // the exact churn that broke the App-collapse cutover.
+    #[test]
+    fn scrub_strips_an_assigned_clusterip_for_in_place_adoption() {
+        let mut svc = svc_with_cluster_ip(Some("10.124.38.86"), Some(vec!["10.124.38.86"]));
+        scrub_assigned_cluster_ip(&mut svc);
+        let spec = svc.spec.as_ref().unwrap();
+        assert!(
+            spec.cluster_ip.is_none(),
+            "an assigned clusterIP must never reach the SSA patch"
+        );
+        assert!(
+            spec.cluster_ips.is_none(),
+            "clusterIPs is scrubbed in lockstep"
+        );
+        // The operative guarantee: the sent JSON has no clusterIP key at all.
+        let json = serde_json::to_string(&svc).unwrap();
+        assert!(
+            !json.contains("clusterIP"),
+            "scrubbed Service must not serialize clusterIP: {json}"
+        );
+    }
+
+    // A headless Service's identity IS clusterIP:None — a declared shape that must
+    // be sent, so the scrub leaves it untouched.
+    #[test]
+    fn scrub_preserves_the_headless_none_sentinel() {
+        let mut svc = svc_with_cluster_ip(Some("None"), None);
+        scrub_assigned_cluster_ip(&mut svc);
+        assert_eq!(
+            svc.spec.unwrap().cluster_ip.as_deref(),
+            Some("None"),
+            "headless identity is declared, not assigned — it must survive the scrub"
+        );
+    }
+
+    // The steady state: a desired Service that already omits clusterIP (what
+    // `manifests::build_service` emits) is unchanged — the scrub is a no-op, so
+    // routing every Service through `apply_service` never alters today's behavior.
+    #[test]
+    fn scrub_leaves_an_already_absent_clusterip_absent() {
+        let mut svc = svc_with_cluster_ip(None, None);
+        scrub_assigned_cluster_ip(&mut svc);
+        assert!(svc.spec.unwrap().cluster_ip.is_none());
+    }
+
+    // Fail-safe over a spec-less Service: no panic, nothing to scrub.
+    #[test]
+    fn scrub_on_a_specless_service_is_a_noop() {
+        let mut svc = Service::default();
+        scrub_assigned_cluster_ip(&mut svc);
+        assert!(svc.spec.is_none());
     }
 }

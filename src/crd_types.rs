@@ -9,9 +9,10 @@
 //! defaults. CRs in the cluster don't notice the swap.
 
 use k8s_openapi::api::core::v1::{
-    ConfigMapVolumeSource as K8sConfigMapVolumeSource, EmptyDirVolumeSource as K8sEmptyDirVolumeSource,
-    EnvFromSource as K8sEnvFromSource, EnvVar as K8sEnvVar, EnvVarSource as K8sEnvVarSource,
-    KeyToPath as K8sKeyToPath, LocalObjectReference as K8sLocalObjectReference,
+    ConfigMapVolumeSource as K8sConfigMapVolumeSource,
+    EmptyDirVolumeSource as K8sEmptyDirVolumeSource, EnvFromSource as K8sEnvFromSource,
+    EnvVar as K8sEnvVar, EnvVarSource as K8sEnvVarSource, KeyToPath as K8sKeyToPath,
+    LocalObjectReference as K8sLocalObjectReference,
     PersistentVolumeClaimVolumeSource as K8sPersistentVolumeClaimVolumeSource,
     SecretReference as K8sSecretReference, SecretVolumeSource as K8sSecretVolumeSource,
     Volume as K8sVolume, VolumeMount as K8sVolumeMount,
