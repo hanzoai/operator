@@ -172,12 +172,12 @@ async fn reconcile_inner(
     );
     hs.metadata.owner_references = Some(vec![owner.clone()]);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &hs).await?;
+    apply::apply_service(&svcs, &hs).await?;
 
     // ClusterIP Service for gateway round-robin reads.
     let mut clip = manifests::build_service(name, namespace, labels, svc_ports, sel);
     clip.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply(&svcs, &clip).await?;
+    apply::apply_service(&svcs, &clip).await?;
 
     debug!(name, namespace, replicas, "Base reconciled");
     Ok(())

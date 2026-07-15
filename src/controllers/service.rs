@@ -678,7 +678,7 @@ async fn reconcile_service_inner(
         );
         set_owner(&mut svc.metadata.owner_references, &owner);
         let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-        apply::apply(&svcs, &svc).await?;
+        apply::apply_service(&svcs, &svc).await?;
     }
 
     // 4. Ingress.

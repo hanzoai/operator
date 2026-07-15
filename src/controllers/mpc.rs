@@ -120,11 +120,11 @@ async fn reconcile_inner(
     );
     hs.metadata.owner_references = Some(vec![owner.clone()]);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &hs).await?;
+    apply::apply_service(&svcs, &hs).await?;
 
     let mut clip = manifests::build_service(name, namespace, labels, svc_ports, sel);
     clip.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply(&svcs, &clip).await?;
+    apply::apply_service(&svcs, &clip).await?;
 
     debug!(name, namespace, "MPC reconciled");
     Ok(())
