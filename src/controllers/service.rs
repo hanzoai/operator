@@ -17,20 +17,23 @@ use std::time::Duration;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::autoscaling::v2::{CrossVersionObjectReference, HorizontalPodAutoscaler};
-use k8s_openapi::api::core::v1::{ConfigMap, Service as CoreService};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Service as CoreService};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
-use kube::api::{Api, Patch, PatchParams};
+use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher::Config;
 use kube::{Client, Resource, ResourceExt};
 use tracing::{debug, error, info, warn};
 
 use crate::apply;
+use crate::controllers::upgrade::{self, PreflightInputs};
+use crate::core::health::{self, BootOutcome};
 use crate::core::{OperatorError, Result};
 use crate::crd::{
     KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
+    UpgradePhase, UpgradePolicySpec, UpgradeRecord, UpgradeStatus,
 };
 use crate::crd_types;
 use crate::manifests;
@@ -292,6 +295,10 @@ fn main_app_db_mount(p: &PersistenceSpec) -> crd_types::VolumeMount {
 pub struct Ctx {
     pub client: Client,
     pub api_group: String,
+    /// Cluster-wide kill switch for the managed-upgrade FSM (env
+    /// `UPGRADE_FSM_ENABLED`). Off ⇒ every Service applies `spec.image` directly
+    /// (historical behavior) regardless of its `spec.upgradePolicy`.
+    pub upgrade_enabled: bool,
 }
 
 /// Reconcile a canonical `Service` CR.
@@ -303,11 +310,42 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "Service");
 
-    reconcile_service_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
-
-    // Prior status — used to keep condition timestamps stable and to skip
-    // no-op status writes (see the patch guard below).
+    // Prior status — keeps condition timestamps stable, skips no-op status
+    // writes, and is the persisted input the upgrade FSM resumes from.
     let prior_status = cr.status.clone().unwrap_or_default();
+
+    // Managed-upgrade FSM (opt-in). Decide the image the Deployment must run NOW
+    // + the next FSM state, reading the LIVE Deployment first so `running` /
+    // `prod_healthy` reflect the current cluster (before this reconcile applies).
+    // When the FSM is inactive, `effective_image` is None and the prior upgrade
+    // status carries through untouched — historical blind-apply behavior.
+    let drive = drive_upgrade_fsm(&ctx, &name, &namespace, &cr, &owner, &prior_status).await?;
+
+    reconcile_service_inner(
+        &ctx.client,
+        &name,
+        &namespace,
+        &cr.spec,
+        owner.clone(),
+        drive.effective_image.as_deref(),
+    )
+    .await?;
+
+    // Converge the pre-flight resources to the FSM's next phase (create the
+    // candidate boot pod + clone when Preflighting, GC them otherwise). Non-fatal.
+    if let Some(conv) = &drive.converge {
+        if let Err(e) = upgrade::converge_preflight(
+            &ctx.client,
+            &name,
+            &conv.target,
+            conv.want,
+            conv.inputs.as_ref(),
+        )
+        .await
+        {
+            warn!(error = %e, name, "pre-flight converge failed (non-fatal; retried next reconcile)");
+        }
+    }
 
     // Status writeback: poll the Deployment for ready replica count.
     let dep_api: Api<Deployment> = Api::namespaced(ctx.client.clone(), &namespace);
@@ -361,6 +399,11 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         }
     }
 
+    // Carry the FSM state onto the status (unchanged when the FSM is inactive).
+    status.last_good_image = drive.last_good_image;
+    status.upgrade = drive.next_upgrade;
+    status.upgrade_history = drive.upgrade_history;
+
     // Skip the write when nothing changed. An unconditional status merge bumps
     // resourceVersion on every reconcile, which the watch re-delivers as an
     // `object updated` event → a self-triggered reconcile storm (~2.75/s/CR
@@ -376,7 +419,9 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         }
     }
 
-    Ok(Action::requeue(Duration::from_secs(60)))
+    // Requeue faster while an upgrade is actively progressing so the FSM drives
+    // pre-flight → roll → success/rollback promptly; otherwise the steady 60s.
+    Ok(Action::requeue(Duration::from_secs(drive.requeue_secs)))
 }
 
 /// Inject surge co-location affinity iff: the CR opted in (`surgeColocation`),
@@ -387,7 +432,9 @@ fn should_colocate(surge_colocation: bool, strategy: &str, mounts_pvc: bool) -> 
     surge_colocation && strategy != "Recreate" && mounts_pvc
 }
 
-/// Public alias for use by compat facades.
+/// Public alias for use by compat facades. Facades apply `spec.image` directly
+/// (`effective_image = None`); the managed-upgrade FSM is driven only by the
+/// canonical `Service` controller's `reconcile_service`.
 pub async fn reconcile_service_inner_pub(
     client: &Client,
     name: &str,
@@ -395,17 +442,23 @@ pub async fn reconcile_service_inner_pub(
     spec: &ServiceSpec,
     owner: OwnerReference,
 ) -> Result<()> {
-    reconcile_service_inner(client, name, namespace, spec, owner).await
+    reconcile_service_inner(client, name, namespace, spec, owner, None).await
 }
 
 /// Shared implementation. Materializes Deployment + Service + Ingress +
 /// HPA + PDB + NetworkPolicy + KMSSecret children.
+///
+/// `effective_image`, when `Some`, overrides the Deployment's main-container
+/// image — the managed-upgrade FSM's decision (which may hold the current image
+/// during a pre-flight, or the last-good image during a rollback). `None` ⇒ the
+/// Deployment runs `spec.image` directly.
 async fn reconcile_service_inner(
     client: &Client,
     name: &str,
     namespace: &str,
     spec: &ServiceSpec,
     owner: OwnerReference,
+    effective_image: Option<&str>,
 ) -> Result<()> {
     let std_labels =
         manifests::standard_labels(name, &spec.component, &spec.part_of, &spec.image.tag);
@@ -438,9 +491,14 @@ async fn reconcile_service_inner(
         .iter()
         .map(crd_types::VolumeMount::to_k8s)
         .collect();
+    // The upgrade FSM's effective decision overrides the image when set;
+    // otherwise the Deployment runs spec.image directly.
+    let resolved_image = effective_image
+        .map(str::to_string)
+        .unwrap_or_else(|| manifests::image_ref(&spec.image.repository, &spec.image.tag));
     let main = manifests::build_container(
         name,
-        &manifests::image_ref(&spec.image.repository, &spec.image.tag),
+        &resolved_image,
         &spec.image.pull_policy,
         spec.command.clone(),
         spec.args.clone(),
@@ -723,7 +781,20 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
         Api::namespaced(client.clone(), &namespace)
     };
     info!(group = %api_group, "Starting Service controller");
-    let ctx = Arc::new(Ctx { client, api_group });
+    // Cluster-wide kill switch for the managed-upgrade FSM. Default OFF, so the
+    // first deploy of this binary is a safe drop-in: Services apply spec.image
+    // directly (historical behavior) until the operator is explicitly enabled.
+    let upgrade_enabled = std::env::var("UPGRADE_FSM_ENABLED")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if upgrade_enabled {
+        info!("managed-upgrade FSM enabled (Services with spec.upgradePolicy.enabled roll through pre-flight → health-gate → auto-rollback)");
+    }
+    let ctx = Arc::new(Ctx {
+        client,
+        api_group,
+        upgrade_enabled,
+    });
     Controller::new(api, Config::default())
         .run(reconcile_service, on_error_service, ctx)
         .for_each(|res| async move {
@@ -732,6 +803,294 @@ pub async fn run_service_controller(client: Client, namespace: String, api_group
             }
         })
         .await;
+}
+
+// ============================================================================
+// Managed-upgrade FSM driver — gathers live observations, runs the pure
+// `upgrade::plan`, and assembles the status deltas + pre-flight converge request.
+// The decision logic is pure (upgrade.rs); this is the thin imperative shell.
+// ============================================================================
+
+/// One reconcile's worth of upgrade drive: the image to run, the next persisted
+/// status, and the pre-flight converge request.
+struct UpgradeDrive {
+    /// `Some` ⇒ override the Deployment image with the FSM's effective decision;
+    /// `None` ⇒ the FSM is inactive, use `spec.image`.
+    effective_image: Option<String>,
+    next_upgrade: Option<UpgradeStatus>,
+    last_good_image: Option<String>,
+    upgrade_history: Vec<UpgradeRecord>,
+    converge: Option<ConvergeReq>,
+    requeue_secs: u64,
+}
+
+/// What the controller must converge the pre-flight resources toward.
+struct ConvergeReq {
+    target: String,
+    want: bool,
+    inputs: Option<PreflightInputs>,
+}
+
+/// The inactive-gate path: carry prior FSM status through untouched and apply
+/// `spec.image` directly (historical blind-apply behavior).
+fn upgrade_inactive(prior: &ServiceStatus) -> UpgradeDrive {
+    UpgradeDrive {
+        effective_image: None,
+        next_upgrade: prior.upgrade.clone(),
+        last_good_image: prior.last_good_image.clone(),
+        upgrade_history: prior.upgrade_history.clone(),
+        converge: None,
+        requeue_secs: 60,
+    }
+}
+
+/// Drive the managed-upgrade FSM one reconcile. Gated on the cluster env AND the
+/// per-CR `spec.upgradePolicy.enabled`; inactive ⇒ [`upgrade_inactive`].
+async fn drive_upgrade_fsm(
+    ctx: &Ctx,
+    name: &str,
+    namespace: &str,
+    cr: &ServiceCR,
+    owner: &OwnerReference,
+    prior: &ServiceStatus,
+) -> Result<UpgradeDrive> {
+    let spec = &cr.spec;
+    // Gate: cluster kill-switch AND per-CR opt-in.
+    let policy = match spec.upgrade_policy.as_ref() {
+        Some(p) if ctx.upgrade_enabled && p.enabled => p,
+        _ => return Ok(upgrade_inactive(prior)),
+    };
+
+    let desired = manifests::image_ref(&spec.image.repository, &spec.image.tag);
+
+    // Read the LIVE Deployment (pre-apply) for the running image + health, so the
+    // FSM decides against the CURRENT cluster state.
+    let deps: Api<Deployment> = Api::namespaced(ctx.client.clone(), namespace);
+    let dep = deps.get_opt(name).await?;
+    let running = dep.as_ref().and_then(health::deployment_image);
+    let prod_healthy = dep
+        .as_ref()
+        .map(health::deployment_healthy)
+        .unwrap_or(false);
+
+    // Stateful (for the data clone) requires a real durable PVC — persistence
+    // enabled AND backed by `storage` (an emptyDir-persistence Service has no
+    // `<name>-app-db` PVC to snapshot, so it pre-flights boot-only, not over a
+    // clone). Stateful ⇒ pre-flight over a data clone by default; policy overrides.
+    let stateful = spec
+        .persistence
+        .as_ref()
+        .is_some_and(|p| p.enabled && p.storage.is_some());
+    let cfg = upgrade::Cfg {
+        preflight_needed: policy.preflight.unwrap_or(stateful),
+        preflight_deadline_secs: policy
+            .preflight_deadline_seconds
+            .unwrap_or(upgrade::DEFAULT_PREFLIGHT_DEADLINE_SECS),
+        rollout_deadline_secs: policy
+            .rollout_deadline_seconds
+            .unwrap_or(upgrade::DEFAULT_ROLLOUT_DEADLINE_SECS),
+    };
+
+    // Observe only what the current phase requires (a pre-flight pod outcome, or
+    // whether the rolling candidate pods are crash-looping).
+    let cur_phase = prior.upgrade.as_ref().and_then(|u| u.phase.clone());
+    let preflight = match (&cur_phase, prior.upgrade.as_ref()) {
+        (Some(UpgradePhase::Preflighting), Some(u)) => {
+            let pod = if u.preflight_pod.is_empty() {
+                upgrade::preflight_pod_name(name, &u.target_image)
+            } else {
+                u.preflight_pod.clone()
+            };
+            upgrade::observe_preflight(&ctx.client, namespace, &pod).await
+        }
+        _ => BootOutcome::Booting,
+    };
+    let rolling_crashloop = match (&cur_phase, prior.upgrade.as_ref()) {
+        (Some(UpgradePhase::Rolling), Some(u)) => {
+            pods_crashlooping_for_image(&ctx.client, namespace, name, &u.target_image).await
+        }
+        _ => false,
+    };
+
+    let obs = upgrade::Observed {
+        name,
+        desired: &desired,
+        running: running.as_deref(),
+        last_good: prior.last_good_image.as_deref(),
+        prod_healthy,
+        upgrade: prior.upgrade.as_ref(),
+        preflight,
+        rolling_crashloop,
+        now: jiff::Timestamp::now(),
+    };
+    let plan = upgrade::plan(&obs, &cfg);
+
+    // Log on a genuine phase transition or a concluded attempt — never every tick.
+    let next_phase = plan.next_upgrade.as_ref().and_then(|u| u.phase.clone());
+    if next_phase != cur_phase || plan.record.is_some() {
+        info!(
+            name,
+            ?next_phase,
+            effective_image = %plan.effective_image,
+            reason = plan.reason,
+            "upgrade FSM"
+        );
+    }
+
+    // Assemble the converge request. When holding/entering Preflighting, build
+    // the pre-flight inputs for the CURRENT target; otherwise request cleanup.
+    let want = matches!(next_phase, Some(UpgradePhase::Preflighting));
+    let conv_target = plan
+        .next_upgrade
+        .as_ref()
+        .map(|u| u.target_image.clone())
+        .unwrap_or_else(|| desired.clone());
+    let inputs = want.then(|| {
+        build_preflight_inputs(namespace, name, &conv_target, spec, policy, owner, stateful)
+    });
+
+    // last-good: advance only when the FSM proved a value healthy; else carry.
+    let last_good_image = plan
+        .mark_last_good
+        .clone()
+        .or_else(|| prior.last_good_image.clone());
+
+    // history: append a concluded record, bounded.
+    let mut upgrade_history = prior.upgrade_history.clone();
+    if let Some(rec) = plan.record.clone() {
+        upgrade::push_history(&mut upgrade_history, rec);
+    }
+
+    // Requeue fast while an upgrade is actively progressing.
+    let requeue_secs = match next_phase {
+        Some(UpgradePhase::Preflighting)
+        | Some(UpgradePhase::Rolling)
+        | Some(UpgradePhase::RollingBack) => 10,
+        _ => 60,
+    };
+
+    Ok(UpgradeDrive {
+        effective_image: Some(plan.effective_image),
+        next_upgrade: plan.next_upgrade,
+        last_good_image,
+        upgrade_history,
+        converge: Some(ConvergeReq {
+            target: conv_target,
+            want,
+            inputs,
+        }),
+        requeue_secs,
+    })
+}
+
+/// Assemble the pre-flight candidate-boot inputs from the Service spec. The env
+/// is `spec.env` + the boot-only overlay (overlay last ⇒ it wins at runtime), so
+/// the candidate runs its real boot path (real KMS master key via `envFrom`)
+/// with side effects suppressed. Volumes/mounts are the Service's declared ones;
+/// the clone PVC is added by [`upgrade::build_preflight_pod`], never the live PVC.
+#[allow(clippy::too_many_arguments)]
+fn build_preflight_inputs(
+    namespace: &str,
+    name: &str,
+    candidate_image: &str,
+    spec: &ServiceSpec,
+    policy: &UpgradePolicySpec,
+    owner: &OwnerReference,
+    stateful: bool,
+) -> PreflightInputs {
+    let mut env: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
+    env.extend(policy.boot_env.iter().map(crd_types::EnvVar::to_k8s));
+
+    let (data_dir, source_pvc, storage_size, storage_class) = if stateful {
+        // `stateful` ⇒ persistence is Some+enabled.
+        let p = spec
+            .persistence
+            .as_ref()
+            .expect("stateful ⇒ persistence set");
+        let (size, class) = p
+            .storage
+            .as_ref()
+            .map(|s| (s.size.clone(), s.storage_class_name.clone()))
+            .unwrap_or_default();
+        (Some(p.data_dir.clone()), app_db_pvc_name(name), size, class)
+    } else {
+        (None, String::new(), String::new(), String::new())
+    };
+
+    PreflightInputs {
+        namespace: namespace.to_string(),
+        candidate_image: candidate_image.to_string(),
+        pull_policy: spec.image.pull_policy.clone(),
+        command: spec.command.clone(),
+        args: spec.args.clone(),
+        env,
+        env_from: spec
+            .env_from
+            .iter()
+            .map(crd_types::EnvFromSource::to_k8s)
+            .collect(),
+        volume_mounts: spec
+            .volume_mounts
+            .iter()
+            .map(crd_types::VolumeMount::to_k8s)
+            .collect(),
+        volumes: spec.volumes.iter().map(crd_types::Volume::to_k8s).collect(),
+        readiness_probe: spec
+            .readiness_probe
+            .as_ref()
+            .and_then(manifests::build_probe),
+        resources: spec.resources.as_ref().map(manifests::to_k8s_resources),
+        image_pull_secrets: spec
+            .image_pull_secrets
+            .iter()
+            .map(crd_types::LocalObjectReference::to_k8s)
+            .collect(),
+        service_account_name: spec.service_account_name.clone(),
+        data_dir,
+        source_pvc,
+        storage_size,
+        storage_class,
+        snapshot_class: policy.snapshot_class.clone(),
+        labels: manifests::standard_labels(name, &spec.component, &spec.part_of, &spec.image.tag),
+        owner: owner.clone(),
+    }
+}
+
+/// True when any pod of this Service that runs the candidate `target` image is
+/// crash-looping — the fast-rollback signal during a health-gated roll. Filtered
+/// to the candidate image so a crashing OLD replica (being torn down) never trips
+/// the rollback. Best-effort: a list error is `false` (rely on the deadline).
+async fn pods_crashlooping_for_image(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    target: &str,
+) -> bool {
+    let pods: Api<Pod> = Api::namespaced(client.clone(), namespace);
+    let selector = manifests::selector_labels(name)
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    match pods.list(&ListParams::default().labels(&selector)).await {
+        Ok(list) => {
+            let candidates: Vec<Pod> = list
+                .into_iter()
+                .filter(|p| pod_runs_image(p, target))
+                .collect();
+            health::any_pod_crashlooping(&candidates)
+        }
+        Err(_) => false,
+    }
+}
+
+/// True when the pod's main container (index 0) runs `target`.
+fn pod_runs_image(p: &Pod, target: &str) -> bool {
+    p.spec
+        .as_ref()
+        .and_then(|s| s.containers.first())
+        .and_then(|c| c.image.as_deref())
+        == Some(target)
 }
 
 #[cfg(test)]

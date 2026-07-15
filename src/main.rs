@@ -15,6 +15,7 @@ mod controllers;
 mod core;
 mod crd;
 mod crd_types;
+mod install;
 mod manifests;
 mod zapclient;
 
@@ -44,7 +45,7 @@ struct Args {
 
     /// API group for CRDs. Overrides compile-time default `hanzo.ai`.
     /// Other universes: `lux.cloud`, `zoo.cloud`, `osage.cloud`.
-    #[arg(long, env = "OPERATOR_API_GROUP")]
+    #[arg(long, env = "OPERATOR_API_GROUP", global = true)]
     api_group: Option<String>,
 
     /// Health-check listener address.
@@ -60,9 +61,56 @@ struct Args {
     #[arg(
         long,
         env = "OPERATOR_NAMESPACE",
-        default_value = "hanzo-operator-system"
+        default_value = "hanzo-operator-system",
+        global = true
     )]
     operator_namespace: String,
+
+    /// Optional subcommand. Absent ⇒ run the reconcile loop (the operator).
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// The install verb — bootstrap the operator into a cluster. Absent ⇒ the
+/// binary runs the reconcile loop.
+#[derive(clap::Subcommand, Debug, Clone)]
+enum Command {
+    /// Install the derived CRDs + the operator's own RBAC/Deployment into the
+    /// current-context cluster (`hanzod install` execs into this).
+    Install(InstallOpts),
+    /// Bootstrap: install the CRDs + operator, then apply the platform's own App
+    /// CRs so the running operator brings the whole stack up (`hanzo up`).
+    Up(UpOpts),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct InstallOpts {
+    /// Operator image for the rendered Deployment. Default: this binary's own
+    /// pinned version (`ghcr.io/hanzoai/operator:v<version>`).
+    #[arg(long, env = "OPERATOR_IMAGE")]
+    image: Option<String>,
+    /// Enable the managed-upgrade FSM on the installed operator
+    /// (`UPGRADE_FSM_ENABLED=true`). Default off — a safe drop-in.
+    #[arg(long)]
+    upgrade_fsm: bool,
+    /// Install ONLY the CRDs (skip the operator Deployment/RBAC).
+    #[arg(long)]
+    crds_only: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct UpOpts {
+    /// Operator image for the rendered Deployment. Default: this binary's own
+    /// pinned version.
+    #[arg(long, env = "OPERATOR_IMAGE")]
+    image: Option<String>,
+    /// Enable the managed-upgrade FSM on the installed operator. Default off.
+    #[arg(long)]
+    upgrade_fsm: bool,
+    /// Directory of platform App-CR YAML to apply (the stack the operator brings
+    /// up). Absent ⇒ install the operator only.
+    #[arg(long)]
+    manifests: Option<std::path::PathBuf>,
 }
 
 async fn healthz() -> &'static str {
@@ -106,6 +154,12 @@ async fn main() -> anyhow::Result<()> {
 
     let client = Client::try_default().await?;
     info!("Connected to Kubernetes cluster");
+
+    // Install verbs — bootstrap the operator into the cluster, then exit. Absent
+    // ⇒ fall through to the reconcile loop (the running operator).
+    if let Some(command) = args.command.clone() {
+        return run_command(command, &client, &api_group.group, &args.operator_namespace).await;
+    }
 
     // Shutdown channel.
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -334,4 +388,60 @@ async fn run_all_controllers(
                 .unwrap_or(true),
         ),
     );
+}
+
+/// Execute an install verb, then exit. Every step is a server-side apply, so
+/// `install` / `up` are idempotent and safe to re-run.
+async fn run_command(
+    command: Command,
+    client: &Client,
+    group: &str,
+    operator_namespace: &str,
+) -> anyhow::Result<()> {
+    match command {
+        Command::Install(o) => {
+            let n = install::install_crds(client, group).await?;
+            info!(count = n, group, "installed CRDs");
+            if o.crds_only {
+                info!("--crds-only: skipped the operator Deployment/RBAC");
+            } else {
+                let image = o.image.unwrap_or_else(default_operator_image);
+                install::install_operator(client, operator_namespace, &image, group, o.upgrade_fsm)
+                    .await?;
+                info!(
+                    namespace = operator_namespace,
+                    image = %image,
+                    upgrade_fsm = o.upgrade_fsm,
+                    "installed operator (RBAC + Deployment)"
+                );
+            }
+        }
+        Command::Up(o) => {
+            let n = install::install_crds(client, group).await?;
+            info!(count = n, group, "installed CRDs");
+            let image = o.image.unwrap_or_else(default_operator_image);
+            install::install_operator(client, operator_namespace, &image, group, o.upgrade_fsm)
+                .await?;
+            info!(namespace = operator_namespace, image = %image, "installed operator");
+            match &o.manifests {
+                Some(dir) => {
+                    let applied = install::apply_manifest_dir(client, dir).await?;
+                    info!(count = applied, dir = %dir.display(), "applied platform App CRs; the operator will bring them up");
+                }
+                None => info!(
+                    "operator is up — apply the platform App CRs (--manifests <dir>) to bring the stack up"
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Default operator image: this binary's own pinned version (never `:latest`).
+fn default_operator_image() -> String {
+    format!(
+        "{}:v{}",
+        install::DEFAULT_OPERATOR_IMAGE,
+        env!("CARGO_PKG_VERSION")
+    )
 }

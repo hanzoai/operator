@@ -21,6 +21,7 @@
 pub mod agents_client;
 pub mod apps_client;
 pub mod error;
+pub mod health;
 pub mod iam_admin;
 pub mod leader;
 pub mod reconciler;
