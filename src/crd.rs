@@ -2405,3 +2405,175 @@ pub struct AppSpec {
     #[schemars(skip)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native GitOps — the two concerns that retire the push-based hack (the
+// `gitops-reconcile` shell cron + the `notify-universe` GitHub dispatch). Both
+// are ordinary hanzo.ai CRDs reconciled by this same operator, so there is ONE
+// reconciler and ONE api group — no second control plane (ArgoCD was torn out
+// on purpose; re-adding it would be a parallel reconciler). The reconcile
+// algorithms are the proven GitOps-toolkit ones (pull-sync; semver image
+// selection with git write-back), reimplemented natively over the operator's
+// existing apply/status machinery — not a vendored platform.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// GitSource — pull-based git→cluster sync. Replaces the `gitops-reconcile`
+/// cron: the operator clones `repo@ref`, renders `path` (a directory of CR
+/// manifests / a kustomization), and server-side-applies it on `interval`.
+/// Continuous reconciliation, drift-correcting, no external trigger.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "GitSource",
+    plural = "gitsources",
+    namespaced,
+    status = "GitSourceStatus",
+    shortname = "gitsrc",
+    printcolumn = r#"{"name":"Repo","type":"string","jsonPath":".spec.repo"}"#,
+    printcolumn = r#"{"name":"Ref","type":"string","jsonPath":".spec.ref"}"#,
+    printcolumn = r#"{"name":"Revision","type":"string","jsonPath":".status.lastAppliedRevision"}"#,
+    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.phase"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSourceSpec {
+    /// Git remote, https form (e.g. `github.com/hanzoai/universe`). The token is
+    /// read from `credentialsSecret` — never embedded here.
+    pub repo: String,
+    /// Branch (or tag/sha) to track. Default `main`.
+    #[serde(default = "default_git_ref")]
+    pub r#ref: String,
+    /// Repo-relative directory to apply (dir of CR manifests, or a kustomize
+    /// root when `kustomize: true`). Default `infra/k8s/operator/crs`.
+    #[serde(default = "default_git_path")]
+    pub path: String,
+    /// Treat `path` as a kustomization root (`kustomize build`) vs a plain
+    /// directory of manifests. Default false (per-file apply, matching the cron).
+    #[serde(default)]
+    pub kustomize: bool,
+    /// Reconcile interval in seconds. Default 120.
+    #[serde(default = "default_git_interval")]
+    pub interval_seconds: u64,
+    /// Delete cluster objects that were applied by this GitSource but are no
+    /// longer in git. OFF by default — pruning is unsafe until dual-declared
+    /// plain Deployments are collapsed (see universe #64/LLM.md). The cron never
+    /// pruned; this preserves that safety and makes enabling it a deliberate act.
+    #[serde(default)]
+    pub prune: bool,
+    /// When set, restrict apply to these CR basenames (no `.yaml`) — the
+    /// `RECONCILE_ALLOWLIST` the cron used, carried forward so an in-progress
+    /// migration can heal a vetted subset before opening the full set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowlist: Vec<String>,
+    /// K8s Secret (key `token`) holding the git PAT, KMS-synced. Empty = public.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credentials_secret: String,
+}
+
+fn default_git_ref() -> String {
+    "main".to_string()
+}
+fn default_git_path() -> String {
+    "infra/k8s/operator/crs".to_string()
+}
+fn default_git_interval() -> u64 {
+    120
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitSourceStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    /// Short SHA of the last revision successfully applied.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_applied_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync_time: Option<String>,
+    /// Objects applied on the last successful sync.
+    #[serde(default)]
+    pub applied_count: i32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
+/// ImageUpdate — registry→git image automation. Replaces the `notify-universe`
+/// GitHub `repository_dispatch` + universe's `image-update.yml`: the operator
+/// watches `imageRepository` for tags matching `policy` (semver range / regex),
+/// and when a newer one appears it writes the bump back to `writeback` git (the
+/// GitSource path), which the GitSource then rolls out. The whole loop —
+/// build→push→bump→apply — is closed in-cluster with no CI callback.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "hanzo.ai",
+    version = "v1",
+    kind = "ImageUpdate",
+    plural = "imageupdates",
+    namespaced,
+    status = "ImageUpdateStatus",
+    shortname = "imgup",
+    printcolumn = r#"{"name":"Image","type":"string","jsonPath":".spec.imageRepository"}"#,
+    printcolumn = r#"{"name":"Policy","type":"string","jsonPath":".spec.policy"}"#,
+    printcolumn = r#"{"name":"Latest","type":"string","jsonPath":".status.latestTag"}"#,
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUpdateSpec {
+    /// Registry repository to watch, e.g. `registry.hanzo.ai/hanzo/cloud`
+    /// (canonical fleet registry) — NOT ghcr.io, which is only for published OSS.
+    pub image_repository: String,
+    /// Tag-selection policy: a semver range (`>=1.0.0 <2.0.0`), `semver:*` for
+    /// newest semver, or `regex:<pattern>` for a named scheme. Amd64 arch suffix
+    /// (`-amd64`) is honored so it never selects an unpushed variant.
+    #[serde(default = "default_image_policy")]
+    pub policy: String,
+    /// The GitSource repo to write the bump into (usually the same universe repo).
+    pub writeback_repo: String,
+    #[serde(default = "default_git_ref")]
+    pub writeback_ref: String,
+    /// File in the writeback repo whose image tag is rewritten (the operator CR),
+    /// e.g. `infra/k8s/operator/crs/cloud.yaml`.
+    pub writeback_path: String,
+    /// Poll interval in seconds. Default 300.
+    #[serde(default = "default_image_interval")]
+    pub interval_seconds: u64,
+    /// K8s Secret (key `token`) with git write access, KMS-synced.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credentials_secret: String,
+    /// K8s Secret (docker config) for authenticated registry reads. Empty = anon.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registry_secret: String,
+}
+
+fn default_image_policy() -> String {
+    "semver:*".to_string()
+}
+fn default_image_interval() -> u64 {
+    300
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageUpdateStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    /// Newest tag the policy selected on the last poll.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub latest_tag: String,
+    /// Tag last written back to git (so a re-poll is idempotent).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub last_pushed_tag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_push_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
