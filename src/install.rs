@@ -622,6 +622,10 @@ mod tests {
             "volumesnapshots",
             "delete"
         ));
+        // The deny-egress NetworkPolicy scoping the pre-flight pod (HIGH-1) needs
+        // networkpolicies create/delete (already covered by the Service NP grant).
+        assert!(grants(&["networking.k8s.io"], "networkpolicies", "create"));
+        assert!(grants(&["networking.k8s.io"], "networkpolicies", "delete"));
         // Plus the leader-election lease + the managed CRDs.
         assert!(grants(&["coordination.k8s.io"], "leases", "update"));
         assert!(grants(&[DEFAULT_API_GROUP], "*", "patch"));
