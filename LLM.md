@@ -653,23 +653,40 @@ Red re-review of the pre-flight surfaced blockers that only matter once
 All fixed; the gate stays OFF until the deploy-gates below are met on a live
 cluster.
 
-**Pre-flight labels are a DEDICATED set — never the Service-selector keys**
+**Pre-flight labels are a MINIMAL functional set — never a shared selector key**
 (HIGH-1 + HIGH-2). A ClusterIP Service selects pods by EXACTLY
 `{app.kubernetes.io/name, app.kubernetes.io/instance}`; a pre-flight pod that
 carried those would be added by the EndpointSlice controller as a LIVE endpoint
 of the production Service (kube-proxy load-balances real user traffic onto the
 unproven candidate — stale clone reads, silently-discarded writes), and an
 app-labelled egress-allow NetworkPolicy would re-select it (egress is additive).
-Fix: `build_preflight_inputs` seeds the pre-flight `labels` from
-`manifests::descriptive_labels` (managed-by + component/part-of/version — NO
-name/instance), and `upgrade::pf_labels` ALSO strips `name`/`instance`
-unconditionally, so the invariant holds for ANY base. The dedicated set is
-`{hanzo.ai/preflight-of, hanzo.ai/preflight-target, app.kubernetes.io/managed-by
-(+ component/part-of/version)}`. `standard_labels = selector_labels ∪
-descriptive_labels` (identical output, DRY). Test:
-`preflight_labels_exclude_the_service_selector_keys` (all four resource kinds
-drop name/instance AND the production Service selector does not match the
-pre-flight labels — the synthetic-endpoint check).
+The FIRST fix stripped `name`/`instance`. But the SHARED descriptive keys
+(`component`/`part-of`/`version`) are the SAME re-open vector via a
+descriptive-label selector — a headless discovery/metrics Service with
+`selector:{app.kubernetes.io/part-of: hanzo}` (→ EndpointSlice adds the candidate
+as a live endpoint, HIGH-1) or a baseline egress-allow NetworkPolicy
+`podSelector:{app.kubernetes.io/part-of: hanzo}` ("all hanzo pods may reach the
+DB" → egress union re-grants the candidate real DB egress, HIGH-2). Those keys
+serve ZERO function on a throwaway pre-flight resource (netpol/sweep/GC key ONLY
+on `preflight-of`/`preflight-target`), so they are pure selector surface and are
+dropped — MINIMIZE AT THE SOURCE, don't widen the enable checklist.
+
+Fix (double belt, matching the name/instance pattern): (1) `build_preflight_inputs`
+seeds the pre-flight `labels` from the new `manifests::managed_by_labels()` (JUST
+`app.kubernetes.io/managed-by` — attribution, non-selecting) rather than
+`descriptive_labels`; (2) `upgrade::pf_labels` ALSO strips `name`/`instance`
+**and** `component`/`part-of`/`version` unconditionally, so the invariant holds
+for ANY base. The dedicated set is EXACTLY three keys:
+`{hanzo.ai/preflight-of, hanzo.ai/preflight-target, app.kubernetes.io/managed-by}`.
+`descriptive_labels = managed_by_labels() ∪ {component,part-of,version}` and
+`standard_labels = selector_labels ∪ descriptive_labels` (DRY — one home for the
+`managed-by → hanzo-operator` mapping). Test:
+`preflight_labels_exclude_the_service_selector_keys` — all four resource kinds
+(pod/netpol/clone-PVC/snapshot) drop name/instance AND component/part-of/version,
+carry EXACTLY the three functional keys (`labels.len() == 3`), and the production
+Service selector is not a subset of the pre-flight labels (synthetic-endpoint
+check). The adversarial base is `standard_labels` (carries all five stripped
+keys) so the strip is genuinely exercised, not vacuous.
 
 **Egress additivity is stated honestly, and the empty-selector residual is a
 deploy-gate** (HIGH-2). NetworkPolicy egress is a UNION across every policy that
@@ -725,15 +742,20 @@ the ~10s lease-overlap window 409s instead of clobbering the live leader
 2. Universe operator ClusterRole extended with the pre-flight grants (pods +
    persistentvolumeclaims create/delete, `snapshot.storage.k8s.io` volumesnapshots).
 3. A real CSI driver + `VolumeSnapshotClass` in each target namespace.
-4. **No `podSelector: {}` egress-allow NetworkPolicy selects the pre-flight pod**
-   in each target namespace (the egress-additivity gate).
+4. **No Service selector AND no egress-allow NetworkPolicy selects the pre-flight
+   pod** in each target namespace — by `podSelector: {}` (namespace-wide) OR by
+   ANY label the pre-flight pod carries. Label minimization drops name/instance +
+   component/part-of/version, so the only labels left to select on are
+   `managed-by` + the two `preflight-*` keys (which no production Service/policy
+   selects); the residual is the namespace-wide `podSelector: {}` egress-allow,
+   which labels cannot escape (the egress-additivity gate).
 5. Live real-namespace egress smoke: confirm the candidate pod boots to ready
    with NO live side effect (no external-DB migration, S3 push, KMS write, IAM
    register) — the one thing unit tests cannot prove.
 
 RED RE-REVIEWS the pre-flight labels + orphan GC before enable.
 
-Test count: 271 → 278 lib tests (+2 controllers::upgrade
+Test count: 286 → 293 lib tests (+2 controllers::upgrade
 [`preflight_labels_exclude_the_service_selector_keys`,
 `preflight_pod_does_not_automount_the_sa_token`] + 5 controllers::service
 [orphan-GC decision: reclaim-no-inflight, keep-current/reclaim-superseded,
@@ -742,3 +764,22 @@ rolling-is-orphan, fail-closed-unknown, grace-window]; extended
 0 regressions). fmt-clean + clippy-clean (the 4 pre-existing
 datastore.rs/manifests.rs warnings on origin/main are untouched). CRD schema
 unchanged (no bundle regen).
+
+**Descriptive-label minimization (MEDIUM-1, pre-enable)**. The name/instance
+strip closed one selector; the SHARED `component`/`part-of`/`version` keys were
+still on the pre-flight pod and re-open the SAME HIGH-1/HIGH-2 via a
+descriptive-label selector (a `part-of`-keyed discovery Service or egress-allow —
+enable-gate #4's old `podSelector: {}`-only wording did NOT catch these). Fixed
+by minimizing at the source (`build_preflight_inputs` → `managed_by_labels()`)
+plus a structural strip in `pf_labels` (drops component/part-of/version alongside
+name/instance) — the same double belt red credited for name/instance. The
+pre-flight set is now EXACTLY `{managed-by, preflight-of, preflight-target}`
+(asserted by `labels.len() == 3` per resource). The netpol test was renamed
+`preflight_netpol_denies_egress_absent_an_additive_allow_and_selects_only_the_preflight_pod`
+(the empty egress rule set denies egress only ABSENT an additive allow — a policy
+SHAPE assertion, not the emergent zero-egress guarantee). No new test functions
+(existing test strengthened + one renamed) → count stays 293; fmt-clean +
+clippy-clean (my files add zero warnings; the 4 pre-existing
+datastore.rs/manifests.rs warnings are untouched). CRD schema unchanged. Gate
+stays OFF; the remaining enable-gates are pure live-cluster smokes (CSI
+round-trip, real-namespace egress, universe RBAC).
