@@ -517,3 +517,131 @@ the full-lifecycle sequence tests + the invariant sweep + builder shapes, +6
 install; -4 apps rollout tests moved to core::health; 0 regressions). My files
 are fmt-clean + clippy-clean; the pre-existing datastore/manifests/ingress/tenant
 fmt+clippy drift on origin/main is untouched.
+
+## v0.7.2 — native git → CR reconcile (folds the gitops-reconcile CronJob INTO the operator)
+
+The git→cluster apply step is now a NATIVE loop inside the operator, so the
+operator does the whole chain — **git → CR → workload** — in one process. It
+replaces the external `gitops-reconcile` CronJob
+(`hanzoai/universe/infra/k8s/gitops-reconcile`): a 5-min `alpine/k8s`
+`kubectl apply` stopgap that could not reconcile its own spec and carried a
+hand-maintained 24-item allow-list in its env.
+
+New component: `src/controllers/gitops.rs` (one cohesive file) + a small
+`apply::apply_dynamic_as(field_manager)` helper, wired into `main.rs`'s
+`tokio::join!` alongside every other controller (so it runs only on the elected
+leader) and gated OFF by default.
+
+- **Source** — `infra/k8s/operator/crs/*.yaml` on `hanzoai/universe` main, read
+  over the GitHub REST API with `reqwest` (the operator image ships no `git`):
+  Contents API lists the dir, git-blobs API fetches content. The token is the
+  same KMS-synced secret the CronJob used (`gitops-repo-creds`, mounted at
+  `/creds/token`; `GITOPS_TOKEN_FILE`), re-read each sweep so rotation needs no
+  restart. It rides an `Authorization` header — never a URL — and is wrapped in a
+  redacting `Token` newtype, so it can never land in a log line. Blobs are
+  content-addressed by SHA and cached, so a tight poll only refetches files that
+  actually changed (rate-limit-safe). `GITOPS_GITHUB_API` lets a
+  GitHub-compatible host (git.hanzo.ai) serve the same code later.
+- **Apply** — server-side apply (force-conflicts) under the distinct field
+  manager `hanzo-operator-gitops`, so a git-driven apply is attributable and
+  never fights a per-Kind reconcile. **Kind-agnostic:** each file's own
+  `apiVersion`/`kind` is applied, and the correct plural (e.g.
+  `hanzo.ai/v1 Ingress` → `ingresses`, not a naive `ingresss`) is resolved via
+  `kube::discovery::pinned_kind` — the same mechanism `kubectl` uses — cached per
+  Kind. Handles today's `Service`/`SQL`/`LLM`/`KV`/`DNS`/`Ingress` +
+  `secrets.lux.network KMSSecret` + core `PersistentVolumeClaim`, and the
+  forthcoming `App` (App-collapse) with ZERO code change.
+- **NEVER prune** — a CR removed from git is left alone, identical to
+  `reconcile.sh`. This is a property of the type, not a runtime check: the pure
+  `Plan` can only describe applies (no delete variant exists anywhere in the
+  module), so a removed file produces no plan entry at all. Locked by the
+  `plan_never_prunes_a_removed_file` test.
+- **Drift report** — every sweep GETs each object before applying and logs a
+  per-object `CREATE` / `UPDATE (reverted drift)` / in-sync line plus a summary.
+
+### Cadence — real-time, not 5-min cron
+
+A tight resync loop (default 45s, `GITOPS_RESYNC_SECS`, floored at 10s) is the
+baseline. `POST /reconcile` on the operator's existing health server triggers an
+INSTANT sweep — a git.hanzo.ai/GitHub push webhook can drive it — via a shared
+`tokio::sync::Notify`; each loop iteration wakes on whichever fires first (poll
+tick or webhook), so the poll is the guaranteed fallback and the webhook is the
+real-time path.
+
+### Scope — ownership, not a hand-maintained allow-list
+
+The DEFAULT scope is ownership-by-namespace: every platform CR in the operator's
+namespace (`hanzo`, `GITOPS_NAMESPACE`). All 78 crs/ CRs declare
+`namespace: hanzo`, so the namespace predicate cleanly IS the platform boundary
+(a CR in any other namespace, or cluster-scoped, is out of scope). The safety
+config `GITOPS_APPLY_SCOPE` (comma/space-separated CR names) optionally NARROWS
+to a vetted subset for a cautious first rollout — clear it (widen to the whole
+namespace) once trusted. This replaces the CronJob's `RECONCILE_ALLOWLIST`; the
+model is now ownership, the list is just an optional throttle.
+
+### Fail-safe
+
+Opt-in `GITOPS_RECONCILE_ENABLED=true` (default off — first deploy of this binary
+is inert; mirrors `KMS_ZAP_CONTROLLER`/`APPS_CONTROLLER`). Additive: it runs
+ALONGSIDE the CR→workload controllers and never blocks them. Every fallible op
+inside a sweep returns `Result` and is logged; the loop never `?`-propagates out
+of its body, never `unwrap`s, never panics — a clone/list/YAML/token failure is
+logged and retried next tick.
+
+### Enabling it (operator Deployment env in `hanzoai/universe`)
+
+```
+GITOPS_RECONCILE_ENABLED=true        # master enable (default off)
+# defaults are correct for prod; override only to change source/scope:
+# GITOPS_REPO=hanzoai/universe  GITOPS_BRANCH=main
+# GITOPS_CRS_PATH=infra/k8s/operator/crs  GITOPS_NAMESPACE=hanzo
+# GITOPS_TOKEN_FILE=/creds/token  GITOPS_RESYNC_SECS=45
+# GITOPS_APPLY_SCOPE="functions admin-guard ..."  # optional vetted subset first, then clear
+```
+Mount the existing `gitops-repo-creds` secret at `/creds` (the KMS sync already
+provisions it). **RBAC:** the operator's ClusterRole must grant `create`/`update`/
+`patch` (NO `delete`) on the CR groups it now writes — `hanzo.ai/*`,
+`secrets.lux.network/kmssecrets`, and core `persistentvolumeclaims` — i.e. the
+verbs the `gitops-reconcile` ServiceAccount held
+(`infra/k8s/operator/gitops-reconcile/rbac.yaml`). Fold those rules into the
+operator ClusterRole before enabling.
+
+### Cutover — DELETE the CronJob after 0.6.24 deploys (gated; NOT done here)
+
+Once `ghcr.io/hanzoai/operator:0.6.24` is live with
+`GITOPS_RECONCILE_ENABLED=true` and a sweep has logged "reconcile sweep
+complete", the external loop is redundant. Delete it (a `hanzoai/universe`
+manifest change + a prod action):
+
+```
+# in hanzoai/universe: remove infra/k8s/operator/gitops-reconcile from the
+# kustomization, then reap the objects it created:
+kubectl -n hanzo delete configmap gitops-reconcile gitops-reconcile-script
+kubectl -n hanzo delete role,rolebinding gitops-reconcile-canary
+kubectl delete clusterrole,clusterrolebinding gitops-reconcile
+kubectl -n hanzo delete serviceaccount gitops-reconcile
+# KEEP gitops-repo-creds + gitops-repo-creds-kms-sync — the operator mounts the
+# same token (one credential, one KMS sync).
+```
+
+Version note: this loop was cut from the v0.6.24 base and rebased forward onto
+v0.7.1 (v0.7.0's upgrade FSM + the App Kind), shipping as **v0.7.2**. It
+re-applies cleanly — `gitops.rs` is a new file, `apply::apply_dynamic_as` is a
+pure addition, and the `main.rs` wiring (the `HealthState` / `POST /reconcile`
+webhook + the `run_gitops_controller` join arm) composes with v0.7.0's
+`install`/`up` subcommands and the App controller without touching either.
+**INERT by default**: with `GITOPS_RECONCILE_ENABLED` unset the loop never starts,
+so the first 0.7.2 deploy is a no-op for the git path — the external
+`gitops-reconcile` CronJob stays the git→etcd path until the flag is flipped
+post-App-cutover.
+
+Test count: 253 → 268 lib tests (+15 gitops: file selection, kind-agnostic GVK
+parse, scope predicate incl. namespace boundary + vetted subset, never-prune
+invariant, drift skips, base64 blob decode, resync floor, token redaction; the
+App Kind's 13 tests and every prior suite intact; 0 regressions). `cargo build
+--release` + `cargo test --lib` green (268 passed / 0 failed); `gitops.rs` +
+`main.rs` fmt-clean + clippy-clean. Clippy repo-wide is blocked by the global
+`~/.cargo/config.toml` `rustc-wrapper=zccache` (feeds rustc as an input filename
+to clippy-driver); neutralizing the wrapper (`RUSTC_WRAPPER=""`) for one run
+confirms my files are warning-free. The pre-existing datastore/manifests
+fmt+clippy drift on origin/main is untouched.

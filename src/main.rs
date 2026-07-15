@@ -22,10 +22,14 @@ mod zapclient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use clap::Parser;
 use kube::Client;
 use std::net::SocketAddr;
+use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::api_group::ApiGroup;
@@ -113,18 +117,37 @@ struct UpOpts {
     manifests: Option<std::path::PathBuf>,
 }
 
+/// Shared state for the health/webhook server: leadership (for `/readyz`) and
+/// the gitops reconcile trigger (for `POST /reconcile`).
+#[derive(Clone)]
+struct HealthState {
+    leader: Arc<AtomicBool>,
+    reconcile_now: Arc<Notify>,
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
 
 async fn readyz(
-    axum::extract::State(state): axum::extract::State<Arc<AtomicBool>>,
+    axum::extract::State(state): axum::extract::State<HealthState>,
 ) -> (axum::http::StatusCode, &'static str) {
-    if state.load(Ordering::Relaxed) {
+    if state.leader.load(Ordering::Relaxed) {
         (axum::http::StatusCode::OK, "ready")
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not leader")
     }
+}
+
+/// Webhook — trigger an IMMEDIATE gitops reconcile. A git push (git.hanzo.ai /
+/// GitHub) POSTs here for an instant sync; the tight poll loop is the guaranteed
+/// fallback. Best-effort: notifying when the gitops loop is disabled, or this
+/// replica is not the leader, is a harmless no-op.
+async fn reconcile_webhook(
+    axum::extract::State(state): axum::extract::State<HealthState>,
+) -> (axum::http::StatusCode, &'static str) {
+    state.reconcile_now.notify_one();
+    (axum::http::StatusCode::ACCEPTED, "reconcile queued")
 }
 
 #[tokio::main]
@@ -179,12 +202,24 @@ async fn main() -> anyhow::Result<()> {
         info!("Leader election disabled, running as leader");
     }
 
-    // Health server.
+    // Native gitops reconcile: opt-in feature flag + the shared webhook trigger
+    // (POST /reconcile → instant sweep). The handle is created regardless of the
+    // flag; notifying a disabled loop is a harmless no-op.
+    let gitops_enabled = std::env::var("GITOPS_RECONCILE_ENABLED")
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    let reconcile_now = Arc::new(Notify::new());
+
+    // Health + webhook server.
     let health_addr: SocketAddr = args.health_addr.parse()?;
     let health_app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .with_state(leader_flag.clone());
+        .route("/reconcile", post(reconcile_webhook))
+        .with_state(HealthState {
+            leader: leader_flag.clone(),
+            reconcile_now: reconcile_now.clone(),
+        });
 
     let group = api_group.group.clone();
     let namespace = args.namespace.clone();
@@ -203,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Controllers — wait for leadership then run all of them.
-        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone()) => {
+        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone(), gitops_enabled) => {
             warn!("Controllers exited");
         }
 
@@ -235,6 +270,8 @@ async fn run_all_controllers(
     namespace: String,
     api_group: String,
     leader_flag: Arc<AtomicBool>,
+    reconcile_now: Arc<Notify>,
+    gitops_enabled: bool,
 ) {
     // Block until we become the leader.
     loop {
@@ -394,6 +431,13 @@ async fn run_all_controllers(
                 .map(|v| v != "false")
                 .unwrap_or(true),
         ),
+        // Native git → CR reconcile — the whole chain (git → CR → workload) in
+        // one process. Opt-in (GITOPS_RECONCILE_ENABLED, default off) + fail-safe
+        // + NEVER prunes; replaces the external gitops-reconcile CronJob. Each
+        // iteration wakes on the poll tick OR the POST /reconcile webhook
+        // (whichever first) so a git push reconciles instantly, the poll is the
+        // guaranteed fallback. See controllers/gitops.rs for the scope model.
+        controllers::gitops::run_gitops_controller(client.clone(), reconcile_now, gitops_enabled),
     );
 }
 
