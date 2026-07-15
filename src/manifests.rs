@@ -82,17 +82,19 @@ pub fn sanitize_label_value(v: &str) -> String {
         .to_string()
 }
 
-/// Build the standard `app.kubernetes.io/*` label set. Empty values omitted;
-/// the `version` label is sanitized via [`sanitize_label_value`].
-pub fn standard_labels(
-    name: &str,
+/// The DESCRIPTIVE `app.kubernetes.io/*` labels: `managed-by` (+ `component`,
+/// `part-of`, `version` when non-empty). Deliberately EXCLUDES the two selector
+/// keys (`name`, `instance`) — these labels describe a workload but never select
+/// it. This is the label set a pre-flight resource carries: it must NOT match a
+/// production Service selector (would serve it live traffic) nor an app-labelled
+/// egress-allow NetworkPolicy (would re-grant egress). The `version` label is
+/// sanitized via [`sanitize_label_value`].
+pub fn descriptive_labels(
     component: &str,
     part_of: &str,
     version: &str,
 ) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
-    labels.insert(LABEL_NAME.to_string(), name.to_string());
-    labels.insert(LABEL_INSTANCE.to_string(), name.to_string());
     labels.insert(LABEL_MANAGED_BY.to_string(), MANAGED_BY_VALUE.to_string());
     if !component.is_empty() {
         labels.insert(LABEL_COMPONENT.to_string(), component.to_string());
@@ -106,6 +108,19 @@ pub fn standard_labels(
     if !version.is_empty() {
         labels.insert(LABEL_VERSION.to_string(), version);
     }
+    labels
+}
+
+/// Build the standard `app.kubernetes.io/*` label set: the selector keys
+/// ([`selector_labels`]) UNION the descriptive keys ([`descriptive_labels`]).
+pub fn standard_labels(
+    name: &str,
+    component: &str,
+    part_of: &str,
+    version: &str,
+) -> BTreeMap<String, String> {
+    let mut labels = selector_labels(name);
+    labels.extend(descriptive_labels(component, part_of, version));
     labels
 }
 
