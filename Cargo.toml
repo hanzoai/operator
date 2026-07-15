@@ -4,7 +4,7 @@
 
 [package]
 name = "operator"
-version = "0.6.21"
+version = "0.6.23"
 edition = "2021"
 license = "BSD-3-Clause"
 repository = "https://github.com/hanzoai/operator"
@@ -54,6 +54,15 @@ byteorder = "1"
 base64 = "0.22"
 rand = "0.9"
 sha2 = "0.10"
+
+# Native GitOps image automation. `semver` selects the newest matching image
+# tag (range + `*`); `regex` backs the `regex:<pat>` policy. Both are already in
+# the dependency tree (transitively, via kube / tracing-subscriber), so declaring
+# them direct adds no new build — the ImageUpdate selection logic is pure over
+# these and is the one place that reimplements a Flux GitOps-toolkit algorithm
+# (semver image selection) natively rather than vendoring the toolkit.
+semver = "1"
+regex = "1"
 
 # reqwest 0.13 replaced the old `rustls-tls` feature: `rustls` now pulls rustls
 # core + the aws-lc-rs provider + rustls-platform-verifier (cert roots), so we

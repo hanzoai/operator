@@ -502,6 +502,18 @@ pub fn status_changed<T: Serialize>(new: &T, old: &T) -> bool {
     serde_json::to_value(new).ok() != serde_json::to_value(old).ok()
 }
 
+/// Replace the condition of the same `type_` in place, or append it. The one
+/// upsert used by every controller that writes CRD-wrapper conditions (Service,
+/// GitSource, ImageUpdate) — the k8s-openapi twin lives in `core::status` for
+/// controllers on that condition type.
+pub fn upsert_condition(conditions: &mut Vec<Condition>, new_cond: Condition) {
+    if let Some(slot) = conditions.iter_mut().find(|c| c.type_ == new_cond.type_) {
+        *slot = new_cond;
+    } else {
+        conditions.push(new_cond);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,9 @@ mod controllers;
 mod core;
 mod crd;
 mod crd_types;
+mod gitops;
 mod manifests;
+mod registry;
 mod zapclient;
 
 use std::sync::atomic::{AtomicBool, Ordering};

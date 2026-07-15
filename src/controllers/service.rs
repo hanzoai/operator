@@ -40,16 +40,7 @@ use crate::crd_types;
 use crate::manifests;
 
 use super::owner_ref_for;
-use crate::crd_types::{build_condition, carry_transition_time, status_changed, Condition};
-
-/// Upsert a condition in-place by `type_`.
-fn upsert_condition(conditions: &mut Vec<Condition>, new_cond: Condition) {
-    if let Some(slot) = conditions.iter_mut().find(|c| c.type_ == new_cond.type_) {
-        *slot = new_cond;
-    } else {
-        conditions.push(new_cond);
-    }
-}
+use crate::crd_types::{build_condition, carry_transition_time, status_changed, upsert_condition};
 
 #[derive(Clone)]
 pub struct Ctx {
