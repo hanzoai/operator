@@ -13,8 +13,11 @@ jobs:
     uses: hanzoai/.github/.github/workflows/docker-build.yml@main
     with:
       image: ghcr.io/hanzoai/operator
-      # arm64 enabled per user request. If hanzo-build-linux-arm64 ARC
-      # scale set is paused on DOKS (per LLM.md 2026-04-27), the shared
-      # workflow falls back to QEMU emulation on the amd64 runner.
-      platforms: linux/amd64,linux/arm64
+      # amd64-only: the arm64 ARC scale-set is offline (no runner matches
+      # runner-arm64 ["self-hosted","linux","arm64"] → the arm64 job hangs
+      # queued and the multi-arch manifest never publishes). DOKS
+      # (do-sfo3-hanzo-k8s) is amd64, so amd64 is what prod runs. Restore
+      # linux/amd64,linux/arm64 when the arm64 runner is back OR the native
+      # build plane (platform BuildKit / git.hanzo.ai Actions) takes over.
+      platforms: linux/amd64
     secrets: inherit
