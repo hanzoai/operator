@@ -1322,12 +1322,15 @@ fn build_preflight_inputs(
         storage_size,
         storage_class,
         snapshot_class: policy.snapshot_class.clone(),
-        // DESCRIPTIVE labels only — never the Service-selector keys. A pre-flight
-        // resource must not be selected by the production Service (HIGH-1) nor by
-        // an app-labelled egress-allow policy (HIGH-2). `pf_labels` also strips
-        // the selector keys as a structural belt, but the honest source is a set
-        // that never carried them.
-        labels: manifests::descriptive_labels(&spec.component, &spec.part_of, &spec.image.tag),
+        // MINIMAL base only — `managed-by` (+ the two `preflight-*` keys `pf_labels`
+        // adds). NEVER the Service-selector keys (name/instance) and NEVER the
+        // SHARED descriptive keys (component/part-of/version): a pre-flight resource
+        // must not be selected by the production Service (HIGH-1) nor by any
+        // app-labelled egress-allow policy (HIGH-2), and component/part-of/version
+        // serve ZERO function on a throwaway pre-flight pod — they only widen the
+        // selector surface. `pf_labels` also strips all five keys as a structural
+        // belt, but the honest source is a set that never carried them.
+        labels: manifests::managed_by_labels(),
         owner: owner.clone(),
     }
 }

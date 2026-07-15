@@ -82,20 +82,37 @@ pub fn sanitize_label_value(v: &str) -> String {
         .to_string()
 }
 
+/// The single non-selector label EVERY operator-managed object carries:
+/// `app.kubernetes.io/managed-by = hanzo-operator`. It attributes the creator
+/// but is NOT a key any operator Service selects on (Services select on
+/// [`selector_labels`] = name+instance ONLY), so a pod carrying just this label
+/// can never be re-added to a production endpoint set nor re-selected by an
+/// app-labelled egress-allow. It is therefore the MINIMAL functional base for a
+/// pre-flight resource: the pre-flight identity comes from the two
+/// `hanzo.ai/preflight-*` keys, and `managed-by` is the only descriptive key that
+/// stays.
+pub fn managed_by_labels() -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    labels.insert(LABEL_MANAGED_BY.to_string(), MANAGED_BY_VALUE.to_string());
+    labels
+}
+
 /// The DESCRIPTIVE `app.kubernetes.io/*` labels: `managed-by` (+ `component`,
 /// `part-of`, `version` when non-empty). Deliberately EXCLUDES the two selector
 /// keys (`name`, `instance`) — these labels describe a workload but never select
-/// it. This is the label set a pre-flight resource carries: it must NOT match a
-/// production Service selector (would serve it live traffic) nor an app-labelled
-/// egress-allow NetworkPolicy (would re-grant egress). The `version` label is
-/// sanitized via [`sanitize_label_value`].
+/// it. The `version` label is sanitized via [`sanitize_label_value`].
+///
+/// NOTE: a pre-flight resource does NOT use this full set — `component`,
+/// `part-of`, `version` are SHARED with production pods and would widen the
+/// selector surface a pre-flight pod exposes (an egress-allow or headless Service
+/// selecting `part-of` could re-reach the unproven candidate). The pre-flight
+/// carries only [`managed_by_labels`]; this richer set is for real workloads.
 pub fn descriptive_labels(
     component: &str,
     part_of: &str,
     version: &str,
 ) -> BTreeMap<String, String> {
-    let mut labels = BTreeMap::new();
-    labels.insert(LABEL_MANAGED_BY.to_string(), MANAGED_BY_VALUE.to_string());
+    let mut labels = managed_by_labels();
     if !component.is_empty() {
         labels.insert(LABEL_COMPONENT.to_string(), component.to_string());
     }
