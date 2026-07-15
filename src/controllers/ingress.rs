@@ -39,6 +39,21 @@ pub async fn reconcile(cr: Arc<IngressCR>, ctx: Arc<Ctx>) -> Result<Action> {
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
+/// Public inner handler — shared entrypoint for the Ingress reconcile, so the
+/// `App` role-dispatch facade (role=ingress) drives the SAME multi-domain
+/// reconcile as a native `Ingress` CR, threaded with the App's owner reference
+/// (owner-scoped prune included — see `prune_superseded`). Mirrors
+/// `dns::reconcile_dns_inner_pub`.
+pub async fn reconcile_ingress_inner_pub(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &IngressKindSpec,
+    owner: OwnerReference,
+) -> Result<()> {
+    reconcile_inner(client, name, namespace, spec, owner).await
+}
+
 async fn reconcile_inner(
     client: &Client,
     name: &str,

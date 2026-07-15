@@ -22,7 +22,9 @@ use k8s_openapi::api::core::v1::{
     ServiceAccount,
 };
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, RoleRef, Subject};
-use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::{
+    CustomResourceDefinition, JSON,
+};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{Api, Patch, PatchParams};
@@ -33,9 +35,9 @@ use crate::api_group::DEFAULT_API_GROUP;
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress,
-    LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue, Service, Static,
-    Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
+    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer,
+    Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue, Service,
+    Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Default operator image (pinned semver; the caller overrides at install time).
@@ -79,13 +81,101 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         LuxRuntime::crd(),
         NodeFleet::crd(),
         AgentDeployment::crd(),
+        // The 29th Kind — the App-collapse super-facade. Emitted LAST so the
+        // canonical Kind order (Service … AgentDeployment) is unchanged and App is
+        // the additive tail.
+        App::crd(),
     ];
     if group != DEFAULT_API_GROUP {
         for crd in &mut crds {
             rewrite_crd_group(crd, group);
         }
     }
+    // Harden the App CRD to the merged universe `apps.hanzo.ai` wire shape — the
+    // two things schemars cannot express: `x-kubernetes-preserve-unknown-fields`
+    // on `spec` (so the role-specific datastore/ingress fields are NEVER pruned)
+    // + the `role` enum. Applied in the ONE bundle so both `install` and
+    // `generate-crd-yaml` emit the hardened App CRD.
+    for crd in &mut crds {
+        if crd.spec.names.kind == "App" {
+            harden_app_crd(crd);
+        }
+    }
     crds
+}
+
+/// The `spec.role` enum VALUES, in the exact order the merged universe
+/// `apps.hanzo.ai` CRD carries them. Injected onto the generated App CRD's
+/// `role` property so the emitted schema agrees with the fleet CRD (schemars
+/// models `role` only as an open string). Keep in lockstep with
+/// `controllers::app::classify` — every value here MUST map to a profile there.
+const APP_ROLE_ENUM: &[&str] = &[
+    "generic",
+    "service",
+    "llm",
+    "iam",
+    "kms",
+    "explorer",
+    "function",
+    "indexer",
+    "observability",
+    "queue",
+    "datastore",
+    "docdb",
+    "kv",
+    "s3",
+    "sql",
+    "managedDatabase",
+    "base",
+    "gateway",
+    "ingress",
+    "dns",
+    "static",
+    "spa",
+    "mpc",
+    "chain",
+    "network",
+    "nodeFleet",
+    "luxRuntime",
+    "validator",
+    "agentDeployment",
+];
+
+/// Post-process the generated `App` CRD to match the merged universe
+/// `apps.hanzo.ai` shape — the two things schemars cannot express:
+/// (1) `x-kubernetes-preserve-unknown-fields: true` on `spec`, so the
+///     role-specific fields (`AppSpec.extra`, `#[schemars(skip)]`) are carried
+///     and never pruned — the exact data-loss bug that sank the reduced fork;
+/// (2) the `spec.role` enum, so the emitted schema agrees with universe while the
+///     Rust type stays an open string (so `classify` — not the schema — is the
+///     runtime authority and an operator newer than the CRD still fails safe on
+///     an unmodeled role).
+fn harden_app_crd(crd: &mut CustomResourceDefinition) {
+    for version in &mut crd.spec.versions {
+        let Some(schema) = version.schema.as_mut() else {
+            continue;
+        };
+        let Some(root) = schema.open_api_v3_schema.as_mut() else {
+            continue;
+        };
+        let Some(props) = root.properties.as_mut() else {
+            continue;
+        };
+        let Some(spec) = props.get_mut("spec") else {
+            continue;
+        };
+        // (1) never prune the role-specific unknowns.
+        spec.x_kubernetes_preserve_unknown_fields = Some(true);
+        // (2) constrain role to the known profiles.
+        if let Some(role) = spec.properties.as_mut().and_then(|p| p.get_mut("role")) {
+            role.enum_ = Some(
+                APP_ROLE_ENUM
+                    .iter()
+                    .map(|v| JSON(serde_json::Value::String((*v).to_string())))
+                    .collect(),
+            );
+        }
+    }
 }
 
 /// Rewrite a CRD's group (touches `spec.group` + `metadata.name = <plural>.<group>`).
@@ -449,7 +539,11 @@ mod tests {
     #[test]
     fn bundle_is_the_canonical_28_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
-        assert_eq!(crds.len(), 28, "managed Kind count must stay at 28");
+        assert_eq!(
+            crds.len(),
+            29,
+            "managed Kind count is 29 (28 canonical + the App-collapse Kind)"
+        );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
         assert!(kinds.contains(&"AgentDeployment"));

@@ -107,7 +107,16 @@ pub async fn reconcile_datastore_inner_pub(
     engine: Engine,
     owner: OwnerReference,
 ) -> Result<()> {
-    reconcile_datastore_inner(client, name, namespace, spec, engine, owner, &BTreeMap::new()).await
+    reconcile_datastore_inner(
+        client,
+        name,
+        namespace,
+        spec,
+        engine,
+        owner,
+        &BTreeMap::new(),
+    )
+    .await
 }
 
 /// Like [`reconcile_datastore_inner_pub`] but stamps `extra_labels` onto the
@@ -256,7 +265,12 @@ async fn reconcile_datastore_inner(
         apply::apply(&svcs, &a).await?;
     }
 
-    debug!(name, namespace, engine = engine.as_str(), "Datastore reconciled");
+    debug!(
+        name,
+        namespace,
+        engine = engine.as_str(),
+        "Datastore reconciled"
+    );
     Ok(())
 }
 
@@ -573,10 +587,7 @@ mod tests {
     // instead of forcing a forbidden rename. This is the sql/kv adoption fix.
     #[test]
     fn vct_name_honors_volume_name_for_adoption() {
-        assert_eq!(
-            vct_name(&spec_with_storage(Some("sql-data"))),
-            "sql-data"
-        );
+        assert_eq!(vct_name(&spec_with_storage(Some("sql-data"))), "sql-data");
     }
 
     // With no explicit mounts, the datastore auto-mounts its VCT at the engine's
