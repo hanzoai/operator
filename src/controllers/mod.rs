@@ -13,6 +13,13 @@ pub mod mpc;
 pub mod network;
 pub mod service;
 
+// Managed-upgrade FSM — the deploy discipline (pre-flight → health-gate →
+// auto-rollback) the Service controller composes when a CR opts into
+// `spec.upgradePolicy` and the operator's `UPGRADE_FSM_ENABLED` gate is on. Not
+// a Kind — a pure decision core + pre-flight resource converge, driven by
+// `controllers::service`.
+pub mod upgrade;
+
 /// Build an OwnerReference pointing at a CR. The CR must have a UID set.
 pub fn owner_ref_for<K>(cr: &K, api_version: &str, kind: &str) -> OwnerReference
 where

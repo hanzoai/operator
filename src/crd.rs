@@ -337,6 +337,140 @@ pub struct PersistenceSpec {
     pub storage: Option<StorageSpec>,
 }
 
+/// Managed-upgrade policy for a Service — the declarative deploy discipline the
+/// operator encodes so no human hand-flips an image, hand-watches a rollout, or
+/// hand-writes an auto-rollback loop.
+///
+/// OPT-IN. When absent (the default), the operator applies `spec.image`
+/// directly on every reconcile — the historical behavior, unchanged. When
+/// `enabled` AND the operator's cluster-wide `UPGRADE_FSM_ENABLED` gate is on, a
+/// change to `spec.image` rolls through a state machine (see
+/// `controllers::upgrade`):
+///
+///   1. **Pre-flight** the candidate BEFORE flipping: boot it against a
+///      CSI-snapshot CLONE of the live data (or, for a stateless Service, a
+///      boot-only pod) and require it to reach the Service's readiness signal.
+///      A candidate that cannot boot over real data (a migration crash) FAILS
+///      the upgrade — production is never flipped.
+///   2. **Health-gate** the rollout: flip the Deployment image, watch readiness
+///      within `rolloutDeadlineSeconds`.
+///   3. **Auto-rollback**: if the candidate crashloops / misses readiness within
+///      the deadline, revert the Deployment to `status.lastGoodImage`
+///      automatically and record the failure. Production is never left on a
+///      crashing image.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradePolicySpec {
+    /// Master per-CR switch. `false`/absent ⇒ the operator applies `spec.image`
+    /// directly (historical behavior). `true` (+ the `UPGRADE_FSM_ENABLED`
+    /// cluster gate) ⇒ image changes roll through the pre-flight → health →
+    /// rollback FSM.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Boot the candidate against a CSI-snapshot CLONE of the live data
+    /// (mounted at the persistence `dataDir`) BEFORE flipping production. This
+    /// is the operator-side analog of cloud's CI migration-smoke: it catches the
+    /// index-before-ADD-COLUMN migration-crash class that only manifests over
+    /// real historical schema. Default: `true` when the Service has
+    /// `persistence`; a stateless Service pre-flights a boot-only candidate pod
+    /// (no clone). Set `false` to skip the pre-flight and rely on the
+    /// health-gated rollout + auto-rollback alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight: Option<bool>,
+    /// Seconds the health-gated rollout may take to reach Ready before the
+    /// operator auto-rolls-back to `lastGoodImage`. Default 300, floored at 30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_deadline_seconds: Option<i64>,
+    /// Seconds the pre-flight candidate boot may take to reach Ready before the
+    /// pre-flight is judged failed (a migration/boot crash). Default 300,
+    /// floored at 30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preflight_deadline_seconds: Option<i64>,
+    /// Boot-only env overlaid on the pre-flight candidate pod so it runs its
+    /// migrate + mount path WITHOUT real side effects (no prod notifications /
+    /// billing / outbound). e.g. `CLOUD_ENV=smoke`. The pre-flight pod is never
+    /// wired to a Service, mounts a CLONE (never the live PVC), and — with this
+    /// env — makes no outbound calls. Set your app's boot-only marker here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boot_env: Vec<EnvVar>,
+    /// `VolumeSnapshotClass` for the pre-flight CSI snapshot of the live data
+    /// PVC. Empty ⇒ the cluster's default VolumeSnapshotClass. A stateful
+    /// pre-flight with no snapshot support FAILS the upgrade CLOSED (never flips
+    /// without a pre-flight).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub snapshot_class: String,
+}
+
+/// Upgrade FSM phase. Absent `status.upgrade` ⇒ Stable (no upgrade in flight).
+/// Mirrors `controllers::upgrade::Phase` on the wire.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, PartialEq, Eq)]
+pub enum UpgradePhase {
+    /// Booting the candidate against a snapshot-clone of real data (or a
+    /// boot-only stateless pod); production still runs the current image.
+    Preflighting,
+    /// Pre-flight passed; the Deployment is flipped to the candidate and the
+    /// operator is health-gating the rollout within the deadline.
+    Rolling,
+    /// The candidate failed its health gate in production; the operator has
+    /// reverted the Deployment to `lastGoodImage` and is waiting for recovery.
+    RollingBack,
+    /// Terminal: the candidate failed (pre-flight crash or rollout timeout) and
+    /// production is safe on `lastGoodImage`. The operator will NOT re-attempt
+    /// this exact `targetImage`; a NEW `spec.image` reopens the FSM.
+    Failed,
+}
+
+/// The in-flight upgrade attempt, persisted on `status.upgrade`. Every field is
+/// derived from the CR spec + observed cluster on each reconcile, so the FSM is
+/// fully resumable across an operator restart — no in-memory state.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeStatus {
+    /// The image this upgrade is driving toward (`spec.image` when it began).
+    pub target_image: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<UpgradePhase>,
+    /// RFC3339 — when this upgrade attempt began.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub started_at: String,
+    /// RFC3339 — the deadline for the CURRENT phase. Past it ⇒ the phase fails
+    /// to its rollback/terminal state.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub deadline_at: String,
+    /// The pre-flight Pod (deterministically named by target) booting the
+    /// candidate. Present only in Preflighting.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preflight_pod: String,
+    /// The CSI clone PVC the pre-flight mounts. GC'd on pre-flight completion.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preflight_clone: String,
+    /// The CSI VolumeSnapshot the clone derives from. GC'd on pre-flight
+    /// completion.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub preflight_snapshot: String,
+    /// Human-readable last transition reason.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
+/// One completed upgrade attempt, appended to `status.upgradeHistory`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeRecord {
+    /// The candidate image the attempt targeted.
+    pub image: String,
+    /// The image production ran before the attempt.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from_image: String,
+    /// `Succeeded` | `RolledBack` | `PreflightFailed` | `Superseded`.
+    pub result: String,
+    /// RFC3339 — when the attempt concluded.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub at: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub message: String,
+}
+
 // ============================================================================
 // Service Kind
 // ============================================================================
@@ -437,6 +571,12 @@ pub struct ServiceSpec {
     /// it never restarts unrelated persistence services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
+    /// Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
+    /// directly (historical behavior). When `enabled` (+ the operator's
+    /// `UPGRADE_FSM_ENABLED` gate), an image change rolls through the
+    /// pre-flight → health-gate → auto-rollback FSM (see `controllers::upgrade`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_policy: Option<UpgradePolicySpec>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -454,6 +594,19 @@ pub struct ServiceStatus {
     pub observed_generation: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<String>,
+    /// The last image proven healthy in production — the auto-rollback target
+    /// for the managed-upgrade FSM. Adopted from the running image the first
+    /// time the operator observes the Service healthy; advanced to the candidate
+    /// only after the candidate is proven healthy in production.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_good_image: Option<String>,
+    /// The in-flight upgrade FSM state (absent ⇒ Stable). Fully derived from the
+    /// spec + cluster each reconcile, so the FSM resumes across operator restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade: Option<UpgradeStatus>,
+    /// Bounded history (most-recent-last) of concluded upgrade attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upgrade_history: Vec<UpgradeRecord>,
 }
 
 // ============================================================================
