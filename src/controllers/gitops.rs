@@ -33,10 +33,12 @@
 //!   `GITOPS_RESYNC_SECS`) is the baseline; a `POST /reconcile` webhook triggers
 //!   an *instant* sweep (git push → reconcile) with the poll as the guaranteed
 //!   fallback.
-//! * **Ownership scope, not a hand-maintained allow-list** — the default scope
-//!   is every platform CR in the operator's namespace (`hanzo`), by ownership,
-//!   not the CronJob's 24-item string list. `GITOPS_APPLY_SCOPE` optionally
-//!   narrows to a vetted subset for a cautious rollout, then widens to empty.
+//! * **Ownership is the git path, not a hand-maintained allow-list** — every CR
+//!   declared under `crs_path` is ours, in whatever namespace it declares; no
+//!   string list to maintain. RBAC bounds what the operator may touch (it holds a
+//!   ClusterRole), so the loop does not restate that boundary a second time.
+//!   `GITOPS_NAMESPACE` and `GITOPS_APPLY_SCOPE` optionally narrow by namespace /
+//!   by name for a cautious rollout, then widen to empty.
 //!
 //! ## Fail-safe by construction
 //!
@@ -67,7 +69,6 @@ const FIELD_MANAGER: &str = "hanzo-operator-gitops";
 const DEFAULT_REPO: &str = "hanzoai/universe";
 const DEFAULT_BRANCH: &str = "main";
 const DEFAULT_CRS_PATH: &str = "infra/k8s/operator/crs";
-const DEFAULT_NAMESPACE: &str = "hanzo";
 const DEFAULT_API_BASE: &str = "https://api.github.com";
 const DEFAULT_TOKEN_FILE: &str = "/creds/token";
 
@@ -109,52 +110,76 @@ impl std::fmt::Debug for Token {
 // Scope — ownership-based, replacing the hand-maintained allow-list.
 // ---------------------------------------------------------------------------
 
-/// Which CRs this loop is permitted to apply. A CR is in-scope iff its namespace
-/// equals [`Scope::namespace`] AND (the optional [`Scope::names`] set is absent,
-/// OR contains the CR's name).
+/// A narrowing set over one axis of the scope. `None` admits every value — the
+/// default; `Some(set)` admits only its members. Namespace and name are the same
+/// concept (which declared CRs may we apply), so they are the same type, parsed
+/// by one function and read by one predicate.
+type Filter = Option<HashSet<String>>;
+
+/// Parse a comma/whitespace-separated env value into a [`Filter`]. Empty → `None`.
+fn filter(raw: &str) -> Filter {
+    let set: HashSet<String> = raw
+        .split([',', ' ', '\t', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if set.is_empty() {
+        None
+    } else {
+        Some(set)
+    }
+}
+
+/// Whether `f` admits `v`. An absent filter admits everything.
+fn admits(f: &Filter, v: &str) -> bool {
+    match f {
+        None => true,
+        Some(set) => set.contains(v),
+    }
+}
+
+/// Which CRs this loop may apply. A CR is in-scope iff every axis admits it.
 ///
-/// The DEFAULT (`names == None`) is ownership-by-namespace — every platform CR in
-/// the namespace, no string list to maintain. `GITOPS_APPLY_SCOPE` narrows to a
-/// vetted subset for a cautious first rollout; clear it (widen to the whole
-/// namespace) once trusted.
+/// Ownership is the GIT PATH: a CR declared under `crs_path` is ours, in whatever
+/// namespace it declares. The namespace is data on the CR — it says where the CR
+/// lives, not whether we may apply it. What the operator may touch is decided by
+/// RBAC (it holds a ClusterRole), so an app-level namespace allow-list would only
+/// restate that boundary in a second place, and a second place is where the two
+/// drift apart: a CR correct in git sat un-reconciled because it declared a
+/// namespace this filter did not name, and drift is silent — the app keeps
+/// serving its old image while git says otherwise.
+///
+/// Both axes default to `None` (own everything declared). `GITOPS_NAMESPACE` and
+/// `GITOPS_APPLY_SCOPE` narrow by namespace / by name for a cautious rollout.
 #[derive(Clone, Debug, Default)]
 struct Scope {
-    namespace: String,
-    names: Option<HashSet<String>>,
+    namespaces: Filter,
+    names: Filter,
 }
 
 impl Scope {
-    /// Build from the operator namespace + the raw `GITOPS_APPLY_SCOPE` value
-    /// (comma/whitespace-separated CR names). Empty → `None` = whole-namespace.
-    fn new(namespace: String, raw_scope: &str) -> Self {
-        let names: HashSet<String> = raw_scope
-            .split([',', ' ', '\t', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+    /// Build from the raw `GITOPS_NAMESPACE` + `GITOPS_APPLY_SCOPE` values.
+    /// Empty → `None` on that axis.
+    fn new(raw_namespaces: &str, raw_names: &str) -> Self {
         Self {
-            namespace,
-            names: if names.is_empty() { None } else { Some(names) },
+            namespaces: filter(raw_namespaces),
+            names: filter(raw_names),
         }
     }
 
     /// In-scope predicate over a parsed object. Pure — the load-bearing safety
-    /// gate, unit-tested without a cluster.
+    /// gate, unit-tested without a cluster. An object that declares no namespace
+    /// or no name states no place and no identity, so no scope admits it: it is
+    /// left alone rather than applied somewhere implied.
     fn allows(&self, obj: &DynamicObject) -> bool {
-        let ns = obj.metadata.namespace.as_deref().unwrap_or_default();
-        if ns != self.namespace {
+        let (Some(ns), Some(name)) = (
+            obj.metadata.namespace.as_deref(),
+            obj.metadata.name.as_deref(),
+        ) else {
             return false;
-        }
-        match &self.names {
-            None => true,
-            Some(set) => obj
-                .metadata
-                .name
-                .as_deref()
-                .map(|n| set.contains(n))
-                .unwrap_or(false),
-        }
+        };
+        admits(&self.namespaces, ns) && admits(&self.names, name)
     }
 }
 
@@ -460,11 +485,13 @@ impl Sweeper {
             .name
             .clone()
             .ok_or_else(|| "object missing metadata.name".to_string())?;
+        // The CR declares where it lives; there is no implied namespace to fall
+        // back to. `Scope::allows` already refused any object without one.
         let ns = obj
             .metadata
             .namespace
             .clone()
-            .unwrap_or_else(|| self.scope.namespace.clone());
+            .ok_or_else(|| format!("object {name} missing metadata.namespace"))?;
         let api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &ns, &ar);
 
         let before = api
@@ -581,9 +608,8 @@ struct GitopsConfig {
 
 impl GitopsConfig {
     fn from_env() -> Self {
-        let namespace = env_or("GITOPS_NAMESPACE", DEFAULT_NAMESPACE);
         let scope = Scope::new(
-            namespace,
+            &std::env::var("GITOPS_NAMESPACE").unwrap_or_default(),
             &std::env::var("GITOPS_APPLY_SCOPE").unwrap_or_default(),
         );
         Self {
@@ -618,16 +644,16 @@ pub async fn run_gitops_controller(client: Client, reconcile_now: Arc<Notify>, e
         repo = %config.repo,
         branch = %config.branch,
         crs_path = %config.crs_path,
-        namespace = %config.scope.namespace,
+        scoped_namespaces = config.scope.namespaces.as_ref().map(|s| s.len()).unwrap_or(0),
         scoped_names = config.scope.names.as_ref().map(|s| s.len()).unwrap_or(0),
         resync_secs = config.resync.as_secs(),
         "Starting native gitops reconcile (git → CR apply loop; replaces the gitops-reconcile CronJob)"
     );
-    if config.scope.names.is_none() {
+    if config.scope.namespaces.is_none() && config.scope.names.is_none() {
         info!(
-            namespace = %config.scope.namespace,
-            "gitops scope: whole namespace (ownership-based default). Set GITOPS_APPLY_SCOPE to \
-             start with a vetted subset."
+            "gitops scope: every CR declared under the git path, in whatever namespace it declares \
+             (ownership is the path; RBAC bounds what the operator may touch). Set \
+             GITOPS_NAMESPACE / GITOPS_APPLY_SCOPE to narrow by namespace / by name."
         );
     }
 
@@ -773,19 +799,35 @@ mod tests {
 
     // ---- scope predicate ----
 
+    /// The default owns every CR the git path declares, in whatever namespace it
+    /// declares — the regression test for a real outage: an App CR correct in git
+    /// declared `namespace: zen`, the scope named only `hanzo`, so the loop
+    /// skipped it and the app served a stale image for over a day while git said
+    /// otherwise. Drift is silent, which is what made it expensive.
     #[test]
-    fn scope_default_is_whole_namespace() {
-        let scope = Scope::new("hanzo".into(), "");
+    fn scope_default_owns_every_declared_namespace() {
+        let scope = Scope::new("", "");
+        assert!(scope.namespaces.is_none());
         assert!(scope.names.is_none());
         assert!(scope.allows(&obj(&service_yaml("analytics", "hanzo"))));
-        assert!(scope.allows(&obj(&service_yaml("world", "hanzo"))));
-        // A CR in another namespace is out of scope (ownership boundary).
+        // The CR that was skipped. Its namespace is data, not a permission.
+        assert!(scope.allows(&obj(&service_yaml("zen", "zen"))));
+        assert!(scope.allows(&obj(&service_yaml("anything", "any-namespace"))));
+    }
+
+    /// `GITOPS_NAMESPACE` narrows for a cautious rollout — the axis still exists,
+    /// it just is not the default and is not the ownership boundary.
+    #[test]
+    fn scope_namespace_filter_narrows() {
+        let scope = Scope::new("hanzo, zen", "");
+        assert!(scope.allows(&obj(&service_yaml("analytics", "hanzo"))));
+        assert!(scope.allows(&obj(&service_yaml("zen", "zen"))));
         assert!(!scope.allows(&obj(&service_yaml("evil", "kube-system"))));
     }
 
     #[test]
     fn scope_vetted_subset_narrows() {
-        let scope = Scope::new("hanzo".into(), "analytics, billing world");
+        let scope = Scope::new("hanzo", "analytics, billing world");
         assert!(scope.names.as_ref().unwrap().len() == 3);
         assert!(scope.allows(&obj(&service_yaml("analytics", "hanzo"))));
         assert!(scope.allows(&obj(&service_yaml("world", "hanzo"))));
@@ -797,7 +839,7 @@ mod tests {
 
     #[test]
     fn scope_rejects_namespaceless_object() {
-        let scope = Scope::new("hanzo".into(), "");
+        let scope = Scope::new("hanzo", "");
         let cluster_scoped = obj("apiVersion: hanzo.ai/v1\nkind: Service\nmetadata:\n  name: x\n");
         assert!(!scope.allows(&cluster_scoped));
     }
@@ -819,7 +861,7 @@ mod tests {
                 "apiVersion: hanzo.ai/v1\nkind: Service\n  bad: [indent\n".into(),
             ),
         ];
-        let scope = Scope::new("hanzo".into(), "");
+        let scope = Scope::new("hanzo", "");
         let p = plan(&files, &scope);
         assert_eq!(p.applies.len(), 2, "only the two in-scope services apply");
         let names: Vec<_> = p
@@ -848,7 +890,7 @@ mod tests {
         // A file present in one sweep and absent the next must NEVER produce a
         // delete — the Plan type has no delete variant, so a removed CR simply
         // vanishes from `applies` and is left alone in the cluster.
-        let scope = Scope::new("hanzo".into(), "");
+        let scope = Scope::new("hanzo", "");
         let with_both = vec![
             ("a.yaml".into(), service_yaml("a", "hanzo")),
             ("b.yaml".into(), service_yaml("b", "hanzo")),
