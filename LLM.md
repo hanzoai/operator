@@ -645,3 +645,100 @@ App Kind's 13 tests and every prior suite intact; 0 regressions). `cargo build
 to clippy-driver); neutralizing the wrapper (`RUSTC_WRAPPER=""`) for one run
 confirms my files are warning-free. The pre-existing datastore/manifests
 fmt+clippy drift on origin/main is untouched.
+
+## Pre-flight hardening — labels, egress additivity, orphan GC (pre-enable blockers)
+
+Red re-review of the pre-flight surfaced blockers that only matter once
+`UPGRADE_FSM_ENABLED` is flipped ON (the shadow/off binary was already safe).
+All fixed; the gate stays OFF until the deploy-gates below are met on a live
+cluster.
+
+**Pre-flight labels are a DEDICATED set — never the Service-selector keys**
+(HIGH-1 + HIGH-2). A ClusterIP Service selects pods by EXACTLY
+`{app.kubernetes.io/name, app.kubernetes.io/instance}`; a pre-flight pod that
+carried those would be added by the EndpointSlice controller as a LIVE endpoint
+of the production Service (kube-proxy load-balances real user traffic onto the
+unproven candidate — stale clone reads, silently-discarded writes), and an
+app-labelled egress-allow NetworkPolicy would re-select it (egress is additive).
+Fix: `build_preflight_inputs` seeds the pre-flight `labels` from
+`manifests::descriptive_labels` (managed-by + component/part-of/version — NO
+name/instance), and `upgrade::pf_labels` ALSO strips `name`/`instance`
+unconditionally, so the invariant holds for ANY base. The dedicated set is
+`{hanzo.ai/preflight-of, hanzo.ai/preflight-target, app.kubernetes.io/managed-by
+(+ component/part-of/version)}`. `standard_labels = selector_labels ∪
+descriptive_labels` (identical output, DRY). Test:
+`preflight_labels_exclude_the_service_selector_keys` (all four resource kinds
+drop name/instance AND the production Service selector does not match the
+pre-flight labels — the synthetic-endpoint check).
+
+**Egress additivity is stated honestly, and the empty-selector residual is a
+deploy-gate** (HIGH-2). NetworkPolicy egress is a UNION across every policy that
+selects a pod; an empty egress rule set grants NO egress but cannot OVERRIDE an
+`allow` in another policy. With the pre-flight pod carrying dedicated labels, an
+app-labelled egress-allow can no longer re-select it — but a namespace-wide
+`podSelector: {}` egress-allow (e.g. an allow-DNS-to-all baseline) still does,
+and labels cannot escape that. So `build_preflight_netpol` now documents the
+additivity PRECONDITION instead of asserting a guarantee, and the test is named
+`…denies_all_egress…` no longer implies an unconditional guarantee (the
+comment/precondition is explicit). DEPLOY-GATE (pre-enable, per target
+namespace): **no `podSelector: {}` egress-allow policy selects the pre-flight
+pod.** A DEDICATED strict-default-deny namespace for the pre-flight was assessed
+and rejected as infeasible in the operator model: the VolumeSnapshot, its source
+PVC, and the clone-from-snapshot PVC are all namespace-local and the candidate
+pod must mount the clone in that namespace — CSI has no clean cross-namespace
+snapshot/restore — so the pre-flight MUST run in the app's namespace. The
+namespace-egress-allow check is therefore the enable-gate.
+
+**Orphan GC — startup + periodic** (MED-1). `converge_preflight` sweeps a
+Service's own pre-flight each reconcile, but a disable-sweep that silently failed
+(`delete_stale_preflight` swallows errors, then `upgrade_inactive` clears
+`status.upgrade` so no later reconcile retries), or an operator crash
+mid-pre-flight before status was written, leaks a clone PVC + VolumeSnapshot
+(FULL copies of live tenant data) + the real-credential candidate pod with no
+retry. `controllers::service::run_preflight_gc` (wired into `main.rs`, leader-
+gated, INDEPENDENT of `UPGRADE_FSM_ENABLED` so a gate-OFF-after-leak still
+reclaims) lists every `hanzo.ai/preflight-of` resource cluster-wide
+(`upgrade::list_preflight`) and reclaims each whose owning Service has no
+matching in-flight pre-flight. The orphan decision is PURE + tested
+(`liveness_from_status` → `is_preflight_orphan`): a Service is "in-flight" iff
+`status.upgrade.phase == Preflighting` with a matching target hash; anything else
+(done/failed/Rolling/gone) ⇒ orphan; a Service whose status can't be read ⇒
+`Unknown` ⇒ never reclaimed (fail-closed). A `PREFLIGHT_GC_GRACE_SECS` (default
+300) window skips freshly-created resources so the periodic sweep never races a
+reconcile mid-create. Env: `PREFLIGHT_GC_INTERVAL_SECS` (default 600, floor 30),
+`PREFLIGHT_GC_GRACE_SECS` (default 300). No new RBAC (list/delete on
+pods/pvc/networkpolicies/volumesnapshots already granted).
+
+**Pre-flight pod does not automount the SA token** (LOW-1):
+`automountServiceAccountToken: false` on the pre-flight PodSpec — a boot-to-ready
+check needs no k8s API access, and an unmounted token is unusable if egress ever
+leaks. Fail-closed (an app that needs the token to boot fails the pre-flight).
+
+**Status writeback carries a resourceVersion precondition** (LOW-2): the Service
+status patch pins the observed `resourceVersion`, so a stale ex-leader writing in
+the ~10s lease-overlap window 409s instead of clobbering the live leader
+(availability-only; the invariant was already safe).
+
+### Enable checklist (pre-flight over live data — all gates, in order)
+1. `UPGRADE_FSM_ENABLED=true` on the operator Deployment AND per-CR
+   `spec.upgradePolicy.enabled=true`.
+2. Universe operator ClusterRole extended with the pre-flight grants (pods +
+   persistentvolumeclaims create/delete, `snapshot.storage.k8s.io` volumesnapshots).
+3. A real CSI driver + `VolumeSnapshotClass` in each target namespace.
+4. **No `podSelector: {}` egress-allow NetworkPolicy selects the pre-flight pod**
+   in each target namespace (the egress-additivity gate).
+5. Live real-namespace egress smoke: confirm the candidate pod boots to ready
+   with NO live side effect (no external-DB migration, S3 push, KMS write, IAM
+   register) — the one thing unit tests cannot prove.
+
+RED RE-REVIEWS the pre-flight labels + orphan GC before enable.
+
+Test count: 271 → 278 lib tests (+2 controllers::upgrade
+[`preflight_labels_exclude_the_service_selector_keys`,
+`preflight_pod_does_not_automount_the_sa_token`] + 5 controllers::service
+[orphan-GC decision: reclaim-no-inflight, keep-current/reclaim-superseded,
+rolling-is-orphan, fail-closed-unknown, grace-window]; extended
+`preflight_resources_carry_the_owner_and_label` to assert selector-key ABSENCE;
+0 regressions). fmt-clean + clippy-clean (the 4 pre-existing
+datastore.rs/manifests.rs warnings on origin/main are untouched). CRD schema
+unchanged (no bundle regen).
