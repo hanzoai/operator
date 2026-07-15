@@ -34,9 +34,11 @@
 //!   an *instant* sweep (git push → reconcile) with the poll as the guaranteed
 //!   fallback.
 //! * **Ownership scope, not a hand-maintained allow-list** — the default scope
-//!   is every platform CR in the operator's namespace (`hanzo`), by ownership,
-//!   not the CronJob's 24-item string list. `GITOPS_APPLY_SCOPE` optionally
-//!   narrows to a vetted subset for a cautious rollout, then widens to empty.
+//!   is every platform CR in the namespaces this loop owns (`{hanzo}`), by
+//!   ownership, not the CronJob's 24-item string list. `GITOPS_NAMESPACES` widens
+//!   the owned SET one namespace at a time (`*` = every namespace — the
+//!   documented end-state); `GITOPS_APPLY_SCOPE` optionally narrows to a vetted
+//!   subset of CR refs for a cautious rollout, then widens to empty.
 //!
 //! ## Fail-safe by construction
 //!
@@ -47,17 +49,18 @@
 //! never `unwrap`s, never panics).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kube::api::Api;
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind, TypeMeta};
 use kube::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 use crate::apply;
+use crate::core::OperatorError;
 
 /// SSA field manager for git-sourced applies — distinct from the CR
 /// controllers' `hanzo-operator` so a git-driven apply is attributable and never
@@ -70,6 +73,16 @@ const DEFAULT_CRS_PATH: &str = "infra/k8s/operator/crs";
 const DEFAULT_NAMESPACE: &str = "hanzo";
 const DEFAULT_API_BASE: &str = "https://api.github.com";
 const DEFAULT_TOKEN_FILE: &str = "/creds/token";
+
+/// The explicit "every namespace" marker for `GITOPS_NAMESPACES` — the same `*`
+/// idiom `APPS_DRIVE_ALLOW` uses. ONLY this reaches the end-state: a blank or
+/// absent value keeps the default, so owning the whole cluster is always a
+/// deliberate act and never a stray `value: ""`.
+const ALL: &str = "*";
+
+/// Entry separators, shared by `GITOPS_NAMESPACES` and `GITOPS_APPLY_SCOPE` —
+/// one grammar for both lists.
+const SEPS: [char; 4] = [',', ' ', '\t', '\n'];
 
 /// Baseline poll cadence. Far tighter than the 5-min CronJob it replaces; the
 /// webhook makes the common case instant, this is the safety floor.
@@ -109,53 +122,184 @@ impl std::fmt::Debug for Token {
 // Scope — ownership-based, replacing the hand-maintained allow-list.
 // ---------------------------------------------------------------------------
 
-/// Which CRs this loop is permitted to apply. A CR is in-scope iff its namespace
-/// equals [`Scope::namespace`] AND (the optional [`Scope::names`] set is absent,
-/// OR contains the CR's name).
+/// One entry of the vetted subset (`GITOPS_APPLY_SCOPE`). `zen/zen` pins the
+/// (namespace, name) pair; a bare `zen` matches that name in ANY owned namespace.
 ///
-/// The DEFAULT (`names == None`) is ownership-by-namespace — every platform CR in
-/// the namespace, no string list to maintain. `GITOPS_APPLY_SCOPE` narrows to a
-/// vetted subset for a cautious first rollout; clear it (widen to the whole
-/// namespace) once trusted.
-#[derive(Clone, Debug, Default)]
+/// A CR's identity is (namespace, name), never a bare name: once more than one
+/// namespace is owned the same name can exist in two of them, so the pinned form
+/// is the only way to name exactly one CR. The namespace gate runs first, so a
+/// bare entry can never widen past [`Scope::namespaces`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Ref {
+    namespace: Option<String>,
+    name: String,
+}
+
+impl Ref {
+    /// Parse one entry: `namespace/name` (pinned) or `name` (any owned
+    /// namespace). `None` for a malformed entry — an empty side, or more than
+    /// one `/`.
+    fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        match raw.split_once('/') {
+            None => Some(Self {
+                namespace: None,
+                name: raw.to_string(),
+            }),
+            Some((ns, name)) if !ns.is_empty() && !name.is_empty() && !name.contains('/') => {
+                Some(Self {
+                    namespace: Some(ns.to_string()),
+                    name: name.to_string(),
+                })
+            }
+            Some(_) => None,
+        }
+    }
+
+    /// Does this entry vet `(namespace, name)`? A bare entry ignores the
+    /// namespace — the namespace gate already ran; a pinned entry must match both.
+    fn matches(&self, namespace: &str, name: &str) -> bool {
+        self.name == name && self.namespace.as_deref().is_none_or(|ns| ns == namespace)
+    }
+}
+
+/// Why an object is out of scope. Carried on the skip so the drift report can say
+/// WHICH CR is unreconciled and WHY — a bare count is what let a CR sit
+/// un-reconciled for 28h behind `skipped=1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reason {
+    /// Its namespace is not one this loop owns (`GITOPS_NAMESPACES`). An object
+    /// declaring NO namespace lands here too: this loop owns namespaced objects.
+    Namespace,
+    /// Its name is not in the vetted subset (`GITOPS_APPLY_SCOPE`).
+    Name,
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Reason::Namespace => "namespace not owned by this loop (widen GITOPS_NAMESPACES)",
+            Reason::Name => "name not in the vetted subset (widen GITOPS_APPLY_SCOPE)",
+        })
+    }
+}
+
+/// Which CRs this loop is permitted to apply. A CR is in-scope iff it declares a
+/// namespace, AND ([`Scope::namespaces`] is EMPTY — every namespace — OR contains
+/// that namespace), AND (the optional [`Scope::names`] subset is absent, OR vets
+/// the CR's (namespace, name)).
+///
+/// The two gates are orthogonal and compose in one direction: the namespace gate
+/// runs first, so the name subset can only narrow WITHIN the owned namespaces.
+///
+/// The DEFAULT is ownership-by-namespace over `{hanzo}` — every platform CR in
+/// the operator's namespace, no string list to maintain. `GITOPS_NAMESPACES`
+/// widens the owned set (`*` = every namespace, the end-state); `GITOPS_APPLY_SCOPE`
+/// narrows to a vetted subset for a cautious rollout; clear it once trusted.
+///
+/// NOT `Default` on purpose: the derived default would be the EMPTY set, which
+/// means every namespace — a fail-open scope reachable by a stray `..Default`.
+/// The only constructor takes a resolved set from [`resolve_namespaces`].
+#[derive(Clone, Debug)]
 struct Scope {
-    namespace: String,
-    names: Option<HashSet<String>>,
+    /// Owned namespaces. EMPTY = ALL namespaces — the same `empty ⇒ all` idiom
+    /// the operator's `WATCH_NAMESPACE`/`Api::all` controllers already use.
+    namespaces: HashSet<String>,
+    names: Option<HashSet<Ref>>,
 }
 
 impl Scope {
-    /// Build from the operator namespace + the raw `GITOPS_APPLY_SCOPE` value
-    /// (comma/whitespace-separated CR names). Empty → `None` = whole-namespace.
-    fn new(namespace: String, raw_scope: &str) -> Self {
-        let names: HashSet<String> = raw_scope
-            .split([',', ' ', '\t', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+    /// Build from a resolved namespace set + the raw `GITOPS_APPLY_SCOPE` value
+    /// (comma/whitespace-separated refs). Empty → `None` = every name in the
+    /// owned namespaces. A malformed entry is dropped LOUDLY — a silently
+    /// narrower scope is the exact failure this loop must not have.
+    fn new(namespaces: HashSet<String>, raw_scope: &str) -> Self {
+        let mut names = HashSet::new();
+        for entry in raw_scope.split(SEPS).map(str::trim).filter(|s| !s.is_empty()) {
+            match Ref::parse(entry) {
+                Some(r) => {
+                    names.insert(r);
+                }
+                None => warn!(
+                    %entry,
+                    "gitops: ignoring malformed GITOPS_APPLY_SCOPE entry (want `name` or `namespace/name`)"
+                ),
+            }
+        }
         Self {
-            namespace,
+            namespaces,
             names: if names.is_empty() { None } else { Some(names) },
         }
     }
 
-    /// In-scope predicate over a parsed object. Pure — the load-bearing safety
-    /// gate, unit-tested without a cluster.
-    fn allows(&self, obj: &DynamicObject) -> bool {
-        let ns = obj.metadata.namespace.as_deref().unwrap_or_default();
-        if ns != self.namespace {
-            return false;
+    /// Decide one object: `Ok(())` = in scope, `Err(reason)` = out of scope, with
+    /// the reason the drift report prints. Pure — the load-bearing safety gate,
+    /// unit-tested without a cluster.
+    fn decide(&self, obj: &DynamicObject) -> Result<(), Reason> {
+        // This loop owns NAMESPACED objects. An object declaring no namespace is
+        // out of scope in EVERY configuration — including the `*` end-state,
+        // where the namespace gate itself admits everything. There is no implied
+        // namespace to apply it into.
+        let namespace = obj.metadata.namespace.as_deref().unwrap_or_default();
+        if namespace.is_empty() {
+            return Err(Reason::Namespace);
         }
+        if !self.namespaces.is_empty() && !self.namespaces.contains(namespace) {
+            return Err(Reason::Namespace);
+        }
+        let name = obj.metadata.name.as_deref().unwrap_or_default();
         match &self.names {
-            None => true,
-            Some(set) => obj
-                .metadata
-                .name
-                .as_deref()
-                .map(|n| set.contains(n))
-                .unwrap_or(false),
+            None => Ok(()),
+            Some(set) if set.iter().any(|r| r.matches(namespace, name)) => Ok(()),
+            Some(_) => Err(Reason::Name),
         }
     }
+}
+
+/// Resolve the owned namespace set. Precedence: `GITOPS_NAMESPACES` (plural,
+/// comma-separated; `*` = every namespace) beats the singular `GITOPS_NAMESPACE`,
+/// which beats the default `{hanzo}`.
+///
+/// Absent — or blank, or all-separators — at every level yields `{hanzo}`, so the
+/// widening is a NO-OP until deliberately configured. The empty set (every
+/// namespace) is reachable ONLY via an explicit `*`: an accidental `value: ""`
+/// must never hand this loop the whole cluster.
+///
+/// Pure over its inputs rather than over the process env, so it is unit-testable
+/// without `set_var` (which no test may use: env is process-global and the test
+/// harness is threaded).
+fn resolve_namespaces(plural: Option<&str>, singular: Option<&str>) -> HashSet<String> {
+    if let Some(raw) = plural.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut set = HashSet::new();
+        for entry in raw.split(SEPS).map(str::trim).filter(|s| !s.is_empty()) {
+            if entry == ALL {
+                return HashSet::new();
+            }
+            set.insert(entry.to_string());
+        }
+        if !set.is_empty() {
+            return set;
+        }
+    }
+    if let Some(ns) = singular.map(str::trim).filter(|s| !s.is_empty()) {
+        return HashSet::from([ns.to_string()]);
+    }
+    HashSet::from([DEFAULT_NAMESPACE.to_string()])
+}
+
+/// Render the owned set for a log line. The empty set is ALL namespaces and must
+/// SAY so — a blank field would read as "none". Sorted, so the line is stable
+/// (`HashSet` iteration order is not).
+fn namespaces_display(set: &HashSet<String>) -> String {
+    if set.is_empty() {
+        return format!("{ALL} (every namespace)");
+    }
+    let mut v: Vec<&str> = set.iter().map(String::as_str).collect();
+    v.sort_unstable();
+    v.join(",")
 }
 
 // ---------------------------------------------------------------------------
@@ -211,9 +355,22 @@ fn gvk_of(obj: &DynamicObject) -> Option<GroupVersionKind> {
 /// ALONE, never removed.
 #[derive(Debug, PartialEq, Eq)]
 enum Skip {
-    NotReconcilable { file: String },
-    Unparseable { file: String, err: String },
-    OutOfScope { file: String, name: String },
+    NotReconcilable {
+        file: String,
+    },
+    Unparseable {
+        file: String,
+        err: String,
+    },
+    /// A CR this loop does not own. Carries the FULL (namespace, name) identity
+    /// plus the reason: this skip is what silently un-reconciled an app for 28h,
+    /// so it must name the CR, not just count it.
+    OutOfScope {
+        file: String,
+        namespace: String,
+        name: String,
+        reason: Reason,
+    },
 }
 
 /// The full plan for one sweep: the ordered set of applies, plus the skips (for
@@ -251,10 +408,12 @@ fn plan(files: &[(String, String)], scope: &Scope) -> Plan {
         for obj in objs {
             // gvk_of is Some here — parse_manifests filtered out typeless docs.
             let Some(gvk) = gvk_of(&obj) else { continue };
-            if !scope.allows(&obj) {
+            if let Err(reason) = scope.decide(&obj) {
                 plan.skips.push(Skip::OutOfScope {
                     file: name.clone(),
+                    namespace: obj.metadata.namespace.clone().unwrap_or_default(),
                     name: obj.metadata.name.clone().unwrap_or_default(),
+                    reason,
                 });
                 continue;
             }
@@ -397,14 +556,60 @@ enum Outcome {
     InSync,
 }
 
-/// Per-sweep tally, logged as the drift summary.
-#[derive(Debug, Default)]
-struct SweepReport {
-    created: usize,
-    updated: usize,
-    in_sync: usize,
-    errors: usize,
-    skipped: usize,
+/// Per-sweep tally — logged as the drift summary AND served at `GET /gitops`, so
+/// "which CRs are not being reconciled" is a fact you can read, not a log line to
+/// grep.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct SweepReport {
+    pub created: usize,
+    pub updated: usize,
+    pub in_sync: usize,
+    pub errors: usize,
+    /// Applies the API server REFUSED with HTTP 403 — the RBAC gap. Counted apart
+    /// from `errors`: a widened namespace set over an unwidened ClusterRole is
+    /// otherwise indistinguishable from a transient network failure.
+    pub denied: usize,
+    /// Every skip — out-of-scope + unparseable + not-a-CR-file.
+    pub skipped: usize,
+    /// The subset of `skipped` that is a CR this loop does not own — the outage
+    /// counter. `refs` names them.
+    pub out_of_scope: usize,
+    /// `namespace/name` of each out-of-scope CR, so the tally reads as
+    /// "zen/zen is NOT being reconciled" instead of "skipped=1".
+    pub refs: Vec<String>,
+}
+
+/// The last sweep's report, shared with the operator's health server. This
+/// operator surfaces status over that axum server (`/healthz`, `/readyz`,
+/// `POST /reconcile`) and has no metrics registry — this follows that seam rather
+/// than opening a rival one.
+pub type Status = Arc<Mutex<Option<SweepReport>>>;
+
+/// Why one apply failed. `denied` (HTTP 403) is called out from every other
+/// failure: widening the owned namespaces over an unwidened ClusterRole is THE
+/// trap of this change, and it must be a named, loud signal.
+struct Fail {
+    denied: bool,
+    msg: String,
+}
+
+impl Fail {
+    fn other(msg: String) -> Self {
+        Self { denied: false, msg }
+    }
+}
+
+/// True iff the API server refused the call with HTTP 403 — the operator's
+/// ClusterRole does not grant the verb on that resource in that namespace. Pure,
+/// mirroring `apply::is_structural_conflict`, so the RBAC-gap signal is testable
+/// without a cluster.
+fn is_denied(err: &kube::Error) -> bool {
+    matches!(err, kube::Error::Api(resp) if resp.code == 403)
+}
+
+/// [`is_denied`] over the wrapper `apply_dynamic_as` returns.
+fn is_denied_op(err: &OperatorError) -> bool {
+    matches!(err, OperatorError::KubeApi(e) if is_denied(e))
 }
 
 struct Sweeper {
@@ -449,35 +654,37 @@ impl Sweeper {
     }
 
     /// Server-side apply one object; classify vs the live state for the report.
-    async fn apply_one(
-        &mut self,
-        gvk: &GroupVersionKind,
-        obj: &DynamicObject,
-    ) -> Result<Outcome, String> {
-        let ar = self.resolve_ar(gvk).await?;
+    /// The object lands in the namespace GIT declares — there is no implied
+    /// namespace to fall back to, and [`Scope::decide`] already refused any object
+    /// without one.
+    async fn apply_one(&mut self, gvk: &GroupVersionKind, obj: &DynamicObject) -> Result<Outcome, Fail> {
+        let ar = self.resolve_ar(gvk).await.map_err(Fail::other)?;
         let name = obj
             .metadata
             .name
             .clone()
-            .ok_or_else(|| "object missing metadata.name".to_string())?;
+            .ok_or_else(|| Fail::other("object missing metadata.name".to_string()))?;
         let ns = obj
             .metadata
             .namespace
             .clone()
-            .unwrap_or_else(|| self.scope.namespace.clone());
+            .ok_or_else(|| Fail::other(format!("object {name} missing metadata.namespace")))?;
         let api: Api<DynamicObject> = Api::namespaced_with(self.client.clone(), &ns, &ar);
 
-        let before = api
-            .get_opt(&name)
-            .await
-            .map_err(|e| format!("get {name}: {e}"))?;
+        let before = api.get_opt(&name).await.map_err(|e| Fail {
+            denied: is_denied(&e),
+            msg: format!("get {name}: {e}"),
+        })?;
         let prev_rv = before
             .as_ref()
             .and_then(|o| o.metadata.resource_version.clone());
 
         let applied = apply::apply_dynamic_as(&api, obj, FIELD_MANAGER)
             .await
-            .map_err(|e| format!("apply {name}: {e}"))?;
+            .map_err(|e| Fail {
+                denied: is_denied_op(&e),
+                msg: format!("apply {name}: {e}"),
+            })?;
         let new_rv = applied.metadata.resource_version;
 
         Ok(match before {
@@ -526,26 +733,58 @@ impl Sweeper {
             ..Default::default()
         };
         for skip in &plan.skips {
-            debug!(?skip, "gitops: skipped (left untouched)");
+            match skip {
+                // Expected metadata (kustomization.yaml, README) — noise, not news.
+                Skip::NotReconcilable { file } => {
+                    debug!(%file, "gitops: not a CR file (left untouched)")
+                }
+                // A CR file git carries but nothing can parse. Never debug-only:
+                // an unparseable CR is an UNRECONCILED CR.
+                Skip::Unparseable { file, err } => {
+                    warn!(%file, %err, "gitops: UNPARSEABLE — this CR is NOT reconciled (left untouched)")
+                }
+                Skip::OutOfScope {
+                    file,
+                    namespace,
+                    name,
+                    reason,
+                } => {
+                    report.out_of_scope += 1;
+                    report.refs.push(format!("{namespace}/{name}"));
+                    warn!(
+                        %file, %namespace, %name, %reason,
+                        "gitops: OUT OF SCOPE — this CR is NOT being reconciled (left untouched)"
+                    );
+                }
+            }
         }
         for (gvk, obj) in &plan.applies {
             let name = obj.metadata.name.as_deref().unwrap_or_default();
+            let ns = obj.metadata.namespace.as_deref().unwrap_or_default();
             match self.apply_one(gvk, obj).await {
                 Ok(Outcome::Created) => {
                     report.created += 1;
-                    info!(kind = %gvk.kind, %name, "gitops: CREATE");
+                    info!(kind = %gvk.kind, namespace = %ns, %name, "gitops: CREATE");
                 }
                 Ok(Outcome::Updated) => {
                     report.updated += 1;
-                    info!(kind = %gvk.kind, %name, "gitops: UPDATE (reverted drift)");
+                    info!(kind = %gvk.kind, namespace = %ns, %name, "gitops: UPDATE (reverted drift)");
                 }
                 Ok(Outcome::InSync) => {
                     report.in_sync += 1;
-                    debug!(kind = %gvk.kind, %name, "gitops: in-sync");
+                    debug!(kind = %gvk.kind, namespace = %ns, %name, "gitops: in-sync");
                 }
-                Err(e) => {
+                Err(f) if f.denied => {
+                    report.denied += 1;
+                    error!(
+                        kind = %gvk.kind, namespace = %ns, %name, error = %f.msg,
+                        "gitops: REFUSED (HTTP 403) — this loop owns the namespace but RBAC does not \
+                         grant it. Widen the operator ClusterRole, or narrow GITOPS_NAMESPACES"
+                    );
+                }
+                Err(f) => {
                     report.errors += 1;
-                    warn!(kind = %gvk.kind, %name, error = %e, "gitops: apply failed (skipped this tick)");
+                    warn!(kind = %gvk.kind, namespace = %ns, %name, error = %f.msg, "gitops: apply failed (skipped this tick)");
                 }
             }
         }
@@ -556,9 +795,31 @@ impl Sweeper {
             updated = report.updated,
             in_sync = report.in_sync,
             errors = report.errors,
+            denied = report.denied,
             skipped = report.skipped,
+            out_of_scope = report.out_of_scope,
             "gitops: reconcile sweep complete (never prunes)"
         );
+        // The headline. A CR in git that this loop does not own is drift the loop
+        // will NEVER fix, so it says so every sweep, naming names, until the set
+        // is widened (or the CR leaves git). Silence here cost 28h once.
+        if report.out_of_scope > 0 {
+            warn!(
+                count = report.out_of_scope,
+                refs = %report.refs.join(","),
+                owned = %namespaces_display(&self.scope.namespaces),
+                "gitops: CRs in git are NOT being reconciled — their namespace is not owned. \
+                 Add it to GITOPS_NAMESPACES (`*` = every namespace) to own them"
+            );
+        }
+        if report.denied > 0 {
+            error!(
+                count = report.denied,
+                "gitops: applies REFUSED (HTTP 403) — the operator's ClusterRole does not cover the \
+                 namespaces this loop now owns. Widen it (hanzo.ai/*, secrets.lux.network/kmssecrets, \
+                 core persistentvolumeclaims) or narrow GITOPS_NAMESPACES"
+            );
+        }
         Ok(report)
     }
 }
@@ -581,9 +842,12 @@ struct GitopsConfig {
 
 impl GitopsConfig {
     fn from_env() -> Self {
-        let namespace = env_or("GITOPS_NAMESPACE", DEFAULT_NAMESPACE);
+        let namespaces = resolve_namespaces(
+            std::env::var("GITOPS_NAMESPACES").ok().as_deref(),
+            std::env::var("GITOPS_NAMESPACE").ok().as_deref(),
+        );
         let scope = Scope::new(
-            namespace,
+            namespaces,
             &std::env::var("GITOPS_APPLY_SCOPE").unwrap_or_default(),
         );
         Self {
@@ -608,7 +872,12 @@ impl GitopsConfig {
 /// each loop iteration wakes on whichever comes first — the poll tick or a push
 /// notification — so a git push reconciles instantly while the tight poll stays
 /// the guaranteed fallback.
-pub async fn run_gitops_controller(client: Client, reconcile_now: Arc<Notify>, enabled: bool) {
+pub async fn run_gitops_controller(
+    client: Client,
+    reconcile_now: Arc<Notify>,
+    enabled: bool,
+    status: Status,
+) {
     if !enabled {
         info!("Gitops reconcile disabled (set GITOPS_RECONCILE_ENABLED=true to enable)");
         return;
@@ -618,14 +887,20 @@ pub async fn run_gitops_controller(client: Client, reconcile_now: Arc<Notify>, e
         repo = %config.repo,
         branch = %config.branch,
         crs_path = %config.crs_path,
-        namespace = %config.scope.namespace,
+        namespaces = %namespaces_display(&config.scope.namespaces),
         scoped_names = config.scope.names.as_ref().map(|s| s.len()).unwrap_or(0),
         resync_secs = config.resync.as_secs(),
         "Starting native gitops reconcile (git → CR apply loop; replaces the gitops-reconcile CronJob)"
     );
+    if config.scope.namespaces.is_empty() {
+        warn!(
+            "gitops scope: EVERY namespace (GITOPS_NAMESPACES=*). This loop applies any CR the git \
+             path declares, wherever it declares it — bounded only by the operator's ClusterRole."
+        );
+    }
     if config.scope.names.is_none() {
         info!(
-            namespace = %config.scope.namespace,
+            namespaces = %namespaces_display(&config.scope.namespaces),
             "gitops scope: whole namespace (ownership-based default). Set GITOPS_APPLY_SCOPE to \
              start with a vetted subset."
         );
@@ -668,8 +943,16 @@ pub async fn run_gitops_controller(client: Client, reconcile_now: Arc<Notify>, e
         }
         // A sweep failure (token/list/network) is transient — log and wait for
         // the next tick. NEVER crash the operator or block the CR controllers.
-        if let Err(e) = sweeper.sweep().await {
-            warn!(error = %e, "gitops: reconcile sweep failed; will retry next tick");
+        match sweeper.sweep().await {
+            // Publish for `GET /gitops`. A poisoned lock is not worth panicking
+            // over in a loop whose contract is "never panics" — the next sweep
+            // re-publishes.
+            Ok(report) => {
+                if let Ok(mut slot) = status.lock() {
+                    *slot = Some(report);
+                }
+            }
+            Err(e) => warn!(error = %e, "gitops: reconcile sweep failed; will retry next tick"),
         }
     }
 }
@@ -771,38 +1054,286 @@ mod tests {
         assert!(objs.is_empty());
     }
 
+    // ---- namespace-set resolution (the env contract + its precedence) ----
+
+    fn scope(nss: &[&str], raw_scope: &str) -> Scope {
+        Scope::new(nss.iter().map(|s| s.to_string()).collect(), raw_scope)
+    }
+
+    /// (a) THE NO-OP GUARANTEE. Absent config ⇒ `{hanzo}` — today's behavior,
+    /// unchanged — so deploying this binary widens nothing until someone says so.
+    #[test]
+    fn absent_config_owns_only_hanzo() {
+        assert_eq!(
+            resolve_namespaces(None, None),
+            HashSet::from(["hanzo".to_string()])
+        );
+        let s = Scope::new(resolve_namespaces(None, None), "");
+        assert!(s.decide(&obj(&service_yaml("cloud", "hanzo"))).is_ok());
+        // The zen CR — still out of scope until deliberately widened.
+        assert_eq!(
+            s.decide(&obj(&service_yaml("zen", "zen"))),
+            Err(Reason::Namespace)
+        );
+    }
+
+    /// A blank / separators-only value is an ACCIDENT (`value: ""` in a manifest),
+    /// never an intent to own the cluster. It must fall through to the default,
+    /// not to the fail-open empty set.
+    #[test]
+    fn blank_namespaces_falls_back_and_never_means_all() {
+        for raw in ["", "   ", "\t", ",", " , , "] {
+            assert_eq!(
+                resolve_namespaces(Some(raw), None),
+                HashSet::from(["hanzo".to_string()]),
+                "blank GITOPS_NAMESPACES {raw:?} must not widen"
+            );
+        }
+    }
+
+    /// Precedence: plural beats singular beats default. The singular
+    /// `GITOPS_NAMESPACE` keeps working exactly as before.
+    #[test]
+    fn namespaces_precedence_plural_then_singular_then_default() {
+        assert_eq!(
+            resolve_namespaces(Some("a,b"), Some("ignored")),
+            HashSet::from(["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(
+            resolve_namespaces(None, Some("legacy")),
+            HashSet::from(["legacy".to_string()])
+        );
+        assert_eq!(
+            resolve_namespaces(Some("  "), Some("legacy")),
+            HashSet::from(["legacy".to_string()])
+        );
+    }
+
+    /// (c) `*` ⇒ the EMPTY set ⇒ every namespace in scope — the documented
+    /// "widens to empty" end-state, reachable only by saying so explicitly.
+    #[test]
+    fn star_means_every_namespace() {
+        assert!(resolve_namespaces(Some(ALL), None).is_empty());
+        assert!(resolve_namespaces(Some("hanzo, *"), None).is_empty());
+        let s = Scope::new(resolve_namespaces(Some(ALL), None), "");
+        for ns in ["hanzo", "zen", "kube-system", "anything"] {
+            assert!(
+                s.decide(&obj(&service_yaml("x", ns))).is_ok(),
+                "{ns} must be in scope under {ALL}"
+            );
+        }
+    }
+
     // ---- scope predicate ----
 
+    /// (b) An explicit set owns EXACTLY those namespaces — the zen fix. Anything
+    /// else is refused WITH a reason (the caller logs it; never silence).
     #[test]
-    fn scope_default_is_whole_namespace() {
-        let scope = Scope::new("hanzo".into(), "");
-        assert!(scope.names.is_none());
-        assert!(scope.allows(&obj(&service_yaml("analytics", "hanzo"))));
-        assert!(scope.allows(&obj(&service_yaml("world", "hanzo"))));
-        // A CR in another namespace is out of scope (ownership boundary).
-        assert!(!scope.allows(&obj(&service_yaml("evil", "kube-system"))));
+    fn explicit_set_owns_exactly_those_namespaces() {
+        let s = scope(&["hanzo", "zen"], "");
+        assert!(s.decide(&obj(&service_yaml("cloud", "hanzo"))).is_ok());
+        assert!(s.decide(&obj(&service_yaml("zen", "zen"))).is_ok());
+        assert_eq!(
+            s.decide(&obj(&service_yaml("evil", "kube-system"))),
+            Err(Reason::Namespace)
+        );
     }
 
     #[test]
     fn scope_vetted_subset_narrows() {
-        let scope = Scope::new("hanzo".into(), "analytics, billing world");
-        assert!(scope.names.as_ref().unwrap().len() == 3);
-        assert!(scope.allows(&obj(&service_yaml("analytics", "hanzo"))));
-        assert!(scope.allows(&obj(&service_yaml("world", "hanzo"))));
+        let s = scope(&["hanzo"], "analytics, billing world");
+        assert!(s.names.as_ref().unwrap().len() == 3);
+        assert!(s.decide(&obj(&service_yaml("analytics", "hanzo"))).is_ok());
+        assert!(s.decide(&obj(&service_yaml("world", "hanzo"))).is_ok());
         // Present in the namespace but NOT in the vetted subset → skipped.
-        assert!(!scope.allows(&obj(&service_yaml("chat", "hanzo"))));
-        // In the subset but wrong namespace → still rejected.
-        assert!(!scope.allows(&obj(&service_yaml("analytics", "other"))));
+        assert_eq!(
+            s.decide(&obj(&service_yaml("chat", "hanzo"))),
+            Err(Reason::Name)
+        );
+        // In the subset but a namespace we do not own → refused on the NAMESPACE
+        // gate: it runs first, so a bare name never widens past the owned set.
+        assert_eq!(
+            s.decide(&obj(&service_yaml("analytics", "other"))),
+            Err(Reason::Namespace)
+        );
     }
 
+    /// The vetted subset composes with a MULTI-namespace set: a bare name is
+    /// vetted in any owned namespace, and a pinned `ns/name` in exactly one.
     #[test]
-    fn scope_rejects_namespaceless_object() {
-        let scope = Scope::new("hanzo".into(), "");
+    fn vetted_subset_composes_with_the_namespace_set() {
+        let bare = scope(&["hanzo", "zen"], "cloud");
+        assert!(bare.decide(&obj(&service_yaml("cloud", "hanzo"))).is_ok());
+        assert!(bare.decide(&obj(&service_yaml("cloud", "zen"))).is_ok());
+
+        let pinned = scope(&["hanzo", "zen"], "zen/cloud");
+        assert!(pinned.decide(&obj(&service_yaml("cloud", "zen"))).is_ok());
+        // Same NAME, owned namespace, but not the pinned pair → refused.
+        assert_eq!(
+            pinned.decide(&obj(&service_yaml("cloud", "hanzo"))),
+            Err(Reason::Name)
+        );
+    }
+
+    /// A CR ref is (namespace, name) — a malformed entry is dropped rather than
+    /// silently widening or narrowing on a half-parsed key.
+    #[test]
+    fn ref_parse_rejects_malformed_entries() {
+        assert_eq!(
+            Ref::parse("cloud"),
+            Some(Ref {
+                namespace: None,
+                name: "cloud".into()
+            })
+        );
+        assert_eq!(
+            Ref::parse("zen/cloud"),
+            Some(Ref {
+                namespace: Some("zen".into()),
+                name: "cloud".into()
+            })
+        );
+        for bad in ["/cloud", "zen/", "/", "a/b/c", "  "] {
+            assert_eq!(Ref::parse(bad), None, "{bad:?} must not parse");
+        }
+    }
+
+    /// A namespace-less (or cluster-scoped) object is out of scope in EVERY
+    /// configuration — including `*`, where the namespace gate admits everything.
+    /// There is no implied namespace to apply it into.
+    #[test]
+    fn namespaceless_object_is_refused_even_under_star() {
         let cluster_scoped = obj("apiVersion: hanzo.ai/v1\nkind: Service\nmetadata:\n  name: x\n");
-        assert!(!scope.allows(&cluster_scoped));
+        for s in [
+            scope(&["hanzo"], ""),
+            Scope::new(resolve_namespaces(Some(ALL), None), ""),
+        ] {
+            assert_eq!(s.decide(&cluster_scoped), Err(Reason::Namespace));
+        }
     }
 
     // ---- plan(): never-prune + drift skips ----
+
+    /// (d) NAME COLLISION. With more than one owned namespace the same name can
+    /// exist twice. The two CRs are DISTINCT objects: both plan, both keep their
+    /// own namespace, neither clobbers the other. A bare-name key anywhere in the
+    /// pipeline would collapse them into one.
+    #[test]
+    fn same_name_in_two_namespaces_is_two_distinct_objects() {
+        let files = vec![
+            ("hanzo-cloud.yaml".into(), service_yaml("cloud", "hanzo")),
+            ("zen-cloud.yaml".into(), service_yaml("cloud", "zen")),
+        ];
+        let p = plan(&files, &scope(&["hanzo", "zen"], ""));
+        assert_eq!(p.applies.len(), 2, "both must survive planning");
+        let mut keys: Vec<(String, String)> = p
+            .applies
+            .iter()
+            .map(|(_, o)| {
+                (
+                    o.metadata.namespace.clone().unwrap(),
+                    o.metadata.name.clone().unwrap(),
+                )
+            })
+            .collect();
+        keys.sort();
+        // Identity is the PAIR — same name, different namespace, two objects.
+        assert_eq!(
+            keys,
+            vec![
+                ("hanzo".to_string(), "cloud".to_string()),
+                ("zen".to_string(), "cloud".to_string())
+            ]
+        );
+        // And the apply target is each object's OWN namespace: no implied
+        // fallback that would send zen/cloud into hanzo (the clobber).
+        for (_, o) in &p.applies {
+            assert!(o.metadata.namespace.is_some());
+        }
+    }
+
+    /// The name gate keys on the PAIR too: pinning `zen/cloud` must not vet
+    /// `hanzo/cloud`, and vice versa.
+    #[test]
+    fn name_gate_keys_on_the_pair_not_the_bare_name() {
+        let files = vec![
+            ("hanzo-cloud.yaml".into(), service_yaml("cloud", "hanzo")),
+            ("zen-cloud.yaml".into(), service_yaml("cloud", "zen")),
+        ];
+        let p = plan(&files, &scope(&["hanzo", "zen"], "zen/cloud"));
+        assert_eq!(p.applies.len(), 1);
+        assert_eq!(p.applies[0].1.metadata.namespace.as_deref(), Some("zen"));
+        // The other is skipped — and named, with a reason.
+        assert!(p.skips.iter().any(|s| matches!(
+            s,
+            Skip::OutOfScope { namespace, name, reason: Reason::Name, .. }
+                if namespace == "hanzo" && name == "cloud"
+        )));
+    }
+
+    /// (e) THE OUTAGE. A CR whose namespace we do not own must be counted AND
+    /// carry its (namespace, name) + reason — the drift report's whole job. This
+    /// is the zen CR: `crs/zen.yaml`, `namespace: zen`, skipped behind a bare
+    /// `skipped=1` for 28h.
+    #[test]
+    fn out_of_scope_skip_names_the_cr_and_is_never_silent() {
+        let files = vec![("zen.yaml".into(), service_yaml("zen", "zen"))];
+        let p = plan(&files, &scope(&["hanzo"], ""));
+        assert!(p.applies.is_empty());
+        assert_eq!(p.skips.len(), 1);
+        // Not a bare count: the skip carries everything an operator needs to see
+        // WHICH CR is unreconciled and WHY, without a cluster or a debug log.
+        match &p.skips[0] {
+            Skip::OutOfScope {
+                file,
+                namespace,
+                name,
+                reason,
+            } => {
+                assert_eq!(file, "zen.yaml");
+                assert_eq!(namespace, "zen");
+                assert_eq!(name, "zen");
+                assert_eq!(*reason, Reason::Namespace);
+                // The reason renders as an actionable sentence, not an enum name.
+                assert!(reason.to_string().contains("GITOPS_NAMESPACES"));
+            }
+            other => panic!("expected OutOfScope, got {other:?}"),
+        }
+        // Widening the set reconciles it — the fix, end to end.
+        let widened = plan(&files, &scope(&["hanzo", "zen"], ""));
+        assert_eq!(widened.applies.len(), 1);
+        assert!(widened.skips.is_empty());
+    }
+
+    /// A 403 is the RBAC gap and must be distinguishable from a transient error —
+    /// widening the owned set over an unwidened ClusterRole is the trap.
+    #[test]
+    fn denial_is_classified_apart_from_other_failures() {
+        let forbidden = kube::Error::Api(Box::new(kube::core::Status {
+            code: 403,
+            message: "services.hanzo.ai is forbidden".into(),
+            reason: "Forbidden".into(),
+            ..Default::default()
+        }));
+        assert!(is_denied(&forbidden));
+        assert!(is_denied_op(&OperatorError::KubeApi(forbidden)));
+        for code in [404, 409, 422, 500] {
+            assert!(!is_denied(&kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                ..Default::default()
+            }))));
+        }
+    }
+
+    #[test]
+    fn namespaces_display_says_all_for_the_empty_set() {
+        assert!(namespaces_display(&HashSet::new()).contains("every namespace"));
+        // Sorted → the log line is stable across runs (HashSet order is not).
+        assert_eq!(
+            namespaces_display(&HashSet::from(["zen".to_string(), "hanzo".to_string()])),
+            "hanzo,zen"
+        );
+    }
 
     #[test]
     fn plan_applies_in_scope_and_reports_skips() {
@@ -819,7 +1350,7 @@ mod tests {
                 "apiVersion: hanzo.ai/v1\nkind: Service\n  bad: [indent\n".into(),
             ),
         ];
-        let scope = Scope::new("hanzo".into(), "");
+        let scope = scope(&["hanzo"], "");
         let p = plan(&files, &scope);
         assert_eq!(p.applies.len(), 2, "only the two in-scope services apply");
         let names: Vec<_> = p
@@ -832,7 +1363,8 @@ mod tests {
         assert!(p
             .skips
             .iter()
-            .any(|s| matches!(s, Skip::OutOfScope { name, .. } if name == "evil")));
+            .any(|s| matches!(s, Skip::OutOfScope { namespace, name, .. }
+                if namespace == "kube-system" && name == "evil")));
         assert!(p
             .skips
             .iter()
@@ -848,7 +1380,7 @@ mod tests {
         // A file present in one sweep and absent the next must NEVER produce a
         // delete — the Plan type has no delete variant, so a removed CR simply
         // vanishes from `applies` and is left alone in the cluster.
-        let scope = Scope::new("hanzo".into(), "");
+        let scope = scope(&["hanzo"], "");
         let with_both = vec![
             ("a.yaml".into(), service_yaml("a", "hanzo")),
             ("b.yaml".into(), service_yaml("b", "hanzo")),

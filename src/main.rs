@@ -119,16 +119,28 @@ struct UpOpts {
     manifests: Option<std::path::PathBuf>,
 }
 
-/// Shared state for the health/webhook server: leadership (for `/readyz`) and
-/// the gitops reconcile trigger (for `POST /reconcile`).
+/// Shared state for the health/webhook server: leadership (for `/readyz`), the
+/// gitops reconcile trigger (for `POST /reconcile`), and the last gitops sweep
+/// (for `GET /gitops`).
 #[derive(Clone)]
 struct HealthState {
     leader: Arc<AtomicBool>,
     reconcile_now: Arc<Notify>,
+    gitops: controllers::gitops::Status,
 }
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The last gitops sweep — the drift + skip tally as a readable fact rather than
+/// a log line to grep. `out_of_scope`/`refs` name the CRs git declares that this
+/// loop does NOT reconcile; `denied` names the RBAC gap. `null` until the first
+/// sweep (and forever when the loop is disabled).
+async fn gitops_status(
+    axum::extract::State(state): axum::extract::State<HealthState>,
+) -> axum::Json<Option<controllers::gitops::SweepReport>> {
+    axum::Json(state.gitops.lock().ok().and_then(|slot| slot.clone()))
 }
 
 async fn readyz(
@@ -211,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v == "true")
         .unwrap_or(false);
     let reconcile_now = Arc::new(Notify::new());
+    let gitops_status_slot: controllers::gitops::Status = Arc::new(std::sync::Mutex::new(None));
 
     // Health + webhook server.
     let health_addr: SocketAddr = args.health_addr.parse()?;
@@ -218,9 +231,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/reconcile", post(reconcile_webhook))
+        .route("/gitops", get(gitops_status))
         .with_state(HealthState {
             leader: leader_flag.clone(),
             reconcile_now: reconcile_now.clone(),
+            gitops: gitops_status_slot.clone(),
         });
 
     let group = api_group.group.clone();
@@ -240,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Controllers — wait for leadership then run all of them.
-        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone(), gitops_enabled) => {
+        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone(), gitops_enabled, gitops_status_slot.clone()) => {
             warn!("Controllers exited");
         }
 
@@ -297,6 +312,7 @@ async fn run_all_controllers(
     leader_flag: Arc<AtomicBool>,
     reconcile_now: Arc<Notify>,
     gitops_enabled: bool,
+    gitops_status: controllers::gitops::Status,
 ) {
     // Block until we become the leader.
     loop {
@@ -485,7 +501,12 @@ async fn run_all_controllers(
         // iteration wakes on the poll tick OR the POST /reconcile webhook
         // (whichever first) so a git push reconciles instantly, the poll is the
         // guaranteed fallback. See controllers/gitops.rs for the scope model.
-        controllers::gitops::run_gitops_controller(client.clone(), reconcile_now, gitops_enabled),
+        controllers::gitops::run_gitops_controller(
+            client.clone(),
+            reconcile_now,
+            gitops_enabled,
+            gitops_status
+        ),
     );
 }
 

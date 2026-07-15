@@ -570,14 +570,15 @@ real-time path.
 
 ### Scope — ownership, not a hand-maintained allow-list
 
-The DEFAULT scope is ownership-by-namespace: every platform CR in the operator's
-namespace (`hanzo`, `GITOPS_NAMESPACE`). All 78 crs/ CRs declare
-`namespace: hanzo`, so the namespace predicate cleanly IS the platform boundary
-(a CR in any other namespace, or cluster-scoped, is out of scope). The safety
-config `GITOPS_APPLY_SCOPE` (comma/space-separated CR names) optionally NARROWS
-to a vetted subset for a cautious first rollout — clear it (widen to the whole
+The DEFAULT scope is ownership-by-namespace: every platform CR in the namespaces
+the loop OWNS — `{hanzo}` unless configured. The safety config
+`GITOPS_APPLY_SCOPE` (comma/space-separated CR refs) optionally NARROWS to a
+vetted subset for a cautious first rollout — clear it (widen to the whole
 namespace) once trusted. This replaces the CronJob's `RECONCILE_ALLOWLIST`; the
 model is now ownership, the list is just an optional throttle.
+
+See "Multi-namespace ownership" below for the namespace SET
+(`GITOPS_NAMESPACES`) that widens past the single `hanzo` namespace.
 
 ### Fail-safe
 
@@ -645,6 +646,96 @@ App Kind's 13 tests and every prior suite intact; 0 regressions). `cargo build
 to clippy-driver); neutralizing the wrapper (`RUSTC_WRAPPER=""`) for one run
 confirms my files are warning-free. The pre-existing datastore/manifests
 fmt+clippy drift on origin/main is untouched.
+
+## Multi-namespace ownership — the gitops loop owns a namespace SET (28h zen outage)
+
+The gitops loop was scoped to ONE namespace (`Scope::namespace: String`, default
+`hanzo`). Two consequences, both observed in prod with
+`GITOPS_RECONCILE_ENABLED=true` live on 0.7.4:
+
+1. CRs INSIDE `hanzo` reconcile — a bare `kubectl patch` reverts to the git-pinned
+   value within ~30min (working as designed; the durable fix is editing git).
+2. CRs OUTSIDE `hanzo` were SILENTLY skipped. `crs/zen.yaml` (`kind: App`,
+   `namespace: zen`, commit `423e2623`) was skipped as out-of-scope, so zen served
+   a stale image for 28h with no signal. The skip detail sat behind
+   `debug!(?skip, …)` while the summary said only `skipped=1`. It was reverted
+   (`dfd54f36`) back to a hand-managed Deployment — the loop never owned it.
+
+Silence was the bug. The scope narrowing was only half of it.
+
+### The namespace SET (`GITOPS_NAMESPACES`)
+
+`Scope::namespace: String` → `Scope::namespaces: HashSet<String>`, with the SAME
+`empty ⇒ all` idiom the operator's `WATCH_NAMESPACE`/`Api::all` controllers
+already use, and the module header's documented "widens to empty" end-state.
+
+Precedence (`resolve_namespaces`, pure over its inputs — no `set_var` in tests):
+1. `GITOPS_NAMESPACES` — comma/space-separated. `*` (any entry) ⇒ the EMPTY set
+   ⇒ EVERY namespace. Blank/separators-only falls through (never widens).
+2. `GITOPS_NAMESPACE` — the singular, unchanged.
+3. default `{hanzo}`.
+
+ABSENT AT EVERY LEVEL ⇒ `{hanzo}` = today's behavior exactly, so the binary is a
+NO-OP until deliberately widened. The all-namespaces end-state is reachable ONLY
+via an explicit `*` — a stray `value: ""` must never hand the loop the cluster.
+`Scope` deliberately drops `derive(Default)`: the derived default would be the
+empty (= all) set, a fail-open scope reachable by a stray `..Default::default()`.
+
+`GITOPS_APPLY_SCOPE` is unchanged and composes: the namespace gate runs FIRST, so
+a name subset only ever narrows WITHIN the owned namespaces.
+
+### Identity is (namespace, name) — never a bare name
+
+Multi-namespace makes a name collision possible (`cloud` in `hanzo` AND in `zen`).
+The vetted subset is now a set of `Ref { namespace: Option<String>, name }`:
+`zen/cloud` pins the pair, a bare `cloud` matches that name in ANY owned namespace
+(preserving today's meaning, since only one namespace was owned). `apply_one` no
+longer defaults a missing namespace to `scope.namespace` — the object lands where
+GIT declares, or nowhere. A namespace-less/cluster-scoped object is refused in
+EVERY configuration, including `*`. The blob/AR caches key on filename/GVK, which
+are already collision-free.
+
+### The silent skip is dead
+
+`Skip::OutOfScope` now carries `{file, namespace, name, reason}` and is logged at
+WARN per CR ("this CR is NOT being reconciled"), plus a per-sweep WARN headline
+naming every ref. Severity is honest: `NotReconcilable` (kustomization.yaml) stays
+`debug`; `Unparseable` was ALSO silent at debug and is now `warn` (an unparseable
+CR is an unreconciled CR). `SweepReport` gains `out_of_scope` + `refs` (the outage
+counters, distinct from the boring `skipped` total) and `denied`.
+
+Exposure follows the EXISTING seam — the axum health server (`/healthz`,
+`/readyz`, `POST /reconcile`) — not a rival metrics path (there is no registry in
+this binary): `GET /gitops` serves the last `SweepReport` as JSON.
+
+### RBAC — no delta needed (verified, not assumed)
+
+Widening the loop needs NO RBAC change. Verified against `hanzoai/universe`
+`infra/k8s/operator/deployment.yaml`: the operator SA is bound by a
+**ClusterRoleBinding** (`operator-manager-rolebinding`) to a **ClusterRole**
+(`operator-manager-role`) — already cluster-wide, every namespace. Every GVK in
+`crs/` is already granted: `hanzo.ai/*` (App ×72, Service ×2), 
+`secrets.lux.network/kmssecrets` (×6), core `persistentvolumeclaims` (×4). The one
+namespaced Role (`operator-leader-election-role`) is Lease/configmap election in
+`operator-system` only. The CRD controllers are already all-namespaces too
+(`WATCH_NAMESPACE` defaults to `""` ⇒ `Api::all`), so a CR applied into `zen`
+materializes without further change.
+
+This loop APPLIES; it does not watch — so there is no informer to 403 silently.
+A refused apply is nonetheless called out: 403 is classified (`is_denied`) apart
+from transient errors and logged at ERROR naming the namespace + the fix, and
+counted as `denied`. Never a silent skip.
+
+Test count: 329 → 341 lib tests (+12 gitops: no-op default, blank-never-widens,
+precedence, `*`⇒all, explicit-set, vetted-subset composition incl. pinned refs,
+`Ref::parse` malformed, namespace-less refused under `*`, name-collision =
+two distinct objects, pair-keyed name gate, out-of-scope skip names the CR,
+403 classification, display; 0 regressions).
+
+**NOT deployed. Not enabled beyond today's default.** Deploy-gate: to actually
+reconcile zen, BOTH (a) re-add `crs/zen.yaml` to `hanzoai/universe` (it is
+reverted — the loop can only apply what git declares), and (b) set
+`GITOPS_NAMESPACES=hanzo,zen` on the operator Deployment. Neither is done here.
 
 ## Pre-flight hardening — labels, egress additivity, orphan GC (pre-enable blockers)
 
