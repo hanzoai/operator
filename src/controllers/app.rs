@@ -164,6 +164,21 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
 
     match &dispatch {
         Dispatch::Service => {
+            // A service profile materializes a Deployment from `spec.image`; an
+            // empty image would SSA-blank a live workload's container image
+            // (image is `serde(default)` so imageless dns/ingress roles can
+            // deserialize). Guard it: a service App with no image is InvalidSpec,
+            // reported and NOT applied.
+            if cr.spec.service.image.repository.trim().is_empty() {
+                return Ok(degrade(
+                    &ctx,
+                    &name,
+                    &namespace,
+                    &cr,
+                    "role service requires spec.image.repository",
+                )
+                .await);
+            }
             // The flattened ServiceSpec IS the reconcile input verbatim — no
             // projection, the hot path stays a direct delegate call.
             service::reconcile_service_inner_pub(
@@ -179,7 +194,19 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Datastore(engine) => {
-            let db: DBSpec = project(&cr.spec)?;
+            let db: DBSpec = match project(&cr.spec) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(degrade(
+                        &ctx,
+                        &name,
+                        &namespace,
+                        &cr,
+                        &format!("role datastore: {e}"),
+                    )
+                    .await)
+                }
+            };
             datastore::reconcile_datastore_inner_pub(
                 &ctx.client,
                 &name,
@@ -194,14 +221,28 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Dns => {
-            let spec: DNSSpec = project(&cr.spec)?;
+            let spec: DNSSpec = match project(&cr.spec) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(
+                        degrade(&ctx, &name, &namespace, &cr, &format!("role dns: {e}")).await,
+                    )
+                }
+            };
             dns::reconcile_dns_inner_pub(&ctx.client, &name, &namespace, &spec, owner).await?;
             let status =
                 workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment).await;
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Ingress => {
-            let spec: IngressKindSpec = project(&cr.spec)?;
+            let spec: IngressKindSpec = match project(&cr.spec) {
+                Ok(v) => v,
+                Err(e) => {
+                    return Ok(
+                        degrade(&ctx, &name, &namespace, &cr, &format!("role ingress: {e}")).await,
+                    )
+                }
+            };
             ingress::reconcile_ingress_inner_pub(&ctx.client, &name, &namespace, &spec, owner)
                 .await?;
             // Ingress materializes shards, not one workload — a successful apply
@@ -257,6 +298,19 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
     }
 
     Ok(Action::requeue(Duration::from_secs(60)))
+}
+
+/// Record an invalid-spec condition and stop this reconcile WITHOUT materializing
+/// anything — the diagnostic twin of the `Unknown` arm. A datastore/dns/ingress
+/// App whose spec cannot project onto its delegate (e.g. `role: sql` missing
+/// `storage`), or a service App with no `image`, becomes a VISIBLE
+/// `Degraded`/`InvalidSpec` status + requeue instead of a silent 30s hot-loop
+/// (a projection `?` that bailed before writing status) or a live-image blank.
+async fn degrade(ctx: &Ctx, name: &str, namespace: &str, cr: &App, msg: &str) -> Action {
+    warn!(name, namespace, role = ?cr.spec.role, invalid = %msg, "App spec is unsatisfiable; reporting Degraded");
+    let status = marker_status(cr, Phase::Degraded, false, "InvalidSpec", msg);
+    write_status(&ctx.client, name, namespace, cr, status).await;
+    Action::requeue(Duration::from_secs(60))
 }
 
 // ============================================================================
