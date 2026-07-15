@@ -53,6 +53,7 @@ use crate::apply;
 use crate::core::health::{self, BootOutcome};
 use crate::core::Result;
 use crate::crd::{UpgradePhase, UpgradeRecord, UpgradeStatus};
+use crate::manifests::{LABEL_INSTANCE, LABEL_NAME};
 
 /// Default health-gated rollout deadline before auto-rollback.
 pub const DEFAULT_ROLLOUT_DEADLINE_SECS: i64 = 300;
@@ -645,7 +646,7 @@ pub fn upgrade_refusal(
 
 /// First 8 hex chars of sha256(target) — stable per target image so a restart
 /// mid-pre-flight re-finds the pod, and two targets never collide.
-fn target_hash(target: &str) -> String {
+pub fn target_hash(target: &str) -> String {
     let d = Sha256::digest(target.as_bytes());
     format!("{:02x}{:02x}{:02x}{:02x}", d[0], d[1], d[2], d[3])
 }
@@ -723,12 +724,25 @@ impl PreflightInputs {
 const CLONE_VOLUME: &str = "preflight-data";
 const SNAPSHOT_GVK: (&str, &str, &str) = ("snapshot.storage.k8s.io", "v1", "VolumeSnapshot");
 
+/// The complete label set for a pre-flight resource: the caller's descriptive
+/// base plus the two pre-flight identity keys. By construction it NEVER carries
+/// the Service-selector keys (`app.kubernetes.io/name`, `.../instance`): if it
+/// did, the production ClusterIP Service would select the candidate pod as a live
+/// endpoint (HIGH-1: kube-proxy load-balances real user traffic onto the unproven
+/// candidate, which serves stale clone reads and silently discards writes) and an
+/// app-labelled egress-allow NetworkPolicy would re-grant the candidate the DB/
+/// KMS/S3 egress the deny-all is meant to remove (HIGH-2: NetworkPolicy egress is
+/// additive — a union across policies — so a deny-all cannot override an allow).
+/// Identity comes from the two pre-flight-only keys below; the selector keys are
+/// stripped unconditionally so the invariant holds for ANY base passed in.
 fn pf_labels(
     base: &BTreeMap<String, String>,
     name: &str,
     target: &str,
 ) -> BTreeMap<String, String> {
     let mut l = base.clone();
+    l.remove(LABEL_NAME);
+    l.remove(LABEL_INSTANCE);
     l.insert(PREFLIGHT_OF_LABEL.to_string(), name.to_string());
     l.insert(PREFLIGHT_TARGET_LABEL.to_string(), target_hash(target));
     l
@@ -792,6 +806,11 @@ pub fn build_preflight_pod(name: &str, target: &str, i: &PreflightInputs) -> Pod
                 .then(|| i.image_pull_secrets.clone()),
             service_account_name: (!i.service_account_name.is_empty())
                 .then(|| i.service_account_name.clone()),
+            // A boot-to-ready check needs NO Kubernetes API access, so never mount
+            // the ServiceAccount token (LOW-1). If egress ever leaks (HIGH-2), an
+            // unmounted token can't be used at the app's RBAC. Fail-closed: an app
+            // that genuinely needs the token to boot fails the pre-flight — safe.
+            automount_service_account_token: Some(false),
             // A crash is terminal — never restart, so a migration crash stays
             // observable as a terminated container instead of a hidden loop.
             restart_policy: Some("Never".to_string()),
@@ -875,16 +894,31 @@ fn preflight_pod_match_labels(name: &str, target: &str) -> BTreeMap<String, Stri
     m
 }
 
-/// Build the deny-all-egress `NetworkPolicy` scoping the pre-flight candidate pod
-/// (HIGH-1). The CSI clone isolates the pod's DATA, but the candidate boots the
-/// real image with the real master key (`envFrom`) and the real ServiceAccount —
-/// everything reached over the network is LIVE (external-DB migrations,
-/// replicate/S3 push, KMS writes, IAM registration, notifications/billing/
-/// webhooks). A boot-to-ready check needs no egress, so this policy selects the
-/// pre-flight pod (by its unique pre-flight labels, never a production pod) and
-/// denies ALL egress. The kubelet readiness probe is ingress from the node and
-/// is unaffected, so the boot check still works. Owned + labelled like the
-/// pod/clone/snapshot so `converge_preflight` creates and sweeps it identically.
+/// Build the egress-isolation `NetworkPolicy` scoping the pre-flight candidate
+/// pod (HIGH-2). The CSI clone isolates the pod's DATA, but the candidate boots
+/// the real image with the real master key (`envFrom`) and the real
+/// ServiceAccount — everything reached over the network is LIVE (external-DB
+/// migrations, replicate/S3 push, KMS writes, IAM registration, notifications/
+/// billing/webhooks). A boot-to-ready check needs no egress, so this policy
+/// selects the pre-flight pod (by its unique pre-flight labels, never a
+/// production pod) and adds an empty egress rule set.
+///
+/// PRECONDITION — NetworkPolicy egress is ADDITIVE. The pod's *allowed* egress is
+/// the UNION of the egress rules of EVERY policy that selects it; an empty rule
+/// set cannot override an `allow` in another policy. This policy therefore
+/// removes egress ONLY IF no OTHER egress-allow policy in the namespace also
+/// selects this pod. The pre-flight pod carries the dedicated pre-flight labels
+/// and NOT the app selector keys (see [`pf_labels`]), so an app-labelled
+/// egress-allow policy cannot re-select it — but a namespace-wide
+/// `podSelector: {}` egress-allow (e.g. an allow-DNS-to-all baseline) still does.
+/// "No `podSelector: {}` egress-allow policy in the target namespace selects the
+/// pre-flight pod" is a DOCUMENTED pre-enable deploy-gate (see the LLM.md /
+/// operator CLAUDE.md enable checklist); this builder does not — and standard
+/// NetworkPolicy cannot — guarantee it alone.
+///
+/// The kubelet readiness probe is ingress from the node and is unaffected, so the
+/// boot check still works. Owned + labelled like the pod/clone/snapshot so
+/// `converge_preflight` creates and sweeps it identically.
 pub fn build_preflight_netpol(name: &str, target: &str, i: &PreflightInputs) -> NetworkPolicy {
     NetworkPolicy {
         metadata: ObjectMeta {
@@ -899,7 +933,9 @@ pub fn build_preflight_netpol(name: &str, target: &str, i: &PreflightInputs) -> 
                 match_labels: Some(preflight_pod_match_labels(name, target)),
                 ..Default::default()
             }),
-            // Egress isolation with an EMPTY egress rule set ⇒ deny ALL egress.
+            // Egress isolation with an EMPTY egress rule set ⇒ this policy grants
+            // NO egress. Effective egress is the UNION across all policies that
+            // select the pod (additive); see the doc comment's precondition.
             policy_types: Some(vec!["Egress".to_string()]),
             egress: Some(vec![]),
             ..Default::default()
@@ -959,8 +995,10 @@ pub async fn converge_preflight(
         return Ok(());
     };
 
-    // Deny-all-egress NetworkPolicy FIRST so egress is denied before the candidate
-    // pod is admitted (HIGH-1: no window where the booting candidate has egress).
+    // Egress-isolation NetworkPolicy FIRST so it is in place before the candidate
+    // pod is admitted (no window where the booting candidate has this policy's
+    // egress un-applied; effectiveness is subject to the additivity precondition
+    // on `build_preflight_netpol` — the namespace-egress-allow deploy-gate).
     let nps: Api<NetworkPolicy> = Api::namespaced(client.clone(), namespace);
     if nps
         .get_opt(&preflight_netpol_name(name, target))
@@ -1065,6 +1103,149 @@ fn should_delete(label_hash: &Option<String>, keep_hash: Option<&str>) -> bool {
     match keep_hash {
         None => true,
         Some(keep) => label_hash.as_deref() != Some(keep),
+    }
+}
+
+// ============================================================================
+// Orphan discovery — the mechanics the startup/periodic label-GC drives (MED-1).
+// `converge_preflight` sweeps a Service's OWN pre-flight each reconcile, but a
+// disable-sweep that silently failed, or an operator crash mid-pre-flight before
+// the status was written, leaves a clone PVC + VolumeSnapshot (full copies of
+// live tenant data) and a real-credential candidate pod with no reconcile that
+// ever retries. This module lists every pre-flight resource cluster-wide by
+// label and deletes it by ref; the ORPHAN POLICY (which live Service still owns
+// an in-flight pre-flight) lives with the Service controller.
+// ============================================================================
+
+/// One of the four pre-flight resource kinds a Service materializes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreflightKind {
+    Pod,
+    NetworkPolicy,
+    ClonePvc,
+    Snapshot,
+}
+
+/// A live pre-flight resource discovered by [`list_preflight`]. Carries the
+/// identity the orphan policy needs (`of` = owning Service, `hash` = target) and
+/// the `created` timestamp for the GC grace window.
+#[derive(Clone, Debug)]
+pub struct PreflightRef {
+    pub kind: PreflightKind,
+    pub namespace: String,
+    pub name: String,
+    pub of: String,
+    pub hash: String,
+    pub created: Option<Timestamp>,
+}
+
+fn preflight_ref<K: ResourceExt>(kind: PreflightKind, o: &K) -> Option<PreflightRef> {
+    let of = o.labels().get(PREFLIGHT_OF_LABEL)?.clone();
+    Some(PreflightRef {
+        kind,
+        namespace: o.namespace().unwrap_or_default(),
+        name: o.name_any(),
+        of,
+        hash: o
+            .labels()
+            .get(PREFLIGHT_TARGET_LABEL)
+            .cloned()
+            .unwrap_or_default(),
+        created: o.meta().creation_timestamp.as_ref().map(|t| t.0),
+    })
+}
+
+/// List every pre-flight resource (candidate pod, egress NetworkPolicy, clone
+/// PVC, VolumeSnapshot) carrying the `preflight-of` label. `namespace` empty ⇒
+/// all namespaces. Best-effort: a per-kind list error is logged and skipped (an
+/// absent VolumeSnapshot CRD, say) so the GC degrades to the kinds it can see.
+pub async fn list_preflight(client: &kube::Client, namespace: &str) -> Vec<PreflightRef> {
+    let lp = ListParams::default().labels(PREFLIGHT_OF_LABEL);
+    let mut out = Vec::new();
+
+    let pods: Api<Pod> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    };
+    match pods.list(&lp).await {
+        Ok(list) => out.extend(
+            list.iter()
+                .filter_map(|o| preflight_ref(PreflightKind::Pod, o)),
+        ),
+        Err(e) => tracing::debug!(error = %e, "pre-flight GC: pod list failed"),
+    }
+
+    let nps: Api<NetworkPolicy> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    };
+    match nps.list(&lp).await {
+        Ok(list) => out.extend(
+            list.iter()
+                .filter_map(|o| preflight_ref(PreflightKind::NetworkPolicy, o)),
+        ),
+        Err(e) => tracing::debug!(error = %e, "pre-flight GC: networkpolicy list failed"),
+    }
+
+    let pvcs: Api<PersistentVolumeClaim> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), namespace)
+    };
+    match pvcs.list(&lp).await {
+        Ok(list) => out.extend(
+            list.iter()
+                .filter_map(|o| preflight_ref(PreflightKind::ClonePvc, o)),
+        ),
+        Err(e) => tracing::debug!(error = %e, "pre-flight GC: pvc list failed"),
+    }
+
+    let (g, v, k) = SNAPSHOT_GVK;
+    let ar = ApiResource::from_gvk(&GroupVersionKind::gvk(g, v, k));
+    let snaps: Api<DynamicObject> = if namespace.is_empty() {
+        Api::all_with(client.clone(), &ar)
+    } else {
+        Api::namespaced_with(client.clone(), namespace, &ar)
+    };
+    match snaps.list(&lp).await {
+        Ok(list) => out.extend(
+            list.iter()
+                .filter_map(|o| preflight_ref(PreflightKind::Snapshot, o)),
+        ),
+        Err(e) => tracing::debug!(error = %e, "pre-flight GC: volumesnapshot list failed"),
+    }
+
+    out
+}
+
+/// Delete one pre-flight resource by ref (background delete; best-effort — a
+/// delete error is logged and swallowed, the next GC sweep retries).
+pub async fn delete_preflight(client: &kube::Client, r: &PreflightRef) {
+    let dp = DeleteParams::background();
+    let res = match r.kind {
+        PreflightKind::Pod => {
+            let a: Api<Pod> = Api::namespaced(client.clone(), &r.namespace);
+            a.delete(&r.name, &dp).await.map(|_| ())
+        }
+        PreflightKind::NetworkPolicy => {
+            let a: Api<NetworkPolicy> = Api::namespaced(client.clone(), &r.namespace);
+            a.delete(&r.name, &dp).await.map(|_| ())
+        }
+        PreflightKind::ClonePvc => {
+            let a: Api<PersistentVolumeClaim> = Api::namespaced(client.clone(), &r.namespace);
+            a.delete(&r.name, &dp).await.map(|_| ())
+        }
+        PreflightKind::Snapshot => {
+            let (g, v, k) = SNAPSHOT_GVK;
+            let ar = ApiResource::from_gvk(&GroupVersionKind::gvk(g, v, k));
+            let a: Api<DynamicObject> = Api::namespaced_with(client.clone(), &r.namespace, &ar);
+            a.delete(&r.name, &dp).await.map(|_| ())
+        }
+    };
+    if let Err(e) = res {
+        tracing::debug!(error = %e, namespace = %r.namespace, name = %r.name, kind = ?r.kind, "pre-flight GC: delete failed (retried next sweep)");
     }
 }
 
@@ -2026,7 +2207,11 @@ mod tests {
             storage_size: "10Gi".into(),
             storage_class: "do-block-storage".into(),
             snapshot_class: "do-snap".into(),
-            labels: BTreeMap::new(),
+            // The REAL leaky path: `build_preflight_inputs` historically seeded
+            // `labels` from `standard_labels`, which carries the Service-selector
+            // keys `app.kubernetes.io/name` + `.../instance`. Exercise that here so
+            // every builder-shape test proves the selector keys are stripped.
+            labels: crate::manifests::standard_labels("cloud", "api", "hanzo", "v2"),
             owner: OwnerReference::default(),
         }
     }
@@ -2139,6 +2324,100 @@ mod tests {
         assert_eq!(
             labels.get(PREFLIGHT_TARGET_LABEL).map(String::as_str),
             Some(target_hash("img:v2").as_str())
+        );
+        // …and NEVER the Service-selector keys, even though `stateful_inputs`
+        // seeds `labels` from `standard_labels` (which carries them).
+        assert!(
+            !labels.contains_key(LABEL_NAME),
+            "pre-flight pod must NOT carry app.kubernetes.io/name"
+        );
+        assert!(
+            !labels.contains_key(LABEL_INSTANCE),
+            "pre-flight pod must NOT carry app.kubernetes.io/instance"
+        );
+    }
+
+    // ---------- HIGH-1 + HIGH-2: pre-flight labels exclude the Service selector ----------
+
+    #[test]
+    fn preflight_labels_exclude_the_service_selector_keys() {
+        // The production ClusterIP Service selects pods by EXACTLY
+        // {app.kubernetes.io/name, app.kubernetes.io/instance}. If a pre-flight
+        // resource carried those, the EndpointSlice controller would add the
+        // unproven candidate as a live Service endpoint (HIGH-1) and an
+        // app-labelled egress-allow policy would re-grant it egress (HIGH-2). The
+        // input carries the FULL standard label set (name + instance included).
+        let i = stateful_inputs();
+        let selector = crate::manifests::selector_labels("cloud");
+        assert!(
+            selector.contains_key(LABEL_NAME) && selector.contains_key(LABEL_INSTANCE),
+            "sanity: the Service selector is the two name/instance keys"
+        );
+
+        // Every pre-flight resource kind must drop both selector keys and keep the
+        // dedicated pre-flight identity + managed-by.
+        let pod = build_preflight_pod("cloud", "img:v2", &i);
+        let np = build_preflight_netpol("cloud", "img:v2", &i);
+        let pvc = build_preflight_clone_pvc("cloud", "img:v2", &i);
+        let snap = build_preflight_snapshot("cloud", "img:v2", &i);
+        let label_sets = [
+            ("pod", pod.metadata.labels.clone().unwrap()),
+            ("netpol", np.metadata.labels.clone().unwrap()),
+            ("clone-pvc", pvc.metadata.labels.clone().unwrap()),
+            ("snapshot", snap.metadata.labels.clone().unwrap()),
+        ];
+        for (kind, labels) in &label_sets {
+            assert!(
+                !labels.contains_key(LABEL_NAME),
+                "{kind}: must NOT carry app.kubernetes.io/name"
+            );
+            assert!(
+                !labels.contains_key(LABEL_INSTANCE),
+                "{kind}: must NOT carry app.kubernetes.io/instance"
+            );
+            // Dedicated identity present so netpol/GC/sweep still target it.
+            assert_eq!(
+                labels.get(PREFLIGHT_OF_LABEL).map(String::as_str),
+                Some("cloud"),
+                "{kind}: keeps preflight-of"
+            );
+            assert_eq!(
+                labels.get(PREFLIGHT_TARGET_LABEL).map(String::as_str),
+                Some(target_hash("img:v2").as_str()),
+                "{kind}: keeps preflight-target"
+            );
+            // managed-by is retained (operator ownership, not a selector key).
+            assert_eq!(
+                labels
+                    .get(crate::manifests::LABEL_MANAGED_BY)
+                    .map(String::as_str),
+                Some(crate::manifests::MANAGED_BY_VALUE),
+                "{kind}: keeps managed-by"
+            );
+
+            // Synthetic-endpoint check: the production Service selector must NOT
+            // be a subset of the pre-flight labels (⇒ the Service never selects
+            // the pre-flight pod as an endpoint).
+            let selected = selector
+                .iter()
+                .all(|(k, v)| labels.get(k).map(String::as_str) == Some(v.as_str()));
+            assert!(
+                !selected,
+                "{kind}: the production Service selector must NOT match the pre-flight labels"
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_pod_does_not_automount_the_sa_token() {
+        // LOW-1: a boot-to-ready check needs no k8s API access, so the SA token is
+        // never mounted — an unusable token if egress ever leaks.
+        let i = stateful_inputs();
+        let pod = build_preflight_pod("cloud", "img:v2", &i);
+        assert_eq!(
+            pod.spec.unwrap().automount_service_account_token,
+            Some(false),
+            "pre-flight pod must set automountServiceAccountToken: false"
         );
     }
 
