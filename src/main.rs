@@ -15,8 +15,10 @@ mod controllers;
 mod core;
 mod crd;
 mod crd_types;
+mod gitops;
 mod install;
 mod manifests;
+mod registry;
 mod zapclient;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -368,6 +370,19 @@ async fn run_all_controllers(
         ),
         controllers::spa::run_spa_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::static_site::run_static_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        // Native GitOps: pull-sync (retires gitops-reconcile cron) + image
+        // automation (retires notify-universe dispatch). One reconciler, one
+        // api group — no second control plane.
+        controllers::gitsource::run_gitsource_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::imageupdate::run_imageupdate_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()

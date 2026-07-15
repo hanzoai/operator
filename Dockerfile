@@ -26,8 +26,12 @@ RUN touch src/main.rs src/lib.rs src/bin/generate_crd_yaml.rs && cargo build --r
 # Runtime
 FROM debian:bookworm-slim
 
+# `git` is required at runtime by the native-GitOps controllers (GitSource
+# pull-sync + ImageUpdate write-back shell it via src/gitops.rs — the same
+# mechanism the retired reconcile cron used). ca-certificates + libssl3 cover
+# TLS for the kube client and git-over-HTTPS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 && \
+    ca-certificates libssl3 git && \
     rm -rf /var/lib/apt/lists/*
 
 RUN useradd -r -u 65532 -g nogroup -s /sbin/nologin operator

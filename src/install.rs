@@ -35,9 +35,9 @@ use crate::api_group::DEFAULT_API_GROUP;
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer,
-    Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue, Service,
-    Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
+    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, GitSource,
+    ImageUpdate, Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability,
+    Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Default operator image (pinned semver; the caller overrides at install time).
@@ -85,6 +85,11 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         // canonical Kind order (Service … AgentDeployment) is unchanged and App is
         // the additive tail.
         App::crd(),
+        // Native GitOps Kinds — pull-sync (GitSource) + registry→git image
+        // automation (ImageUpdate). Appended after App so they extend the tail
+        // without disturbing the canonical order the checked-in bundles assert.
+        GitSource::crd(),
+        ImageUpdate::crd(),
     ];
     if group != DEFAULT_API_GROUP {
         for crd in &mut crds {
@@ -537,16 +542,19 @@ mod tests {
     // ---- CRD bundle (moved from generate_crd_yaml; the one home) ----
 
     #[test]
-    fn bundle_is_the_canonical_28_kind_set() {
+    fn bundle_is_the_canonical_30_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            29,
-            "managed Kind count is 29 (28 canonical + the App-collapse Kind)"
+            31,
+            "managed Kind count is 31 (28 canonical + App + the two native-GitOps Kinds)"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
         assert!(kinds.contains(&"AgentDeployment"));
+        assert!(kinds.contains(&"App"));
+        assert!(kinds.contains(&"GitSource"));
+        assert!(kinds.contains(&"ImageUpdate"));
         for crd in &crds {
             assert_eq!(crd.spec.group, DEFAULT_API_GROUP);
             let plural = &crd.spec.names.plural;

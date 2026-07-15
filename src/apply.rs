@@ -208,7 +208,8 @@ pub async fn apply_dynamic(api: &Api<DynamicObject>, obj: &DynamicObject) -> Res
 /// distinct from the CR→child controllers (e.g. the native git→CR loop) applies
 /// under its OWN manager so its edits are attributable and never silently fight
 /// another manager's owned fields. Same force-conflicts semantics as
-/// [`apply_dynamic`].
+/// [`apply_dynamic`]. The GitSource controller uses the `gitops` manager here,
+/// matching the field manager the retired reconcile cron used.
 pub async fn apply_dynamic_as(
     api: &Api<DynamicObject>,
     obj: &DynamicObject,
