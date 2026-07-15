@@ -15544,3 +15544,305 @@ spec:
     storage: true
     subresources:
       status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: gitsources.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    categories: []
+    kind: GitSource
+    plural: gitsources
+    shortNames:
+    - gitsrc
+    singular: gitsource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.repo
+      name: Repo
+      type: string
+    - jsonPath: .spec.ref
+      name: Ref
+      type: string
+    - jsonPath: .status.lastAppliedRevision
+      name: Revision
+      type: string
+    - jsonPath: .status.phase
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for GitSourceSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              GitSource — pull-based git→cluster sync. Replaces the `gitops-reconcile`
+              cron: the operator clones `repo@ref`, renders `path` (a directory of CR
+              manifests / a kustomization), and server-side-applies it on `interval`.
+              Continuous reconciliation, drift-correcting, no external trigger.
+            properties:
+              allowlist:
+                description: |-
+                  When set, restrict apply to these CR basenames (no `.yaml`) — the
+                  `RECONCILE_ALLOWLIST` the cron used, carried forward so an in-progress
+                  migration can heal a vetted subset before opening the full set.
+                items:
+                  type: string
+                type: array
+              credentialsSecret:
+                description: K8s Secret (key `token`) holding the git PAT, KMS-synced. Empty = public.
+                type: string
+              intervalSeconds:
+                default: 120
+                description: Reconcile interval in seconds. Default 120.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              kustomize:
+                default: false
+                description: |-
+                  Treat `path` as a kustomization root (`kustomize build`) vs a plain
+                  directory of manifests. Default false (per-file apply, matching the cron).
+                type: boolean
+              path:
+                default: infra/k8s/operator/crs
+                description: |-
+                  Repo-relative directory to apply (dir of CR manifests, or a kustomize
+                  root when `kustomize: true`). Default `infra/k8s/operator/crs`.
+                type: string
+              prune:
+                default: false
+                description: |-
+                  Delete cluster objects that were applied by this GitSource but are no
+                  longer in git. OFF by default — pruning is unsafe until dual-declared
+                  plain Deployments are collapsed (see universe #64/LLM.md). The cron never
+                  pruned; this preserves that safety and makes enabling it a deliberate act.
+                type: boolean
+              ref:
+                default: main
+                description: Branch (or tag/sha) to track. Default `main`.
+                type: string
+              repo:
+                description: |-
+                  Git remote, https form (e.g. `github.com/hanzoai/universe`). The token is
+                  read from `credentialsSecret` — never embedded here.
+                type: string
+            required:
+            - repo
+            type: object
+          status:
+            nullable: true
+            properties:
+              appliedCount:
+                default: 0
+                description: Objects applied on the last successful sync.
+                format: int32
+                type: integer
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastAppliedRevision:
+                description: Short SHA of the last revision successfully applied.
+                type: string
+              lastSyncTime:
+                nullable: true
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                - null
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: GitSource
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: imageupdates.hanzo.ai
+spec:
+  group: hanzo.ai
+  names:
+    categories: []
+    kind: ImageUpdate
+    plural: imageupdates
+    shortNames:
+    - imgup
+    singular: imageupdate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.imageRepository
+      name: Image
+      type: string
+    - jsonPath: .spec.policy
+      name: Policy
+      type: string
+    - jsonPath: .status.latestTag
+      name: Latest
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ImageUpdateSpec via `CustomResource`
+        properties:
+          spec:
+            description: |-
+              ImageUpdate — registry→git image automation. Replaces the `notify-universe`
+              GitHub `repository_dispatch` + universe's `image-update.yml`: the operator
+              watches `imageRepository` for tags matching `policy` (semver range / regex),
+              and when a newer one appears it writes the bump back to `writeback` git (the
+              GitSource path), which the GitSource then rolls out. The whole loop —
+              build→push→bump→apply — is closed in-cluster with no CI callback.
+            properties:
+              credentialsSecret:
+                description: K8s Secret (key `token`) with git write access, KMS-synced.
+                type: string
+              imageRepository:
+                description: |-
+                  Registry repository to watch, e.g. `registry.hanzo.ai/hanzo/cloud`
+                  (canonical fleet registry) — NOT ghcr.io, which is only for published OSS.
+                type: string
+              intervalSeconds:
+                default: 300
+                description: Poll interval in seconds. Default 300.
+                format: uint64
+                minimum: 0.0
+                type: integer
+              policy:
+                default: semver:*
+                description: |-
+                  Tag-selection policy: a semver range (`>=1.0.0 <2.0.0`), `semver:*` for
+                  newest semver, or `regex:<pattern>` for a named scheme. Amd64 arch suffix
+                  (`-amd64`) is honored so it never selects an unpushed variant.
+                type: string
+              registrySecret:
+                description: K8s Secret (docker config) for authenticated registry reads. Empty = anon.
+                type: string
+              writebackPath:
+                description: |-
+                  File in the writeback repo whose image tag is rewritten (the operator CR),
+                  e.g. `infra/k8s/operator/crs/cloud.yaml`.
+                type: string
+              writebackRef:
+                default: main
+                type: string
+              writebackRepo:
+                description: The GitSource repo to write the bump into (usually the same universe repo).
+                type: string
+            required:
+            - imageRepository
+            - writebackPath
+            - writebackRepo
+            type: object
+          status:
+            nullable: true
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      nullable: true
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      nullable: true
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastPushTime:
+                nullable: true
+                type: string
+              lastPushedTag:
+                description: Tag last written back to git (so a re-poll is idempotent).
+                type: string
+              latestTag:
+                description: Newest tag the policy selected on the last poll.
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              phase:
+                enum:
+                - Pending
+                - Creating
+                - Running
+                - Degraded
+                - Deleting
+                - null
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: ImageUpdate
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

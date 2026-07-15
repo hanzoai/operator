@@ -248,6 +248,19 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
+        // Native GitOps: pull-sync (retires gitops-reconcile cron) + image
+        // automation (retires notify-universe dispatch). One reconciler, one
+        // api group — no second control plane.
+        controllers::gitsource::run_gitsource_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::imageupdate::run_imageupdate_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
         // v0.3.3: facade Kinds.
         controllers::sql::run_sql_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::kv::run_kv_controller(client.clone(), namespace.clone(), api_group.clone()),

@@ -28,9 +28,9 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use kube::CustomResourceExt;
 use operator::api_group::{ApiGroup, DEFAULT_API_GROUP};
 use operator::crd::{
-    AgentDeployment, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, Indexer, Ingress,
-    LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue, Service, Static,
-    Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
+    AgentDeployment, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, GitSource,
+    ImageUpdate, Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability,
+    Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Returns every managed CRD in canonical bundle order, with the group already
@@ -69,6 +69,8 @@ fn bundle(group: &str) -> Vec<CustomResourceDefinition> {
         LuxRuntime::crd(),
         NodeFleet::crd(),
         AgentDeployment::crd(),
+        GitSource::crd(),
+        ImageUpdate::crd(),
     ];
 
     if group != DEFAULT_API_GROUP {
