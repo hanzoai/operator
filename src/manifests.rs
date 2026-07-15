@@ -993,6 +993,46 @@ mod tests {
         assert!(out.exec.is_none() && out.tcp_socket.is_none());
     }
 
+    // The ClusterIP Service builder must NEVER put clusterIP in the desired
+    // manifest. clusterIP is immutable and apiserver-assigned; a server-side
+    // apply that omits it lets the apiserver keep the live value, so adopting a
+    // Service across the `Service` CR → `App` handoff preserves its identity
+    // (same clusterIP, no Endpoint/DNS re-propagation gap). Emitting it would
+    // invite an immutable-field conflict → recreate → the ~50s cutover outage.
+    #[test]
+    fn build_service_omits_clusterip_so_ssa_preserves_the_live_one() {
+        let svc = build_service("chat", "hanzo", BTreeMap::new(), vec![], BTreeMap::new());
+        let spec = svc.spec.as_ref().expect("service has a spec");
+        assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
+        assert!(
+            spec.cluster_ip.is_none(),
+            "clusterIP is apiserver-owned; it must never be in the desired manifest"
+        );
+        assert!(spec.cluster_ips.is_none(), "clusterIPs must be omitted too");
+        // The operative property that makes SSA byte-stable on adoption: the
+        // serialized object carries no clusterIP key, so the apply never sets or
+        // changes the immutable field.
+        let json = serde_json::to_string(&svc).expect("service serializes");
+        assert!(
+            !json.contains("clusterIP"),
+            "serialized Service must not contain clusterIP: {json}"
+        );
+    }
+
+    // A headless Service, by contrast, DECLARES clusterIP:None — that sentinel is
+    // its identity and must be emitted. It is a distinct name (`*-hs`) from the
+    // ClusterIP Service, so the two never collide and flip None ↔ assigned.
+    #[test]
+    fn build_headless_service_declares_the_none_sentinel() {
+        let hs =
+            build_headless_service("sql-hs", "hanzo", BTreeMap::new(), vec![], BTreeMap::new());
+        assert_eq!(
+            hs.spec.as_ref().and_then(|s| s.cluster_ip.as_deref()),
+            Some("None"),
+            "a headless Service's identity IS clusterIP:None — it must be sent"
+        );
+    }
+
     // The regression guard: a probe with NO usable handler (port 0, no
     // exec/tcpSocket) renders NOTHING rather than an invalid `httpGet{port:0}`
     // the API server rejects — the root of the 33 err/min reconcile storm.

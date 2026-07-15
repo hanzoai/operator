@@ -143,7 +143,7 @@ async fn reconcile_inner(
         archive_sel.clone(),
     );
     archive_hs.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply(&svcs, &archive_hs).await?;
+    apply::apply_service(&svcs, &archive_hs).await?;
 
     let mut archive_clip = manifests::build_service(
         &archive_name,
@@ -153,7 +153,7 @@ async fn reconcile_inner(
         archive_sel,
     );
     archive_clip.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply(&svcs, &archive_clip).await?;
+    apply::apply_service(&svcs, &archive_clip).await?;
 
     // ---- State-sync role (N pruned replicas) ----
     let sync_name = format!("{}-state-sync", name);
@@ -209,7 +209,7 @@ async fn reconcile_inner(
         sync_sel,
     );
     sync_hs.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply(&svcs, &sync_hs).await?;
+    apply::apply_service(&svcs, &sync_hs).await?;
 
     info!(
         name,

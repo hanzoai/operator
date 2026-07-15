@@ -239,7 +239,7 @@ async fn reconcile_datastore_inner(
     );
     set_owner(&mut svc.metadata.owner_references, &owner);
     let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&svcs, &svc).await?;
+    apply::apply_service(&svcs, &svc).await?;
 
     // Headless Service for pod DNS.
     let mut hs = manifests::build_headless_service(
@@ -250,7 +250,7 @@ async fn reconcile_datastore_inner(
         sel_labels.clone(),
     );
     set_owner(&mut hs.metadata.owner_references, &owner);
-    apply::apply(&svcs, &hs).await?;
+    apply::apply_service(&svcs, &hs).await?;
 
     // Service aliases (backward-compatible DNS names).
     for alias in &spec.service_aliases {
@@ -262,7 +262,7 @@ async fn reconcile_datastore_inner(
             sel_labels.clone(),
         );
         set_owner(&mut a.metadata.owner_references, &owner);
-        apply::apply(&svcs, &a).await?;
+        apply::apply_service(&svcs, &a).await?;
     }
 
     debug!(
