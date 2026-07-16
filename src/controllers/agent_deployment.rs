@@ -11,13 +11,13 @@
 //! 3. **desired == running** — the visor binding reconciles to `Bound`; the CR
 //!    `status.phase` mirrors that honest state.
 //!
-//! ## Why this is a `kube::Controller` (unlike the apps DRIVE controller)
+//! ## Why this is a `kube::Controller`
 //!
 //! Its reconcile SOURCE is a CRD Kind in this cluster (a watch), so it is a
 //! standard `Controller` — same shape as `managed_database`. Its reconcile
-//! ACTIONS reach two HTTP APIs (cloud + visor) — same shape as the apps
-//! controller's `apps_client`. It composes both patterns rather than inventing
-//! a third.
+//! ACTIONS reach two HTTP APIs (cloud + visor) over a service-token client —
+//! same shape as `core::agents_client`. It composes both patterns rather than
+//! inventing a third.
 //!
 //! ## Safety — provisioning is opt-in + fail-safe
 //!

@@ -33,7 +33,7 @@ use crate::controllers::upgrade::{self, PreflightInputs};
 use crate::core::health::{self, BootOutcome};
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
+    App, KMSSecretRef, PersistenceSpec, Phase, Service as ServiceCR, ServiceSpec, ServiceStatus,
     UpgradePhase, UpgradePolicySpec, UpgradeRecord, UpgradeStatus,
 };
 use crate::crd_types;
@@ -308,6 +308,80 @@ pub struct Ctx {
     pub leader_flag: Arc<AtomicBool>,
 }
 
+/// Which CR kind holds the claim on one `(namespace, name)` workload.
+///
+/// `App` and `Service` materialize identical children through
+/// [`reconcile_service_inner`] — `app::reconcile` delegates to it — differing
+/// only in the ownerRef they stamp. Both apply as the single `hanzo-operator`
+/// field manager with `force()`, and server-side apply keys conflict detection
+/// on field-manager identity, so two live claims on one name never conflict:
+/// they force-flip the Deployment's controller ownerRef on every reconcile
+/// instead. App is the canonical workload kind, so Service yields.
+///
+/// Yielding is what makes a superseded Service CR safe to delete. The ownerRef
+/// carries `blockOwnerDeletion` + `controller: true`, so deleting the Service CR
+/// while it happens to hold the ownerRef garbage-collects the live Deployment
+/// with it. Once App deterministically owns the workload, that delete collects
+/// nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Claim {
+    /// No same-named App CR: this Service CR is the sole declarer. Materialize.
+    Sole,
+    /// A same-named App CR declares this workload. Materialize nothing.
+    Superseded,
+}
+
+/// Decide the claim from an App lookup, where `None` is a failed lookup.
+///
+/// A failed lookup reads as `Sole`. This guard arbitrates between two live
+/// declarers rather than guarding a boundary, so a transient API error degrades
+/// to the historical behavior instead of freezing every Service CR: a Service
+/// with no App is never superseded, and the tenant fleet — `platform.hanzo.ai`
+/// writes `kind: Service` per tenant app — is exactly that set.
+pub(crate) fn claim(app_exists: Option<bool>) -> Claim {
+    match app_exists {
+        Some(true) => Claim::Superseded,
+        Some(false) | None => Claim::Sole,
+    }
+}
+
+/// Look up a same-named App CR. `None` on a failed lookup — see [`claim`].
+async fn app_exists(client: &Client, namespace: &str, name: &str) -> Option<bool> {
+    let api: Api<App> = Api::namespaced(client.clone(), namespace);
+    match api.get_opt(name).await {
+        Ok(found) => Some(found.is_some()),
+        Err(e) => {
+            warn!(error = %e, name, namespace, "App lookup failed; reconciling as sole declarer");
+            None
+        }
+    }
+}
+
+/// Status for a superseded Service CR: `Degraded` + a `SupersededByApp` Ready
+/// condition naming the App that took the claim. Loud on purpose — the CR is
+/// inert and wants deleting, so it must not read `Running`.
+fn supersede_status(cr: &ServiceCR, prior: &ServiceStatus) -> ServiceStatus {
+    let observed_generation = cr.meta().generation.unwrap_or(0);
+    let name = cr.name_any();
+    let mut status = ServiceStatus {
+        phase: Some(Phase::Degraded),
+        observed_generation,
+        ..Default::default()
+    };
+    let mut cond = build_condition(
+        "Ready",
+        false,
+        "SupersededByApp",
+        &format!(
+            "App/{name} declares this workload; this Service CR materializes nothing. Delete it."
+        ),
+        observed_generation,
+    );
+    carry_transition_time(&prior.conditions, &mut cond);
+    upsert_condition(&mut status.conditions, cond);
+    status
+}
+
 /// Reconcile a canonical `Service` CR.
 pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Action> {
     // Split-brain guard (MED-2): only the lease holder mutates. Controllers are
@@ -332,6 +406,19 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     // Prior status — keeps condition timestamps stable, skips no-op status
     // writes, and is the persisted input the upgrade FSM resumes from.
     let prior_status = cr.status.clone().unwrap_or_default();
+
+    // One workload, one declarer: yield to a same-named App CR before touching
+    // the cluster, so the two kinds never force-flip one Deployment's ownerRef.
+    // See `Claim`.
+    if claim(app_exists(&ctx.client, &namespace, &name).await) == Claim::Superseded {
+        warn!(
+            name,
+            namespace, "App CR declares this workload; Service CR yields and materializes nothing"
+        );
+        let status = supersede_status(&cr, &prior_status);
+        write_status_if_changed(&ctx, &name, &namespace, &cr, status, &prior_status).await;
+        return Ok(Action::requeue(Duration::from_secs(60)));
+    }
 
     // Managed-upgrade FSM (opt-in). Decide the image the Deployment must run NOW
     // + the next FSM state, reading the LIVE Deployment first so `running` /
@@ -424,34 +511,49 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     status.upgrade = drive.next_upgrade;
     status.upgrade_history = drive.upgrade_history;
 
-    // Skip the write when nothing changed. An unconditional status merge bumps
-    // resourceVersion on every reconcile, which the watch re-delivers as an
-    // `object updated` event → a self-triggered reconcile storm (~2.75/s/CR
-    // across the fleet). Writing only on real change breaks the loop.
-    if status_changed(&status, &prior_status) {
-        let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
-        // Optimistic-concurrency precondition (LOW-2): pin the observed
-        // resourceVersion so a stale ex-leader writing in the ~10s lease-overlap
-        // window 409s here instead of clobbering the live leader's status (a
-        // possible unnecessary rollback-of-healthy). The live leader always holds
-        // the fresh RV from its watch cache, so its write is unaffected; a 409 is
-        // warn-logged and picked up on the next reconcile. Falls back to no
-        // precondition only if the object somehow carries no resourceVersion.
-        let patch = match cr.meta().resource_version.as_deref() {
-            Some(rv) => serde_json::json!({"metadata": {"resourceVersion": rv}, "status": status}),
-            None => serde_json::json!({"status": status}),
-        };
-        let pp = PatchParams::apply(apply::FIELD_MANAGER);
-        if let Err(e) = api.patch_status(&name, &pp, &Patch::Merge(&patch)).await {
-            warn!(error = %e, "failed to update Service status (stale resourceVersion 409, or CRD not installed)");
-        } else {
-            debug!(name, namespace, ?phase, "Service status updated");
-        }
-    }
+    write_status_if_changed(&ctx, &name, &namespace, &cr, status, &prior_status).await;
 
     // Requeue faster while an upgrade is actively progressing so the FSM drives
     // pre-flight → roll → success/rollback promptly; otherwise the steady 60s.
     Ok(Action::requeue(Duration::from_secs(drive.requeue_secs)))
+}
+
+/// Write `status` to the Service CR, skipping the no-op.
+///
+/// An unconditional status merge bumps resourceVersion on every reconcile, which
+/// the watch re-delivers as an `object updated` event → a self-triggered
+/// reconcile storm (~2.75/s/CR across the fleet). Writing only on real change
+/// breaks the loop.
+async fn write_status_if_changed(
+    ctx: &Ctx,
+    name: &str,
+    namespace: &str,
+    cr: &ServiceCR,
+    status: ServiceStatus,
+    prior: &ServiceStatus,
+) {
+    if !status_changed(&status, prior) {
+        return;
+    }
+    let api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), namespace);
+    // Optimistic-concurrency precondition (LOW-2): pin the observed
+    // resourceVersion so a stale ex-leader writing in the ~10s lease-overlap
+    // window 409s here instead of clobbering the live leader's status (a
+    // possible unnecessary rollback-of-healthy). The live leader always holds
+    // the fresh RV from its watch cache, so its write is unaffected; a 409 is
+    // warn-logged and picked up on the next reconcile. Falls back to no
+    // precondition only if the object somehow carries no resourceVersion.
+    let phase = status.phase.clone();
+    let patch = match cr.meta().resource_version.as_deref() {
+        Some(rv) => serde_json::json!({"metadata": {"resourceVersion": rv}, "status": status}),
+        None => serde_json::json!({"status": status}),
+    };
+    let pp = PatchParams::apply(apply::FIELD_MANAGER);
+    if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
+        warn!(error = %e, "failed to update Service status (stale resourceVersion 409, or CRD not installed)");
+    } else {
+        debug!(name, namespace, ?phase, "Service status updated");
+    }
 }
 
 /// Inject surge co-location affinity iff: the CR opted in (`surgeColocation`),
@@ -1370,6 +1472,109 @@ fn pod_runs_image(p: &Pod, target: &str) -> bool {
         .and_then(|s| s.containers.first())
         .and_then(|c| c.image.as_deref())
         == Some(target)
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::*;
+    use crate::crd::ImageSpec;
+
+    /// A Service CR named `name`, carrying `prior` as its persisted status.
+    fn service_cr(name: &str, prior: Option<ServiceStatus>) -> ServiceCR {
+        let mut cr = ServiceCR::new(
+            name,
+            ServiceSpec {
+                image: ImageSpec {
+                    repository: "ghcr.io/hanzoai/test".to_string(),
+                    tag: "v1.0.0".to_string(),
+                    pull_policy: "IfNotPresent".to_string(),
+                },
+                replicas: Some(2),
+                ..Default::default()
+            },
+        );
+        cr.metadata.namespace = Some("hanzo".to_string());
+        cr.metadata.generation = Some(1);
+        cr.status = prior;
+        cr
+    }
+
+    #[test]
+    fn a_same_named_app_supersedes_the_service() {
+        assert_eq!(claim(Some(true)), Claim::Superseded);
+    }
+
+    #[test]
+    fn without_an_app_the_service_is_the_sole_declarer() {
+        assert_eq!(claim(Some(false)), Claim::Sole);
+    }
+
+    /// The tenant fleet (platform.hanzo.ai writes `kind: Service`) has no App
+    /// CRs, so a lookup blip must not freeze it — it degrades to sole-declarer.
+    #[test]
+    fn a_failed_lookup_reconciles_rather_than_freezes() {
+        assert_eq!(claim(None), Claim::Sole);
+    }
+
+    #[test]
+    fn a_superseded_service_reports_degraded_naming_the_app() {
+        let cr = service_cr("commerce-admin", None);
+        let status = supersede_status(&cr, &ServiceStatus::default());
+
+        assert_eq!(status.phase, Some(Phase::Degraded));
+        assert_eq!(status.observed_generation, 1);
+        let cond = status
+            .conditions
+            .iter()
+            .find(|c| c.type_ == "Ready")
+            .expect("Ready condition");
+        assert_eq!(cond.status, "False");
+        assert_eq!(cond.reason, "SupersededByApp");
+        assert!(
+            cond.message.contains("App/commerce-admin"),
+            "message must name the App holding the claim: {}",
+            cond.message
+        );
+    }
+
+    /// A superseded Service must never read `Running` off a stale status: the CR
+    /// materializes nothing, and its replica counts describe a Deployment that
+    /// the App CR owns.
+    #[test]
+    fn superseding_clears_a_stale_running_status() {
+        let prior = ServiceStatus {
+            phase: Some(Phase::Running),
+            ready_replicas: 2,
+            available_replicas: 2,
+            observed_generation: 1,
+            ..Default::default()
+        };
+        let cr = service_cr("commerce-admin", Some(prior.clone()));
+        let status = supersede_status(&cr, &prior);
+
+        assert_eq!(status.phase, Some(Phase::Degraded));
+        assert_eq!(status.ready_replicas, 0);
+        assert_eq!(status.available_replicas, 0);
+        assert!(
+            status_changed(&status, &prior),
+            "the Running→Degraded flip must be written, not skipped as a no-op"
+        );
+    }
+
+    /// The status write is skipped when nothing changed, so an already-superseded
+    /// CR does not bump resourceVersion every 60s (self-triggered reconcile storm).
+    #[test]
+    fn a_settled_superseded_status_is_a_no_op_write() {
+        let cr = service_cr("commerce-admin", None);
+        let first = supersede_status(&cr, &ServiceStatus::default());
+        let cr = service_cr("commerce-admin", Some(first.clone()));
+        let second = supersede_status(&cr, &first);
+
+        assert!(
+            !status_changed(&second, &first),
+            "a settled supersede must not rewrite status every reconcile"
+        );
+    }
 }
 
 #[cfg(test)]
