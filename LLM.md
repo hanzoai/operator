@@ -476,10 +476,11 @@ supersede).
 
 **Resumable + split-brain-safe**: every input is read from `status.upgrade` +
 the live cluster, so `plan` re-derives the same action after an operator restart
-(the pre-flight pod is named deterministically by target hash). The Service
-controller runs only after the lease is held (`main.rs` blocks on `leader_flag`),
-so single-writer election is the fail-closed split-brain guard — a non-leader
-never reconciles.
+(the pre-flight pod is named deterministically by target hash). Controllers run
+only while the lease is held — `main.rs` blocks on `leader_flag` to start them
+and hosts them in the `select!` the election returns from, so losing the lease
+drops them (see v0.7.7). Single-writer election is the fail-closed split-brain
+guard — a non-leader never reconciles.
 
 **Gate (fail-safe drop-in)**: OFF by default. Cluster kill-switch
 `UPGRADE_FSM_ENABLED=true` AND per-CR `spec.upgradePolicy.enabled=true` are BOTH
@@ -750,7 +751,9 @@ leaks. Fail-closed (an app that needs the token to boot fails the pre-flight).
 **Status writeback carries a resourceVersion precondition** (LOW-2): the Service
 status patch pins the observed `resourceVersion`, so a stale ex-leader writing in
 the ~10s lease-overlap window 409s instead of clobbering the live leader
-(availability-only; the invariant was already safe).
+(availability-only; the invariant was already safe). As of v0.7.7 the election
+closes that window rather than tolerating it — an ex-leader stops instead of
+writing — and the same precondition now guards the lease writes themselves.
 
 ### Enable checklist (pre-flight over live data — all gates, in order)
 1. `UPGRADE_FSM_ENABLED=true` on the operator Deployment AND per-CR
@@ -843,3 +846,95 @@ ONE git→App-CR delivery host; the operator keeps the DOMAIN half — App CR �
 Deployment/Service/… — plus `ImageUpdate` (registry→git tag bumps). One way:
 delivery in cloud, domain in the operator. (CRD-bundle regen to drop `gitsources`
 and the cluster CRD prune are deploy-time follow-ons.)
+
+## v0.7.7 — the election is safe at `replicas > 1` (coordination correctness)
+
+Three defects in leader election, all latent at the shipped `replicas: 1` +
+`strategy: Recreate` and all fatal the day anyone scales it. None were firing:
+the live pod had logged `Lost leader lease` zero times.
+
+### 1. Losing the lease did not stop the controllers
+
+`run_all_controllers` blocked until `leader_flag` went true and then ran ~30
+controllers forever, **never re-reading it**. Only `run_service_controller` and
+`run_preflight_gc` were passed the flag. On lease loss the other 28 —
+`datastore`, `gateway`, `app`, `dns`, `ingress`, `gitsource`, … — kept
+reconciling and writing beside the new leader.
+
+Fixed at ONE seam, not 30. `main.rs` already hosts the election and every
+controller in a single `tokio::select!`, so the election's `run` **returning** is
+enough: `select!` drops the controllers with it, and main then exits for the
+Deployment to restart into a clean election. `LeaderElection::run` now returns on
+loss instead of looping. No controller gained a flag check and none needs one —
+threading a flag into ~30 call sites is fail-OPEN (every future controller must
+remember), while a process that has stopped cannot write at all. `apply.rs` was
+considered as the seam and rejected: 27 write sites bypass it, and `install.rs`
+uses it from the CLI verb path where there is no leader.
+
+Lease loss ends the process rather than pausing for re-acquisition: fewer moving
+parts (the `select!` + Deployment restart both already exist), and fail-closed by
+construction. Recovery is fast — a container restart keeps the pod name, so the
+identity is unchanged and `holder == self` renews immediately rather than waiting
+out the 30s expiry.
+
+### 2. Lease takeover was not compare-and-swap
+
+`try_acquire_or_renew` patched an expired lease with `Patch::Merge` and **no
+`resourceVersion` precondition**. Two contenders could both observe the expiry,
+both patch, and both conclude they led. The **renew** path had the same hole and
+was the sharper one: it patches only `renewTime` off a possibly-superseded read,
+so an unconditional write extended the NEW holder's lease while reporting success
+to the stale one.
+
+Every lease write is now conditional on the `resourceVersion` read in the same
+cycle — the primitive already used for Service status writes (LOW-2), applied
+through one `write` helper. A 409 means another contender wrote first, so the
+cycle reports `Foreign`, never `Held`. The election declines to claim a lease
+that carries no `resourceVersion` rather than fall back to an unconditional
+write: a live object always has one, and the fallback is exactly the defect.
+
+Blip tolerance came with it. The flag used to drop on the FIRST failed renew,
+which — once loss ends the process — would restart the operator on every
+apiserver hiccup. A holder now keeps its lease until the window it last renewed
+actually closes (`within_lease`), then yields. `within_lease` goes false at
+`elapsed == duration` while a contender takes over only at `elapsed > duration`,
+so the hold and takeover windows cannot overlap (asserted over every second
+across the boundary).
+
+### 3. The lease was never released on shutdown (found while fixing the above)
+
+`shutdown_signal()` was a `select!` **sibling** of `leader_election.run()`. On
+SIGTERM the signal arm won the race and dropped the election future, so the
+`release` on `shutdown.changed()` was unreachable and `shutdown_tx.send(true)`
+fired after there was nobody left to hear it. `release` was dead code in
+production: every operator restart left a stale holder and cost the successor the
+full 30s lease timeout before it could take over.
+
+Confirmed in the cluster, not just read: the live pod took over at 02:44:12 after
+starting at 02:43:42 — a 30s stall — logging `previous=<the old pod name>`
+rather than `<none>`, which is only possible if the predecessor never released.
+
+The signal now drives the shutdown channel from a spawned task, so the election
+observes it, releases, and returns; its return completes the `select!`. The
+1s sleep that used to paper over this is gone. `LEADER_ELECT=false` dev runs stop
+on a signal too (that arm awaits the channel instead of `pending()`).
+
+### Tests
+
+`core::leader` drives the real `run` / `try_acquire_or_renew` against a stand-in
+apiserver (`mod fake`, axum) implementing the `resourceVersion` semantics the
+safety rests on: writes bump the version, a patch pinning a stale one is rejected
+409. A barrier releases both contenders only once each has read, making the race
+deterministic rather than hoping it lands.
+
+- `two_contenders_racing_one_expired_lease_produce_one_leader` — the split-brain
+  property. Without the precondition both patches land and both report `Held`.
+- `a_renew_racing_a_takeover_does_not_report_success` — the renew-path hole.
+- `losing_the_lease_stops_the_writes_it_was_hosting` — the stop-writing property,
+  observed as the cluster sees it: a controller writing to the fake apiserver is
+  hosted in a `select!` beside the election, a successor steals the lease, and
+  the writes must stop. Without the fix `run` loops, the controller is never
+  dropped, and the test hangs to its timeout.
+- `the_hold_window_closes_before_the_takeover_window_opens` and the `must_yield`
+  cases pin the yield rule (standby waits; holder yields on `Foreign`; holder
+  rides out a blip then yields at expiry).
