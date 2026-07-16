@@ -16,7 +16,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+
 use std::time::Duration;
+use tokio::sync::Notify;
 
 use futures::StreamExt;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
@@ -82,7 +84,8 @@ pub async fn reconcile(cr: Arc<GitSource>, ctx: Arc<Ctx>) -> Result<Action> {
                 message: res.message(),
             };
             if res.errors.is_empty() {
-                let mut cond = build_condition("Synced", true, "SyncOk", &status.message, generation);
+                let mut cond =
+                    build_condition("Synced", true, "SyncOk", &status.message, generation);
                 carry_transition_time(&prior.conditions, &mut cond);
                 upsert_condition(&mut status.conditions, cond);
                 info!(
@@ -306,7 +309,9 @@ async fn prune(
                     info!(kind = %ar.kind, name = %iname, namespace = %ins, "GitSource pruned stale object");
                     pruned += 1;
                 }
-                Err(e) => warn!(kind = %ar.kind, name = %iname, error = %e, "GitSource prune: delete failed"),
+                Err(e) => {
+                    warn!(kind = %ar.kind, name = %iname, error = %e, "GitSource prune: delete failed")
+                }
             }
         }
     }
@@ -437,7 +442,12 @@ pub fn on_error(_obj: Arc<GitSource>, err: &OperatorError, _ctx: Arc<Ctx>) -> Ac
     Action::requeue(Duration::from_secs(60))
 }
 
-pub async fn run_gitsource_controller(client: Client, namespace: String, api_group: String) {
+pub async fn run_gitsource_controller(
+    client: Client,
+    namespace: String,
+    api_group: String,
+    reconcile_now: Arc<Notify>,
+) {
     let api: Api<GitSource> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {
@@ -445,7 +455,16 @@ pub async fn run_gitsource_controller(client: Client, namespace: String, api_gro
     };
     info!(group = %api_group, "Starting GitSource controller");
     let ctx = Arc::new(Ctx { client, api_group });
+    // A git push nudges `POST /reconcile` → this `Notify` → an immediate sweep of
+    // every GitSource; the per-CR `intervalSeconds` requeue is the fallback. One
+    // webhook, one loop — the same real-time-with-poll-fallback shape the retired
+    // env-configured loop had, now feeding the CR-driven controller.
+    let trigger = futures::stream::unfold(reconcile_now, |n| async move {
+        n.notified().await;
+        Some(((), n))
+    });
     Controller::new(api, Config::default())
+        .reconcile_all_on(trigger)
         .run(reconcile, on_error, ctx)
         .for_each(|_| async {})
         .await;
@@ -480,7 +499,10 @@ metadata:
         assert_eq!(objs.len(), 2);
         assert_eq!(objs[0].types.as_ref().unwrap().kind, "App");
         assert_eq!(objs[0].metadata.name.as_deref(), Some("cloud"));
-        assert_eq!(objs[1].types.as_ref().unwrap().kind, "PersistentVolumeClaim");
+        assert_eq!(
+            objs[1].types.as_ref().unwrap().kind,
+            "PersistentVolumeClaim"
+        );
     }
 
     #[test]
@@ -494,7 +516,12 @@ metadata:
         .unwrap();
         stamp_apply_set(&mut obj, "universe");
         assert_eq!(
-            obj.metadata.labels.as_ref().unwrap().get(APPLY_SET_LABEL).map(String::as_str),
+            obj.metadata
+                .labels
+                .as_ref()
+                .unwrap()
+                .get(APPLY_SET_LABEL)
+                .map(String::as_str),
             Some("universe")
         );
     }
@@ -524,5 +551,51 @@ metadata:
         assert!(file_allowed("world", &allow));
         assert!(!file_allowed("studio", &allow)); // not in the vetted subset
         assert!(!file_allowed("kustomization", &allow));
+    }
+
+    // A source declares a CR in ANY namespace; the apply targets that namespace
+    // verbatim (apply_one reads obj.metadata.namespace). This is the ownership
+    // property the retired env-configured loop lacked — it filtered to one
+    // configured namespace and SILENTLY skipped a zen App CR declaring
+    // `namespace: zen`, pinning its image for over a day. GitSource has no such
+    // filter: the namespace is data on the CR, not a permission.
+    #[test]
+    fn a_declared_namespace_is_carried_to_the_apply() {
+        let objs = parse_manifests(
+            "apiVersion: hanzo.ai/v1\nkind: App\nmetadata:\n  name: zen\n  namespace: zen\nspec:\n  role: service\n",
+        )
+        .unwrap();
+        assert_eq!(objs.len(), 1);
+        assert_eq!(objs[0].metadata.namespace.as_deref(), Some("zen"));
+    }
+
+    // The webhook seam: `POST /reconcile` nudges the shared `Notify`, and the
+    // trigger stream fed to `reconcile_all_on` yields one reconcile-all tick — a
+    // git push reconciles instantly, while the per-CR interval requeue is the
+    // fallback. Non-vacuous: without the notify the stream blocks (asserted by the
+    // idle timeout), so a broken wiring cannot pass.
+    #[tokio::test]
+    async fn a_notify_wakes_the_reconcile_trigger() {
+        let n = Arc::new(Notify::new());
+        let mut trigger = Box::pin(futures::stream::unfold(n.clone(), |n| async move {
+            n.notified().await;
+            Some(((), n))
+        }));
+
+        // Before any push, the trigger is idle — it does not spin.
+        let idle = tokio::time::timeout(Duration::from_millis(50), trigger.next()).await;
+        assert!(
+            idle.is_err(),
+            "trigger must block until a notify, not self-fire"
+        );
+
+        // A push wakes it exactly once.
+        n.notify_one();
+        let got = tokio::time::timeout(Duration::from_secs(1), trigger.next()).await;
+        assert_eq!(got.ok().flatten(), Some(()), "a notify must yield a tick");
+
+        // Then it goes idle again until the next push.
+        let idle2 = tokio::time::timeout(Duration::from_millis(50), trigger.next()).await;
+        assert!(idle2.is_err(), "trigger must wait for the next notify");
     }
 }

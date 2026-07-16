@@ -204,12 +204,10 @@ async fn main() -> anyhow::Result<()> {
         info!("Leader election disabled, running as leader");
     }
 
-    // Native gitops reconcile: opt-in feature flag + the shared webhook trigger
-    // (POST /reconcile → instant sweep). The handle is created regardless of the
-    // flag; notifying a disabled loop is a harmless no-op.
-    let gitops_enabled = std::env::var("GITOPS_RECONCILE_ENABLED")
-        .map(|v| v == "true")
-        .unwrap_or(false);
+    // The shared webhook trigger: `POST /reconcile` (a git push webhook) nudges
+    // this `Notify`, and the GitSource controller reconciles every source at once.
+    // A GitSource is a CR, so the git→cluster loop is opt-in by declaring one — no
+    // env gate to flip.
     let reconcile_now = Arc::new(Notify::new());
 
     // Health + webhook server.
@@ -240,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Controllers — wait for leadership then run all of them.
-        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone(), gitops_enabled) => {
+        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone()) => {
             warn!("Controllers exited");
         }
 
@@ -296,7 +294,6 @@ async fn run_all_controllers(
     api_group: String,
     leader_flag: Arc<AtomicBool>,
     reconcile_now: Arc<Notify>,
-    gitops_enabled: bool,
 ) {
     // Block until we become the leader.
     loop {
@@ -380,7 +377,8 @@ async fn run_all_controllers(
         controllers::gitsource::run_gitsource_controller(
             client.clone(),
             namespace.clone(),
-            api_group.clone()
+            api_group.clone(),
+            reconcile_now.clone()
         ),
         controllers::imageupdate::run_imageupdate_controller(
             client.clone(),
@@ -479,13 +477,6 @@ async fn run_all_controllers(
                 .map(|v| v != "false")
                 .unwrap_or(true),
         ),
-        // Native git → CR reconcile — the whole chain (git → CR → workload) in
-        // one process. Opt-in (GITOPS_RECONCILE_ENABLED, default off) + fail-safe
-        // + NEVER prunes; replaces the external gitops-reconcile CronJob. Each
-        // iteration wakes on the poll tick OR the POST /reconcile webhook
-        // (whichever first) so a git push reconciles instantly, the poll is the
-        // guaranteed fallback. See controllers/gitops.rs for the scope model.
-        controllers::gitops::run_gitops_controller(client.clone(), reconcile_now, gitops_enabled),
     );
 }
 
