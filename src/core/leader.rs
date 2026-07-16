@@ -586,6 +586,15 @@ mod fake {
     }
 
     pub fn client(url: &str) -> kube::Client {
+        // Same install `main` performs, for the same reason: rustls 0.23 compiles
+        // both aws-lc-rs (reqwest) and ring (kube), so the process-level
+        // CryptoProvider is ambiguous and building a client panics without one.
+        // A lib test never runs `main`, so without this the suite passes or fails
+        // on whether some other test happened to install one first.
+        static PROVIDER: std::sync::Once = std::sync::Once::new();
+        PROVIDER.call_once(|| {
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        });
         let cfg = kube::Config::new(url.parse().unwrap());
         kube::Client::try_from(cfg).unwrap()
     }
