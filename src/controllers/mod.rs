@@ -60,13 +60,6 @@ pub mod sql;
 pub mod luxruntime;
 pub mod nodefleet;
 
-// v0.4.x: apps-lifecycle DRIVE controller. Not a CRD Kind — its reconcile
-// source is the platform `apps` table (read over `GET /v1/apps`), and it drives
-// `declared_tag` → cluster by patching Deployments. Opt-in + fail-safe; see the
-// module docs for the safety-gate model. Implements PR 5 of the platform's
-// docs/APPS_LIFECYCLE.md.
-pub mod apps;
-
 // ManagedDatabase facade — per-tenant isolated Datastore workload.
 pub mod managed_database;
 
