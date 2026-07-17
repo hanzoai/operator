@@ -9,7 +9,7 @@
 //!
 //! ## Trust model
 //!
-//! Mirrors `core::apps_client` / `core::iam_admin`: a single service token from
+//! Mirrors `core::iam_admin`: a single service token from
 //! the environment, presented as `Authorization: Bearer <token>`; optional
 //! `X-Org-Id` for org scoping. The token never leaves the cluster.
 
