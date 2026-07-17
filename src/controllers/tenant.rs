@@ -1,17 +1,17 @@
 //! Tenant reconciler — per-tenant one-click-deploy authorization.
 //!
-//! When the platform (cloud-api) onboards an org it creates the tenant
+//! When the platform (cloud) onboards an org it creates the tenant
 //! namespace `tenant-<org>` labeled `hanzo.ai/managed-by=platform`. Cloud's
 //! deploy path BLOCKS (`waitForTenantRBAC` — a SelfSubjectAccessReview poll)
 //! until this controller has projected, into every such namespace:
 //!
-//!   1. a namespaced [`RoleBinding`] `cloud-api-platform` → ClusterRole
-//!      `hanzo-cloud-platform-tenant`, bound to the `hanzo/cloud-api`
-//!      ServiceAccount, so cloud-api may act (resourcequotas / limitranges /
+//!   1. a namespaced [`RoleBinding`] `cloud` → ClusterRole
+//!      `hanzo-cloud-platform-tenant`, bound to the `hanzo/cloud`
+//!      ServiceAccount, so cloud may act (resourcequotas / limitranges /
 //!      services.hanzo.ai …) inside that ONE tenant — never cluster-wide, and
 //!   2. a `ghcr-pull` `kubernetes.io/dockerconfigjson` image-pull [`Secret`] so
 //!      tenant pods can pull the PRIVATE per-tenant build image
-//!      (`ghcr.io/hanzoai/tenant-<org>/…`). cloud-api holds NO `secrets` grant;
+//!      (`ghcr.io/hanzoai/tenant-<org>/…`). cloud holds NO `secrets` grant;
 //!      the operator is the designated K8s-secret handler (KMS-only secrets
 //!      model), projecting the payload from the KMS-synced source Secret.
 //!
@@ -21,10 +21,10 @@
 //!
 //! ## CRITICAL — RoleBinding, never ClusterRoleBinding
 //!
-//! A ClusterRoleBinding would grant cloud-api deploy rights in EVERY namespace:
+//! A ClusterRoleBinding would grant cloud deploy rights in EVERY namespace:
 //! a cross-tenant deploy hole where onboarding org A could deploy into org B's
 //! namespace. The NAMESPACED RoleBinding confines the grant to the single
-//! tenant namespace it lives in, so the blast radius of the cloud-api SA is
+//! tenant namespace it lives in, so the blast radius of the cloud SA is
 //! exactly the set of tenants that have been onboarded — and each grant is
 //! independently revocable by deleting one RoleBinding.
 //!
@@ -57,13 +57,18 @@ use crate::core::secret::{is_operator_managed, validate_secret_value, MANAGED_BY
 use crate::core::{OperatorError, Result};
 
 /// The image-pull Secret the operator projects into each tenant namespace. The
-/// platform Service CR references it BY NAME (imagePullSecrets); cloud-api never
+/// platform Service CR references it BY NAME (imagePullSecrets); cloud never
 /// creates it. `managed-by` value distinct from every other operator secret path
 /// so the strict hijack guard only ever adopts THIS controller's Secrets.
 const PULL_SECRET_MANAGER: &str = "hanzo-operator-tenant";
 
 /// The one namespaced RoleBinding name the operator manages per tenant.
-const BINDING_NAME: &str = "cloud-api-platform";
+///
+/// Named for the identity it grants, which is `cloud`. It was
+/// `cloud-api-platform`: `-api` for a ServiceAccount that outlived the name (the
+/// workload, its Service and its App CR are all `cloud`), and `-platform` for the
+/// ClusterRole it points at, which roleRef already states.
+const BINDING_NAME: &str = "cloud";
 
 /// The platform-managed marker. Cloud stamps it on the tenant namespace; the
 /// operator re-stamps it on every projected child so both are identifiable as
@@ -78,7 +83,7 @@ const PLATFORM_MANAGED_VALUE: &str = "platform";
 pub struct Config {
     /// `key=value` label that marks a namespace as a platform-managed tenant.
     pub tenant_label: String,
-    /// Namespace of the ServiceAccount that deploys into tenants (cloud-api's
+    /// Namespace of the ServiceAccount that deploys into tenants (cloud's
     /// home namespace).
     pub sa_namespace: String,
     /// Name of that ServiceAccount.
@@ -104,7 +109,10 @@ impl Default for Config {
         Self {
             tenant_label: "hanzo.ai/managed-by=platform".to_string(),
             sa_namespace: "hanzo".to_string(),
-            sa_name: "cloud-api".to_string(),
+            // The identity cloud runs as. `cloud-api` was the same identity under
+            // an older name; the ServiceAccount is the last object still carrying
+            // it. TENANT_SA_NAME overrides it for a white-label universe.
+            sa_name: "cloud".to_string(),
             cluster_role: "hanzo-cloud-platform-tenant".to_string(),
             pull_secret_name: "ghcr-pull".to_string(),
             pull_source_namespace: "hanzo".to_string(),
@@ -261,7 +269,7 @@ fn pull_config_bytes(src: &Secret, key: &str) -> Option<Vec<u8>> {
 
 /// Ensure the per-tenant image-pull Secret exists in `ns`, projected from the
 /// KMS-synced source. The OPERATOR is the designated K8s-secret handler here —
-/// cloud-api holds no `secrets` grant and creates no Secret. Fail-OPEN on a
+/// cloud holds no `secrets` grant and creates no Secret. Fail-OPEN on a
 /// missing/empty source (log + skip) so a source outage never blocks the deploy
 /// RoleBinding; hijack-guarded so an unmanaged Secret of the same name is never
 /// overwritten; SSA-applied like the RoleBinding.
@@ -426,13 +434,13 @@ mod tests {
         let cfg = Config::default();
         let rb = build_rolebinding("tenant-acme", "acme", &cfg, owner());
         // NAMESPACED: the binding lives in the tenant namespace — this is the
-        // single control that keeps cloud-api out of every other tenant.
+        // single control that keeps cloud out of every other tenant.
         assert_eq!(rb.metadata.namespace.as_deref(), Some("tenant-acme"));
         assert_eq!(rb.metadata.name.as_deref(), Some(BINDING_NAME));
     }
 
     #[test]
-    fn binding_targets_the_tenant_clusterrole_and_cloud_api_sa() {
+    fn binding_targets_the_tenant_clusterrole_and_cloud_sa() {
         let cfg = Config::default();
         let rb = build_rolebinding("tenant-acme", "acme", &cfg, owner());
         assert_eq!(rb.role_ref.kind, "ClusterRole");
@@ -441,7 +449,7 @@ mod tests {
         let s = rb.subjects.unwrap();
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].kind, "ServiceAccount");
-        assert_eq!(s[0].name, "cloud-api");
+        assert_eq!(s[0].name, "cloud");
         assert_eq!(s[0].namespace.as_deref(), Some("hanzo"));
     }
 
@@ -477,7 +485,7 @@ mod tests {
         let cfg = Config {
             tenant_label: "lux.cloud/managed-by=platform".to_string(),
             sa_namespace: "lux".to_string(),
-            sa_name: "cloud-api".to_string(),
+            sa_name: "lux-cloud".to_string(),
             cluster_role: "lux-cloud-platform-tenant".to_string(),
             ..Config::default()
         };
