@@ -686,6 +686,17 @@ spec:
   strategy: RollingUpdate
   surgeColocation: true
   fsGroup: 1001
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  enableServiceLinks: false
   env:
     - name: FOO
       value: bar
@@ -803,6 +814,30 @@ spec:
         assert_eq!(s.volumes.len(), 1, "volumes preserved");
         assert_eq!(s.volume_mounts.len(), 1, "volumeMounts preserved");
         assert_eq!(s.strategy, "RollingUpdate");
+        // The securityContext / containerSecurityContext / enableServiceLinks
+        // passthrough flattens into the TYPED ServiceSpec (never `extra`) — the
+        // port-audit unlock, preserved end-to-end like the data-loss fields above.
+        let psc = s
+            .security_context
+            .as_ref()
+            .expect("securityContext preserved");
+        assert_eq!(psc.run_as_non_root, Some(true));
+        assert_eq!(psc.run_as_user, Some(65532));
+        assert_eq!(
+            psc.seccomp_profile.as_ref().unwrap().type_,
+            "RuntimeDefault"
+        );
+        let csc = s
+            .container_security_context
+            .as_ref()
+            .expect("containerSecurityContext preserved");
+        assert_eq!(csc.read_only_root_filesystem, Some(true));
+        assert_eq!(csc.allow_privilege_escalation, Some(false));
+        assert_eq!(
+            csc.capabilities.as_ref().unwrap().drop,
+            vec!["ALL".to_string()]
+        );
+        assert_eq!(s.enable_service_links, Some(false));
         // No stray fields leaked into extra — a pure service CR flattens wholly.
         assert!(
             app.spec.extra.is_empty(),

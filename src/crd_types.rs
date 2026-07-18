@@ -9,13 +9,14 @@
 //! defaults. CRs in the cluster don't notice the swap.
 
 use k8s_openapi::api::core::v1::{
-    ConfigMapVolumeSource as K8sConfigMapVolumeSource,
+    Capabilities as K8sCapabilities, ConfigMapVolumeSource as K8sConfigMapVolumeSource,
     EmptyDirVolumeSource as K8sEmptyDirVolumeSource, EnvFromSource as K8sEnvFromSource,
     EnvVar as K8sEnvVar, EnvVarSource as K8sEnvVarSource, KeyToPath as K8sKeyToPath,
     LocalObjectReference as K8sLocalObjectReference,
     PersistentVolumeClaimVolumeSource as K8sPersistentVolumeClaimVolumeSource,
+    PodSecurityContext as K8sPodSecurityContext, SeccompProfile as K8sSeccompProfile,
     SecretReference as K8sSecretReference, SecretVolumeSource as K8sSecretVolumeSource,
-    Volume as K8sVolume, VolumeMount as K8sVolumeMount,
+    SecurityContext as K8sSecurityContext, Volume as K8sVolume, VolumeMount as K8sVolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition as K8sCondition, Time as K8sTime};
@@ -420,6 +421,129 @@ impl Container {
     }
 }
 
+// ---- Security context (pod-level + container-level) ----
+//
+// k8s core/v1 `PodSecurityContext` / `SecurityContext` / `Capabilities` /
+// `SeccompProfile` don't derive `JsonSchema`, so — exactly as with `EnvVar` /
+// `Volume` above — we mirror the subset the fleet's App CRs set and convert at
+// the boundary. Every field is optional, so an omitting CR renders NO
+// securityContext at all (byte-identical to a CR that predates these fields).
+
+/// Pod-level `securityContext` (the k8s `PodSecurityContext` subset the fleet
+/// sets). Rendered onto `PodSpec.securityContext`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PodSecurityContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as_non_root: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as_user: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as_group: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_group: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seccomp_profile: Option<SeccompProfile>,
+}
+
+impl PodSecurityContext {
+    pub fn to_k8s(&self) -> K8sPodSecurityContext {
+        K8sPodSecurityContext {
+            run_as_non_root: self.run_as_non_root,
+            run_as_user: self.run_as_user,
+            run_as_group: self.run_as_group,
+            fs_group: self.fs_group,
+            seccomp_profile: self.seccomp_profile.as_ref().map(SeccompProfile::to_k8s),
+            ..Default::default()
+        }
+    }
+}
+
+/// Container-level `securityContext` (the k8s `SecurityContext` subset the
+/// fleet sets on the main container). Rendered onto the container's
+/// `securityContext`. `readOnlyRootFilesystem: true` + `capabilities.drop:
+/// [ALL]` + `allowPrivilegeEscalation: false` is the fleet hardening baseline.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityContext {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_root_filesystem: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_privilege_escalation: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Capabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as_non_root: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as_user: Option<i64>,
+}
+
+impl SecurityContext {
+    pub fn to_k8s(&self) -> K8sSecurityContext {
+        K8sSecurityContext {
+            read_only_root_filesystem: self.read_only_root_filesystem,
+            allow_privilege_escalation: self.allow_privilege_escalation,
+            capabilities: self.capabilities.as_ref().map(Capabilities::to_k8s),
+            run_as_non_root: self.run_as_non_root,
+            run_as_user: self.run_as_user,
+            ..Default::default()
+        }
+    }
+}
+
+/// Linux `capabilities` to add/drop on a container (mirror of k8s
+/// `Capabilities`). The fleet baseline is `drop: [ALL]`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub add: Vec<String>,
+}
+
+impl Capabilities {
+    pub fn to_k8s(&self) -> K8sCapabilities {
+        K8sCapabilities {
+            drop: if self.drop.is_empty() {
+                None
+            } else {
+                Some(self.drop.clone())
+            },
+            add: if self.add.is_empty() {
+                None
+            } else {
+                Some(self.add.clone())
+            },
+        }
+    }
+}
+
+/// `seccompProfile` (mirror of k8s `SeccompProfile`). `type` is required
+/// (`RuntimeDefault` / `Localhost` / `Unconfined`); `localhostProfile` is set
+/// only for `type: Localhost`.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SeccompProfile {
+    #[serde(rename = "type")]
+    pub type_: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub localhost_profile: String,
+}
+
+impl SeccompProfile {
+    pub fn to_k8s(&self) -> K8sSeccompProfile {
+        K8sSeccompProfile {
+            type_: self.type_.clone(),
+            localhost_profile: if self.localhost_profile.is_empty() {
+                None
+            } else {
+                Some(self.localhost_profile.clone())
+            },
+        }
+    }
+}
+
 impl Condition {
     pub fn to_k8s(&self) -> K8sCondition {
         K8sCondition {
@@ -580,5 +704,67 @@ mod tests {
             vf.secret_key_ref.expect("secret_key_ref").optional,
             Some(true)
         );
+    }
+
+    /// Pod-level securityContext must carry every fleet field to the k8s type —
+    /// the enso/zen (`runAsNonRoot`/`runAsUser`/`fsGroup`) and nchain
+    /// (`seccompProfile`) shapes.
+    #[test]
+    fn pod_security_context_to_k8s_carries_the_fleet_fields() {
+        let cr = serde_json::json!({
+            "runAsNonRoot": true,
+            "runAsUser": 65532,
+            "fsGroup": 65532,
+            "seccompProfile": { "type": "RuntimeDefault" }
+        });
+        let sc: PodSecurityContext = serde_json::from_value(cr).expect("deserialize");
+        let k = sc.to_k8s();
+        assert_eq!(k.run_as_non_root, Some(true));
+        assert_eq!(k.run_as_user, Some(65532));
+        assert_eq!(k.fs_group, Some(65532));
+        assert_eq!(
+            k.seccomp_profile.expect("seccomp must survive").type_,
+            "RuntimeDefault"
+        );
+        // Unset field stays None.
+        assert_eq!(k.run_as_group, None);
+    }
+
+    /// Container-level securityContext must carry the hardening baseline the
+    /// LLM-key holders (enso/zen) and the cluster-admin (nchain) set.
+    #[test]
+    fn container_security_context_to_k8s_carries_the_hardening_baseline() {
+        let cr = serde_json::json!({
+            "readOnlyRootFilesystem": true,
+            "allowPrivilegeEscalation": false,
+            "capabilities": { "drop": ["ALL"] }
+        });
+        let sc: SecurityContext = serde_json::from_value(cr).expect("deserialize");
+        let k = sc.to_k8s();
+        assert_eq!(k.read_only_root_filesystem, Some(true));
+        assert_eq!(k.allow_privilege_escalation, Some(false));
+        let caps = k.capabilities.expect("capabilities must survive");
+        assert_eq!(caps.drop, Some(vec!["ALL".to_string()]));
+        // An unset `add` is None on the wire — never a spurious `add: []`.
+        assert_eq!(caps.add, None);
+    }
+
+    /// `type: Localhost` carries the `localhostProfile`; the empty default is
+    /// omitted (None) so a `RuntimeDefault` profile never emits an empty path.
+    #[test]
+    fn seccomp_profile_localhost_maps_and_empty_is_omitted() {
+        let local = SeccompProfile {
+            type_: "Localhost".to_string(),
+            localhost_profile: "profiles/audit.json".to_string(),
+        };
+        let k = local.to_k8s();
+        assert_eq!(k.type_, "Localhost");
+        assert_eq!(k.localhost_profile.as_deref(), Some("profiles/audit.json"));
+
+        let runtime = SeccompProfile {
+            type_: "RuntimeDefault".to_string(),
+            localhost_profile: String::new(),
+        };
+        assert_eq!(runtime.to_k8s().localhost_profile, None);
     }
 }
