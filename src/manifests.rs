@@ -16,7 +16,7 @@ use k8s_openapi::api::autoscaling::v2::{
 use k8s_openapi::api::core::v1::{
     Affinity, ConfigMap, Container, ContainerPort, EnvFromSource, EnvVar, ExecAction,
     HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
-    PodAffinity, PodAffinityTerm, PodSpec, PodTemplateSpec, Probe,
+    PodAffinity, PodAffinityTerm, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
     ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
     ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume, VolumeMount, WeightedPodAffinityTerm,
 };
@@ -431,6 +431,33 @@ pub fn colocation_affinity(selector_labels_map: &BTreeMap<String, String>) -> Af
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+/// Resolve the pod-level `securityContext` from the structured passthrough
+/// (`spec.securityContext`) plus the legacy top-level `spec.fsGroup`, folded
+/// into ONE `PodSecurityContext`.
+///
+/// - Neither set ⇒ `None`: the pod carries no `securityContext` (byte-identical
+///   to a CR that predates these fields).
+/// - Only the legacy `fsGroup` set ⇒ exactly `PodSecurityContext { fs_group:
+///   Some(N), .. }` — byte-identical to the pre-passthrough behavior.
+/// - Structured context set ⇒ its fields, with the legacy `fsGroup` folded in
+///   ONLY when the structured context omits `fsGroup` (structured wins).
+pub fn pod_security_context(
+    ctx: Option<&crate::crd_types::PodSecurityContext>,
+    legacy_fs_group: Option<i64>,
+) -> Option<PodSecurityContext> {
+    match ctx {
+        None => legacy_fs_group.map(|fsg| PodSecurityContext {
+            fs_group: Some(fsg),
+            ..Default::default()
+        }),
+        Some(c) => {
+            let mut k = c.to_k8s();
+            k.fs_group = k.fs_group.or(legacy_fs_group);
+            Some(k)
+        }
     }
 }
 
@@ -1165,6 +1192,66 @@ mod tests {
         assert!(
             !configmap_is_empty(&cm),
             "binary-only ConfigMap carries config and must apply"
+        );
+    }
+
+    // ---- pod_security_context: the structured passthrough + legacy fsGroup fold ----
+
+    use crate::crd_types::{PodSecurityContext as CrPodSc, SeccompProfile as CrSeccomp};
+
+    /// Neither set ⇒ no securityContext — a CR predating these fields is untouched.
+    #[test]
+    fn pod_security_context_absent_is_none() {
+        assert!(pod_security_context(None, None).is_none());
+    }
+
+    /// ONLY the legacy top-level fsGroup ⇒ exactly `{fsGroup: N}` — byte-identical
+    /// to the pre-passthrough behavior (the console/esign fsGroup CRs).
+    #[test]
+    fn pod_security_context_legacy_fs_group_only_is_byte_identical() {
+        let got = pod_security_context(None, Some(1001)).expect("fsGroup must render");
+        assert_eq!(
+            got,
+            PodSecurityContext {
+                fs_group: Some(1001),
+                ..Default::default()
+            },
+            "legacy fsGroup-only must render exactly securityContext:{{fsGroup:N}}"
+        );
+    }
+
+    /// A structured context carries its fields; a legacy fsGroup folds in ONLY
+    /// when the structured context omits fsGroup (the nchain/enso shape).
+    #[test]
+    fn pod_security_context_folds_legacy_fs_group_when_structured_omits_it() {
+        let structured = CrPodSc {
+            run_as_non_root: Some(true),
+            run_as_user: Some(65532),
+            seccomp_profile: Some(CrSeccomp {
+                type_: "RuntimeDefault".into(),
+                localhost_profile: String::new(),
+            }),
+            ..Default::default()
+        };
+        let got = pod_security_context(Some(&structured), Some(1001)).expect("must render");
+        assert_eq!(got.run_as_non_root, Some(true));
+        assert_eq!(got.run_as_user, Some(65532));
+        assert_eq!(got.fs_group, Some(1001), "legacy fsGroup folds in");
+        assert_eq!(got.seccomp_profile.unwrap().type_, "RuntimeDefault");
+    }
+
+    /// The structured fsGroup wins over the legacy top-level field when both set.
+    #[test]
+    fn pod_security_context_structured_fs_group_wins_over_legacy() {
+        let structured = CrPodSc {
+            fs_group: Some(2000),
+            ..Default::default()
+        };
+        let got = pod_security_context(Some(&structured), Some(1001)).expect("must render");
+        assert_eq!(
+            got.fs_group,
+            Some(2000),
+            "structured fsGroup must win over the legacy top-level field"
         );
     }
 }
