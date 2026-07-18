@@ -144,89 +144,16 @@ async fn reconcile_datastore_inner(
     owner: OwnerReference,
     extra_labels: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let image = spec
-        .image
-        .clone()
-        .unwrap_or_else(|| default_image_for(engine));
+    let DatastoreWorkload {
+        mut statefulset,
+        labels: std_labels,
+        selector: sel_labels,
+        ports,
+    } = build_datastore_workload(name, namespace, spec, engine, extra_labels);
 
-    let base_labels = manifests::standard_labels(name, engine.as_str(), &spec.part_of, &image.tag);
-    // Merge tenant/extra labels into workload + pod-template metadata only;
-    // `selector_labels` stays minimal and immutable.
-    let std_labels = if extra_labels.is_empty() {
-        base_labels
-    } else {
-        manifests::merge_labels(&[&base_labels, extra_labels])
-    };
-    let sel_labels = manifests::selector_labels(name);
-
-    let ports = if spec.ports.is_empty() {
-        vec![crate::crd::ServicePort {
-            name: engine.as_str().to_string(),
-            container_port: default_port_for(engine),
-            service_port: None,
-            protocol: "TCP".to_string(),
-        }]
-    } else {
-        spec.ports.clone()
-    };
-
-    let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
-    let env_from_k8s: Vec<_> = spec
-        .env_from
-        .iter()
-        .map(crd_types::EnvFromSource::to_k8s)
-        .collect();
-    // The `volumeClaimTemplate` name (immutable on the StatefulSet) + the
-    // container's data mounts. See `vct_name` / `resolve_volume_mounts`.
-    let vct = vct_name(spec);
-    let mounts = resolve_volume_mounts(spec, &vct, engine);
-    let vm_k8s: Vec<_> = mounts.iter().map(crd_types::VolumeMount::to_k8s).collect();
-    let main = manifests::build_container(
-        name,
-        &manifests::image_ref(&image.repository, &image.tag),
-        &image.pull_policy,
-        spec.command.clone(),
-        spec.args.clone(),
-        env_k8s,
-        env_from_k8s,
-        vm_k8s,
-        manifests::container_ports(&ports),
-        spec.resources.as_ref().map(manifests::to_k8s_resources),
-        None,
-        None,
-    );
-    let mut containers = vec![main];
-    containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
-
-    let pvc_template = manifests::build_pvc_template(
-        &vct,
-        &spec.storage.storage_class_name,
-        spec.storage.size.as_str(),
-    );
-
-    let volumes_k8s: Vec<_> = spec.volumes.iter().map(crd_types::Volume::to_k8s).collect();
-    let ips_k8s: Vec<_> = spec
-        .image_pull_secrets
-        .iter()
-        .map(crd_types::LocalObjectReference::to_k8s)
-        .collect();
-
-    let mut sts = manifests::build_statefulset(
-        name,
-        namespace,
-        std_labels.clone(),
-        sel_labels.clone(),
-        Some(spec.replicas.unwrap_or(1)),
-        containers,
-        volumes_k8s,
-        vec![pvc_template],
-        ips_k8s,
-        &format!("{}-hs", name),
-    );
-    apply_fs_group(&mut sts, spec.fs_group);
-    set_owner(&mut sts.metadata.owner_references, &owner);
+    set_owner(&mut statefulset.metadata.owner_references, &owner);
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&stss, &sts).await?;
+    apply::apply(&stss, &statefulset).await?;
 
     // ClusterIP Service for clients.
     let svc_ports = manifests::service_ports(&ports);
@@ -274,19 +201,164 @@ async fn reconcile_datastore_inner(
     Ok(())
 }
 
-/// Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root engine
-/// image (FerretDB docdb runs as uid:gid 1000, distroless — no entrypoint can
-/// chown) write its data PVC: the kubelet chowns the mounted volume to this GID
-/// + adds it to every container's supplementary groups. `None` → the pod is
-/// left untouched → byte-identical StatefulSet for root/self-chowning engines
-/// (ClickHouse datastore).
-fn apply_fs_group(sts: &mut StatefulSet, fs_group: Option<i64>) {
-    let Some(fsg) = fs_group else { return };
-    if let Some(pod) = sts.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
-        pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
-            fs_group: Some(fsg),
-            ..Default::default()
-        });
+/// The desired StatefulSet for a datastore, plus the label/port values its
+/// sibling ClusterIP + headless Services reuse — computed ONCE from the DBSpec +
+/// engine so the workload and its Services stay consistent. Pure over the spec:
+/// the reconcile stamps owner refs and applies it; the render tests assert on
+/// `statefulset` directly (the ONE render path, no re-implementation to drift).
+pub(crate) struct DatastoreWorkload {
+    pub statefulset: StatefulSet,
+    pub labels: BTreeMap<String, String>,
+    pub selector: BTreeMap<String, String>,
+    pub ports: Vec<crate::crd::ServicePort>,
+}
+
+/// Build the datastore StatefulSet (+ the sibling Services' label/port values)
+/// from the spec. This is the ONE datastore render path — shared by the
+/// reconcile and the render tests — mirroring the Service path: the MAIN engine
+/// container carries `containerSecurityContext`, and the PodSpec carries the
+/// folded pod-level `securityContext` + `enableServiceLinks`.
+pub(crate) fn build_datastore_workload(
+    name: &str,
+    namespace: &str,
+    spec: &DBSpec,
+    engine: Engine,
+    extra_labels: &BTreeMap<String, String>,
+) -> DatastoreWorkload {
+    let image = spec
+        .image
+        .clone()
+        .unwrap_or_else(|| default_image_for(engine));
+
+    let base_labels = manifests::standard_labels(name, engine.as_str(), &spec.part_of, &image.tag);
+    // Merge tenant/extra labels into workload + pod-template metadata only;
+    // `selector_labels` stays minimal and immutable.
+    let std_labels = if extra_labels.is_empty() {
+        base_labels
+    } else {
+        manifests::merge_labels(&[&base_labels, extra_labels])
+    };
+    let sel_labels = manifests::selector_labels(name);
+
+    let ports = if spec.ports.is_empty() {
+        vec![crate::crd::ServicePort {
+            name: engine.as_str().to_string(),
+            container_port: default_port_for(engine),
+            service_port: None,
+            protocol: "TCP".to_string(),
+        }]
+    } else {
+        spec.ports.clone()
+    };
+
+    let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
+    let env_from_k8s: Vec<_> = spec
+        .env_from
+        .iter()
+        .map(crd_types::EnvFromSource::to_k8s)
+        .collect();
+    // The `volumeClaimTemplate` name (immutable on the StatefulSet) + the
+    // container's data mounts. See `vct_name` / `resolve_volume_mounts`.
+    let vct = vct_name(spec);
+    let mounts = resolve_volume_mounts(spec, &vct, engine);
+    let vm_k8s: Vec<_> = mounts.iter().map(crd_types::VolumeMount::to_k8s).collect();
+    let mut main = manifests::build_container(
+        name,
+        &manifests::image_ref(&image.repository, &image.tag),
+        &image.pull_policy,
+        spec.command.clone(),
+        spec.args.clone(),
+        env_k8s,
+        env_from_k8s,
+        vm_k8s,
+        manifests::container_ports(&ports),
+        spec.resources.as_ref().map(manifests::to_k8s_resources),
+        None,
+        None,
+    );
+    // Container-level securityContext on the MAIN engine container — the fleet
+    // hardening baseline (readOnlyRootFilesystem / capabilities.drop:[ALL] /
+    // allowPrivilegeEscalation:false). Applied ONLY to the engine container; a
+    // user replication/WAL sidecar keeps its own defaults so it can write. Opt-
+    // in: None ⇒ no securityContext, a byte-identical container. Mirrors the
+    // Service path (`service::reconcile_service_inner`).
+    main.security_context = spec
+        .container_security_context
+        .as_ref()
+        .map(crd_types::SecurityContext::to_k8s);
+    let mut containers = vec![main];
+    containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
+
+    let pvc_template = manifests::build_pvc_template(
+        &vct,
+        &spec.storage.storage_class_name,
+        spec.storage.size.as_str(),
+    );
+
+    let volumes_k8s: Vec<_> = spec.volumes.iter().map(crd_types::Volume::to_k8s).collect();
+    let ips_k8s: Vec<_> = spec
+        .image_pull_secrets
+        .iter()
+        .map(crd_types::LocalObjectReference::to_k8s)
+        .collect();
+
+    let mut sts = manifests::build_statefulset(
+        name,
+        namespace,
+        std_labels.clone(),
+        sel_labels.clone(),
+        Some(spec.replicas.unwrap_or(1)),
+        containers,
+        volumes_k8s,
+        vec![pvc_template],
+        ips_k8s,
+        &format!("{}-hs", name),
+    );
+    apply_pod_security(
+        &mut sts,
+        spec.security_context.as_ref(),
+        spec.fs_group,
+        spec.enable_service_links,
+    );
+
+    DatastoreWorkload {
+        statefulset: sts,
+        labels: std_labels,
+        selector: sel_labels,
+        ports,
+    }
+}
+
+/// Render the pod-level `securityContext` (the structured `spec.securityContext`
+/// passthrough folded with the legacy top-level `spec.fsGroup` via the shared
+/// `manifests::pod_security_context` helper) and the `enableServiceLinks` flag
+/// onto the StatefulSet's PodSpec — the SAME pod-level render the Service path
+/// performs, so a hardened workload keeps its posture on either path.
+///
+/// - `securityContext`/`fsGroup` both absent ⇒ the pod's `securityContext` is
+///   left untouched (byte-identical StatefulSet for a root/self-chowning engine
+///   like ClickHouse `datastore`).
+/// - only the legacy `fsGroup` set ⇒ exactly `securityContext: {fsGroup: N}`, so
+///   a non-root engine (FerretDB `docdb`, uid:gid 1000, distroless — no
+///   entrypoint can chown) group-owns its data PVC. Unchanged from the prior
+///   `apply_fs_group` behavior.
+/// - `enableServiceLinks` absent ⇒ the field is omitted (k8s default `true`);
+///   the object store (`s3`/SeaweedFS) sets it `false` so k8s does not inject the
+///   `*_SERVICE_HOST/PORT` env that aborts its flag parser on restart.
+fn apply_pod_security(
+    sts: &mut StatefulSet,
+    security_context: Option<&crd_types::PodSecurityContext>,
+    fs_group: Option<i64>,
+    enable_service_links: Option<bool>,
+) {
+    let Some(pod) = sts.spec.as_mut().and_then(|s| s.template.spec.as_mut()) else {
+        return;
+    };
+    if let Some(sc) = manifests::pod_security_context(security_context, fs_group) {
+        pod.security_context = Some(sc);
+    }
+    if let Some(esl) = enable_service_links {
+        pod.enable_service_links = Some(esl);
     }
 }
 
@@ -533,20 +605,26 @@ mod tests {
     }
 
     // A non-root engine (docdb=FerretDB, uid 1000) sets spec.fsGroup so the
-    // kubelet group-owns its data PVC — else it CrashLoops writing /state.
+    // kubelet group-owns its data PVC — else it CrashLoops writing /state. The
+    // legacy-fsGroup-only fold through the shared helper still renders exactly
+    // securityContext:{fsGroup:N} (byte-identical to the prior apply_fs_group).
     #[test]
     fn fs_group_set_stamps_pod_security_context() {
         let mut sts = empty_sts();
-        apply_fs_group(&mut sts, Some(1000));
-        let sc = sts
-            .spec
-            .unwrap()
-            .template
-            .spec
-            .unwrap()
+        apply_pod_security(&mut sts, None, Some(1000), None);
+        let pod = sts.spec.unwrap().template.spec.unwrap();
+        let sc = pod
             .security_context
             .expect("fsGroup engine must stamp a pod securityContext");
-        assert_eq!(sc.fs_group, Some(1000));
+        assert_eq!(
+            sc,
+            k8s_openapi::api::core::v1::PodSecurityContext {
+                fs_group: Some(1000),
+                ..Default::default()
+            },
+            "legacy fsGroup must render EXACTLY securityContext:{{fsGroup:1000}}"
+        );
+        assert!(pod.enable_service_links.is_none());
     }
 
     // A root/self-chowning engine (ClickHouse datastore) leaves fsGroup None →
@@ -554,15 +632,10 @@ mod tests {
     #[test]
     fn fs_group_none_leaves_pod_untouched() {
         let mut sts = empty_sts();
-        apply_fs_group(&mut sts, None);
-        assert!(sts
-            .spec
-            .unwrap()
-            .template
-            .spec
-            .unwrap()
-            .security_context
-            .is_none());
+        apply_pod_security(&mut sts, None, None, None);
+        let pod = sts.spec.unwrap().template.spec.unwrap();
+        assert!(pod.security_context.is_none());
+        assert!(pod.enable_service_links.is_none());
     }
 
     fn spec_with_storage(volume_name: Option<&str>) -> DBSpec {
