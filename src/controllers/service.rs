@@ -628,7 +628,7 @@ async fn reconcile_service_inner(
     let resolved_image = effective_image
         .map(str::to_string)
         .unwrap_or_else(|| manifests::image_ref(&spec.image.repository, &spec.image.tag));
-    let main = manifests::build_container(
+    let mut main = manifests::build_container(
         name,
         &resolved_image,
         &spec.image.pull_policy,
@@ -646,6 +646,16 @@ async fn reconcile_service_inner(
             .as_ref()
             .and_then(manifests::build_probe),
     );
+    // Container-level securityContext on the MAIN container — the fleet
+    // hardening baseline (readOnlyRootFilesystem / capabilities.drop:[ALL] /
+    // allowPrivilegeEscalation:false) the LLM-key-holding + cluster-admin
+    // workloads set. Opt-in: None ⇒ no securityContext, a byte-identical
+    // container. Applied only to the main container (the auto-injected replicate
+    // sidecar/restore init keep their own defaults so they can write the WAL).
+    main.security_context = spec
+        .container_security_context
+        .as_ref()
+        .map(crd_types::SecurityContext::to_k8s);
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
     // Auto-inject the replicate sidecar (streams the WAL to SeaweedFS).
@@ -731,15 +741,27 @@ async fn reconcile_service_inner(
                 pod.init_containers = Some(inits);
             }
         }
-        // Pod securityContext.fsGroup — opt-in (spec.fsGroup). Lets a non-root
-        // image write a persistence PVC (the kubelet chowns the volume to this
-        // GID + adds it to every container's supplementary groups).
-        if let Some(fsg) = spec.fs_group {
+        // Pod-level securityContext: the structured passthrough
+        // (spec.securityContext — runAsNonRoot/runAsUser/runAsGroup/fsGroup/
+        // seccompProfile) folded with the legacy top-level spec.fsGroup into ONE
+        // PodSecurityContext. None ⇒ no securityContext (byte-identical to a
+        // pre-passthrough CR); a legacy-fsGroup-only CR still renders exactly
+        // securityContext:{fsGroup:N} (the kubelet chowns a persistence PVC to
+        // this GID + adds it to every container's supplementary groups).
+        if let Some(sc) =
+            manifests::pod_security_context(spec.security_context.as_ref(), spec.fs_group)
+        {
             if let Some(pod) = d_spec.template.spec.as_mut() {
-                pod.security_context = Some(k8s_openapi::api::core::v1::PodSecurityContext {
-                    fs_group: Some(fsg),
-                    ..Default::default()
-                });
+                pod.security_context = Some(sc);
+            }
+        }
+        // enableServiceLinks passthrough — the object store (s3/SeaweedFS) sets
+        // false so k8s does not inject the *_SERVICE_HOST/PORT env for every
+        // namespace Service, which aborts its flag parser on restart. None ⇒ the
+        // field is omitted (k8s default true), byte-identical for every other CR.
+        if let Some(esl) = spec.enable_service_links {
+            if let Some(pod) = d_spec.template.spec.as_mut() {
+                pod.enable_service_links = Some(esl);
             }
         }
     }
@@ -1787,6 +1809,127 @@ mod tests {
     /// Assemble the Deployment exactly as `reconcile_service_inner` does for a
     /// Service with persistence enabled — the same resolution + helper calls,
     /// fed into the same `build_deployment` (mirrors `deployment_carries_volumes`).
+    // ---- securityContext + enableServiceLinks passthrough (the port-audit unlock) ----
+
+    /// `base_spec` hardened with the exact shapes the port-audit services set:
+    /// the enso/zen pod (`runAsNonRoot`/`runAsUser`) + nchain pod
+    /// (`seccompProfile`), the enso/nchain container hardening
+    /// (`readOnlyRootFilesystem`/`capabilities.drop:[ALL]`/`allowPrivilegeEscalation:false`),
+    /// and the s3 `enableServiceLinks: false`.
+    fn hardened_spec() -> ServiceSpec {
+        ServiceSpec {
+            security_context: Some(crd_types::PodSecurityContext {
+                run_as_non_root: Some(true),
+                run_as_user: Some(65532),
+                seccomp_profile: Some(crd_types::SeccompProfile {
+                    type_: "RuntimeDefault".into(),
+                    localhost_profile: String::new(),
+                }),
+                ..Default::default()
+            }),
+            container_security_context: Some(crd_types::SecurityContext {
+                read_only_root_filesystem: Some(true),
+                allow_privilege_escalation: Some(false),
+                capabilities: Some(crd_types::Capabilities {
+                    drop: vec!["ALL".into()],
+                    add: vec![],
+                }),
+                ..Default::default()
+            }),
+            enable_service_links: Some(false),
+            ..base_spec()
+        }
+    }
+
+    /// (b) A CR WITH the new fields renders the pod + main-container
+    /// securityContext and enableServiceLinks exactly.
+    #[test]
+    fn hardened_spec_renders_pod_and_container_security_and_service_links() {
+        let dep = build_persisted_deployment("enso", &hardened_spec());
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+
+        // Pod-level securityContext.
+        let psc = pod
+            .security_context
+            .expect("pod securityContext must render");
+        assert_eq!(psc.run_as_non_root, Some(true));
+        assert_eq!(psc.run_as_user, Some(65532));
+        assert_eq!(
+            psc.seccomp_profile
+                .expect("seccompProfile must render")
+                .type_,
+            "RuntimeDefault"
+        );
+
+        // enableServiceLinks — the s3/SeaweedFS crown-jewel field.
+        assert_eq!(
+            pod.enable_service_links,
+            Some(false),
+            "enableServiceLinks:false must reach the PodSpec"
+        );
+
+        // Container-level securityContext on the MAIN container.
+        let main = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "enso")
+            .expect("main container");
+        let csc = main
+            .security_context
+            .as_ref()
+            .expect("container securityContext must render");
+        assert_eq!(csc.read_only_root_filesystem, Some(true));
+        assert_eq!(csc.allow_privilege_escalation, Some(false));
+        assert_eq!(
+            csc.capabilities.as_ref().unwrap().drop,
+            Some(vec!["ALL".to_string()]),
+            "capabilities.drop:[ALL] must reach the container (the LLM-key-holder hardening)"
+        );
+    }
+
+    /// (a) A CR WITHOUT any of the new fields renders a pod + container with NO
+    /// securityContext and NO enableServiceLinks — byte-identical to before.
+    #[test]
+    fn spec_without_security_fields_is_byte_identical() {
+        let dep = build_persisted_deployment("plain", &base_spec());
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+        assert!(
+            pod.security_context.is_none(),
+            "an omitting CR must carry no pod securityContext"
+        );
+        assert!(
+            pod.enable_service_links.is_none(),
+            "an omitting CR must carry no enableServiceLinks (k8s default true)"
+        );
+        assert!(
+            pod.containers[0].security_context.is_none(),
+            "an omitting CR must carry no container securityContext"
+        );
+    }
+
+    /// A CR that sets ONLY the legacy top-level `fsGroup` (the console/esign
+    /// shape) still renders exactly `securityContext:{fsGroup:N}` and nothing
+    /// else — the pre-passthrough render is unchanged.
+    #[test]
+    fn legacy_fs_group_only_renders_exactly_fs_group() {
+        let spec = ServiceSpec {
+            fs_group: Some(1001),
+            ..base_spec()
+        };
+        let dep = build_persisted_deployment("console", &spec);
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+        assert_eq!(
+            pod.security_context,
+            Some(k8s_openapi::api::core::v1::PodSecurityContext {
+                fs_group: Some(1001),
+                ..Default::default()
+            }),
+            "legacy fsGroup must render exactly securityContext:{{fsGroup:1001}}"
+        );
+        assert!(pod.enable_service_links.is_none());
+        assert!(pod.containers[0].security_context.is_none());
+    }
+
     fn build_persisted_deployment(
         name: &str,
         spec: &ServiceSpec,
@@ -1805,7 +1948,7 @@ mod tests {
             .iter()
             .map(crd_types::VolumeMount::to_k8s)
             .collect();
-        let main = manifests::build_container(
+        let mut main = manifests::build_container(
             name,
             &manifests::image_ref(&spec.image.repository, &spec.image.tag),
             &spec.image.pull_policy,
@@ -1819,6 +1962,12 @@ mod tests {
             None,
             None,
         );
+        // Mirror the controller: container-level securityContext on the main
+        // container.
+        main.security_context = spec
+            .container_security_context
+            .as_ref()
+            .map(crd_types::SecurityContext::to_k8s);
         let mut containers = vec![main];
         containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
         if let Some(p) = &p {
@@ -1858,6 +2007,20 @@ mod tests {
             if !inits.is_empty() {
                 if let Some(pod) = d_spec.template.spec.as_mut() {
                     pod.init_containers = Some(inits);
+                }
+            }
+            // Mirror the controller: pod-level securityContext (structured +
+            // legacy fsGroup folded via the shared helper) and enableServiceLinks.
+            if let Some(sc) =
+                manifests::pod_security_context(spec.security_context.as_ref(), spec.fs_group)
+            {
+                if let Some(pod) = d_spec.template.spec.as_mut() {
+                    pod.security_context = Some(sc);
+                }
+            }
+            if let Some(esl) = spec.enable_service_links {
+                if let Some(pod) = d_spec.template.spec.as_mut() {
+                    pod.enable_service_links = Some(esl);
                 }
             }
         }
