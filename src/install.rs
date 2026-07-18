@@ -602,6 +602,39 @@ mod tests {
         );
     }
 
+    /// The Service AND App CRDs carry the securityContext passthrough +
+    /// enableServiceLinks — proof `install`/`generate-crd-yaml` ship a schema
+    /// that accepts them (an unmodeled field would be pruned by the apiserver).
+    /// App is checked too because its schema flattens `ServiceSpec`.
+    #[test]
+    fn service_and_app_crd_schema_carry_security_context_fields() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        for kind in ["Service", "App"] {
+            let crd = crds
+                .iter()
+                .find(|c| c.spec.names.kind == kind)
+                .unwrap_or_else(|| panic!("{kind} CRD"));
+            let schema = serde_json::to_string(&crd.spec.versions[0].schema).unwrap();
+            assert!(
+                schema.contains("securityContext"),
+                "{kind}: spec.securityContext must be in the schema"
+            );
+            assert!(
+                schema.contains("containerSecurityContext"),
+                "{kind}: spec.containerSecurityContext must be in the schema"
+            );
+            assert!(
+                schema.contains("enableServiceLinks"),
+                "{kind}: spec.enableServiceLinks must be in the schema"
+            );
+            // The nested pod/container hardening shape survives into the schema.
+            assert!(
+                schema.contains("readOnlyRootFilesystem") && schema.contains("seccompProfile"),
+                "{kind}: nested container/pod security fields must be modeled"
+            );
+        }
+    }
+
     // ---- operator manifests ----
 
     #[test]

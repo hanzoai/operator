@@ -23,8 +23,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::crd_types::{
-    Condition, Container, EnvFromSource, EnvVar, LocalObjectReference, SecretReference, Time,
-    Volume, VolumeMount,
+    Condition, Container, EnvFromSource, EnvVar, LocalObjectReference, PodSecurityContext,
+    SecretReference, SecurityContext, Time, Volume, VolumeMount,
 };
 
 // ============================================================================
@@ -598,6 +598,33 @@ pub struct ServiceSpec {
     /// it never restarts unrelated persistence services.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
+    /// Pod-level `securityContext` passthrough — `runAsNonRoot`, `runAsUser`,
+    /// `runAsGroup`, `fsGroup`, `seccompProfile` — rendered onto the PodSpec's
+    /// `securityContext`. The legacy top-level `fsGroup` above folds together
+    /// with this: `securityContext.fsGroup` wins when both are set, otherwise the
+    /// top-level value is carried. Opt-in — a CR that omits it renders a
+    /// byte-identical PodSpec (a CR that sets only the legacy `fsGroup` still
+    /// renders exactly `securityContext: {fsGroup: N}` as before).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_context: Option<PodSecurityContext>,
+    /// Container-level `securityContext` for the MAIN container —
+    /// `readOnlyRootFilesystem`, `allowPrivilegeEscalation`,
+    /// `capabilities{drop,add}`, `runAsNonRoot`, `runAsUser` — rendered onto the
+    /// main container's `securityContext`. This is the fleet hardening baseline
+    /// (`readOnlyRootFilesystem: true` + `capabilities.drop: [ALL]` +
+    /// `allowPrivilegeEscalation: false`) that the LLM-key-holding and
+    /// cluster-admin workloads set; porting them without it silently DROPS the
+    /// hardening. Opt-in — an omitting CR renders a byte-identical container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_security_context: Option<SecurityContext>,
+    /// `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+    /// MUST set this `false`: k8s's default-`true` injects a
+    /// `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
+    /// s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
+    /// is omitted (k8s default `true`), byte-identical for every CR that does not
+    /// set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_service_links: Option<bool>,
     /// Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
     /// directly (historical behavior). When `enabled` (+ the operator's
     /// `UPGRADE_FSM_ENABLED` gate), an image change rolls through the
