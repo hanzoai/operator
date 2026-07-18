@@ -5,7 +5,7 @@
 //! calling back into git to bump a tag, the operator polls `imageRepository`
 //! (registry.hanzo.ai — the canonical fleet registry, NOT ghcr) for tags
 //! matching `policy`, and on a newer one writes the bump into `writebackPath`
-//! in git. The GitSource controller then applies it — closing
+//! in git. The cloud deploy engine then applies it — closing
 //! build→push→bump→rollout entirely in-cluster.
 //!
 //! The tag-selection + write-back logic below is the Flux GitOps-toolkit

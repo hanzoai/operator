@@ -1,4 +1,4 @@
-//! Shared git plumbing for the native GitOps controllers (GitSource pull-sync +
+//! Shared git plumbing for the ImageUpdate controller (registry→git write-back).
 //! ImageUpdate write-back).
 //!
 //! Shells the `git` binary — the SAME mechanism the retired `gitops-reconcile`
