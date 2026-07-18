@@ -35,7 +35,7 @@ use crate::api_group::DEFAULT_API_GROUP;
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, GitSource,
+    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway,
     ImageUpdate, Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability,
     Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
@@ -85,10 +85,9 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         // canonical Kind order (Service … AgentDeployment) is unchanged and App is
         // the additive tail.
         App::crd(),
-        // Native GitOps Kinds — pull-sync (GitSource) + registry→git image
+        // Registry→git image automation Kind (delivery is the cloud deploy engine):
         // automation (ImageUpdate). Appended after App so they extend the tail
         // without disturbing the canonical order the checked-in bundles assert.
-        GitSource::crd(),
         ImageUpdate::crd(),
     ];
     if group != DEFAULT_API_GROUP {
@@ -553,7 +552,6 @@ mod tests {
         assert!(kinds.contains(&"Service"));
         assert!(kinds.contains(&"AgentDeployment"));
         assert!(kinds.contains(&"App"));
-        assert!(kinds.contains(&"GitSource"));
         assert!(kinds.contains(&"ImageUpdate"));
         for crd in &crds {
             assert_eq!(crd.spec.group, DEFAULT_API_GROUP);

@@ -25,13 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::{
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use clap::Parser;
 use kube::Client;
 use std::net::SocketAddr;
-use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::api_group::ApiGroup;
@@ -119,12 +118,10 @@ struct UpOpts {
     manifests: Option<std::path::PathBuf>,
 }
 
-/// Shared state for the health/webhook server: leadership (for `/readyz`) and
-/// the gitops reconcile trigger (for `POST /reconcile`).
+/// Shared state for the health server: leadership (for `/readyz`).
 #[derive(Clone)]
 struct HealthState {
     leader: Arc<AtomicBool>,
-    reconcile_now: Arc<Notify>,
 }
 
 async fn healthz() -> &'static str {
@@ -139,17 +136,6 @@ async fn readyz(
     } else {
         (axum::http::StatusCode::SERVICE_UNAVAILABLE, "not leader")
     }
-}
-
-/// Webhook — trigger an IMMEDIATE gitops reconcile. A git push (git.hanzo.ai /
-/// GitHub) POSTs here for an instant sync; the tight poll loop is the guaranteed
-/// fallback. Best-effort: notifying when the gitops loop is disabled, or this
-/// replica is not the leader, is a harmless no-op.
-async fn reconcile_webhook(
-    axum::extract::State(state): axum::extract::State<HealthState>,
-) -> (axum::http::StatusCode, &'static str) {
-    state.reconcile_now.notify_one();
-    (axum::http::StatusCode::ACCEPTED, "reconcile queued")
 }
 
 #[tokio::main]
@@ -204,21 +190,13 @@ async fn main() -> anyhow::Result<()> {
         info!("Leader election disabled, running as leader");
     }
 
-    // The shared webhook trigger: `POST /reconcile` (a git push webhook) nudges
-    // this `Notify`, and the GitSource controller reconciles every source at once.
-    // A GitSource is a CR, so the git→cluster loop is opt-in by declaring one — no
-    // env gate to flip.
-    let reconcile_now = Arc::new(Notify::new());
-
-    // Health + webhook server.
+    // Health server.
     let health_addr: SocketAddr = args.health_addr.parse()?;
     let health_app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/reconcile", post(reconcile_webhook))
         .with_state(HealthState {
             leader: leader_flag.clone(),
-            reconcile_now: reconcile_now.clone(),
         });
 
     let group = api_group.group.clone();
@@ -238,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         // Controllers — wait for leadership then run all of them.
-        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone(), reconcile_now.clone()) => {
+        _ = run_all_controllers(client.clone(), namespace.clone(), group.clone(), controllers_flag.clone()) => {
             warn!("Controllers exited");
         }
 
@@ -293,7 +271,6 @@ async fn run_all_controllers(
     namespace: String,
     api_group: String,
     leader_flag: Arc<AtomicBool>,
-    reconcile_now: Arc<Notify>,
 ) {
     // Block until we become the leader.
     loop {
@@ -371,15 +348,9 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        // Native GitOps: pull-sync (retires gitops-reconcile cron) + image
-        // automation (retires notify-universe dispatch). One reconciler, one
-        // api group — no second control plane.
-        controllers::gitsource::run_gitsource_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone(),
-            reconcile_now.clone()
-        ),
+        // Image automation (retires notify-universe dispatch): watches registries
+        // and writes image-tag bumps back to git. The git→cluster delivery half is
+        // now the cloud deploy engine (/v1/deploy), not a second reconciler here.
         controllers::imageupdate::run_imageupdate_controller(
             client.clone(),
             namespace.clone(),
