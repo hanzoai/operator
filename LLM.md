@@ -783,3 +783,38 @@ clippy-clean (my files add zero warnings; the 4 pre-existing
 datastore.rs/manifests.rs warnings are untouched). CRD schema unchanged. Gate
 stays OFF; the remaining enable-gates are pure live-cluster smokes (CSI
 round-trip, real-namespace egress, universe RBAC).
+
+## v0.7.9 — securityContext + enableServiceLinks passthrough (Service AND Datastore)
+
+Three optional, backward-compatible fields let a hardened fleet workload port to
+an App CR faithfully instead of silently downgrading its posture:
+`securityContext` (pod-level: runAsNonRoot/runAsUser/runAsGroup/fsGroup/
+seccompProfile), `containerSecurityContext` (main container:
+readOnlyRootFilesystem/allowPrivilegeEscalation/capabilities/runAsNonRoot/
+runAsUser), and `enableServiceLinks` (the object store sets it `false`; k8s's
+default-`true` injects `*_SERVICE_HOST/PORT` env that aborts the s3 flag parser
+on restart).
+
+BOTH workload paths render them, through ONE shared helper
+(`manifests::pod_security_context`, which folds the legacy top-level `fsGroup`
+into the structured pod securityContext — structured `fsGroup` wins):
+
+- **Service** (`ServiceSpec`, flattened by `AppSpec`) — rendered onto the
+  Deployment's PodSpec + main container.
+- **Datastore** (`DBSpec`, projected from `AppSpec` via a serde round-trip for
+  role `sql`/`kv`/`docdb`/`s3`/`datastore`/`managedDatabase`) — `DBSpec` gained
+  the SAME three fields so the projection preserves them (previously the
+  round-trip silently dropped them: the App CRD *accepted+stored* the fields, but
+  `DBSpec` did not model them, so the render never saw them — the s3/SeaweedFS
+  object store lost its `enableServiceLinks: false`). `build_datastore_workload`
+  renders the container securityContext on the MAIN engine container only (a
+  replication/WAL sidecar keeps its writable rootfs) and the folded pod
+  securityContext + enableServiceLinks on the PodSpec.
+
+All three are `Option` + `skip_serializing_if`, so a workload that omits them
+renders a byte-identical Deployment/StatefulSet. The App reconcile validates
+`seccompProfile` at the boundary (type `Localhost` requires `localhostProfile`,
+unknown types rejected) so an apiserver-invalid profile degrades cleanly instead
+of hot-looping on a rejected apply. CRD bundles regenerated for all four
+universes (pure insertion — the six DBSpec CRDs gain the schema, Service/App
+unchanged; zero deletions, cmp-verified against a clean regen).
