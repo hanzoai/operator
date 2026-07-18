@@ -818,3 +818,12 @@ unknown types rejected) so an apiserver-invalid profile degrades cleanly instead
 of hot-looping on a rejected apply. CRD bundles regenerated for all four
 universes (pure insertion — the six DBSpec CRDs gain the schema, Service/App
 unchanged; zero deletions, cmp-verified against a clean regen).
+
+## Delivery in cloud, domain in operator (GitSource retired)
+The `GitSource` controller is gone — `controllers/gitsource.rs`, `GitSourceSpec`/
+`Status`, the `run_all` wiring, the `/reconcile` webhook + `reconcile_now` Notify,
+and the CRD install. The cloud `/v1/deploy` engine (embedded gitops-engine) is the
+ONE git→App-CR delivery host; the operator keeps the DOMAIN half — App CR →
+Deployment/Service/… — plus `ImageUpdate` (registry→git tag bumps). One way:
+delivery in cloud, domain in the operator. (CRD-bundle regen to drop `gitsources`
+and the cluster CRD prune are deploy-time follow-ons.)
