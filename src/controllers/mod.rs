@@ -7,8 +7,7 @@ pub mod base;
 pub mod datastore;
 pub mod dns;
 pub mod gateway;
-// Native GitOps — retires the gitops-reconcile cron + notify-universe dispatch.
-pub mod gitsource;
+// Image automation: registry→git tag bumps (delivery is the cloud deploy engine).
 pub mod imageupdate;
 pub mod ingress;
 pub mod kms_zap;

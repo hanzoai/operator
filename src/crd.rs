@@ -2473,96 +2473,17 @@ pub struct AppSpec {
 // existing apply/status machinery — not a vendored platform.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// GitSource — pull-based git→cluster sync. Replaces the `gitops-reconcile`
-/// cron: the operator clones `repo@ref`, renders `path` (a directory of CR
-/// manifests / a kustomization), and server-side-applies it on `interval`.
-/// Continuous reconciliation, drift-correcting, no external trigger.
-#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[kube(
-    group = "hanzo.ai",
-    version = "v1",
-    kind = "GitSource",
-    plural = "gitsources",
-    namespaced,
-    status = "GitSourceStatus",
-    shortname = "gitsrc",
-    printcolumn = r#"{"name":"Repo","type":"string","jsonPath":".spec.repo"}"#,
-    printcolumn = r#"{"name":"Ref","type":"string","jsonPath":".spec.ref"}"#,
-    printcolumn = r#"{"name":"Revision","type":"string","jsonPath":".status.lastAppliedRevision"}"#,
-    printcolumn = r#"{"name":"Ready","type":"string","jsonPath":".status.phase"}"#,
-    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
-)]
-#[serde(rename_all = "camelCase")]
-pub struct GitSourceSpec {
-    /// Git remote, https form (e.g. `github.com/hanzoai/universe`). The token is
-    /// read from `credentialsSecret` — never embedded here.
-    pub repo: String,
-    /// Branch (or tag/sha) to track. Default `main`.
-    #[serde(default = "default_git_ref")]
-    pub r#ref: String,
-    /// Repo-relative directory to apply (dir of CR manifests, or a kustomize
-    /// root when `kustomize: true`). Default `infra/k8s/operator/crs`.
-    #[serde(default = "default_git_path")]
-    pub path: String,
-    /// Treat `path` as a kustomization root (`kustomize build`) vs a plain
-    /// directory of manifests. Default false (per-file apply, matching the cron).
-    #[serde(default)]
-    pub kustomize: bool,
-    /// Reconcile interval in seconds. Default 120.
-    #[serde(default = "default_git_interval")]
-    pub interval_seconds: u64,
-    /// Delete cluster objects that were applied by this GitSource but are no
-    /// longer in git. OFF by default — pruning is unsafe until dual-declared
-    /// plain Deployments are collapsed (see universe #64/LLM.md). The cron never
-    /// pruned; this preserves that safety and makes enabling it a deliberate act.
-    #[serde(default)]
-    pub prune: bool,
-    /// When set, restrict apply to these CR basenames (no `.yaml`) — the
-    /// `RECONCILE_ALLOWLIST` the cron used, carried forward so an in-progress
-    /// migration can heal a vetted subset before opening the full set.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowlist: Vec<String>,
-    /// K8s Secret (key `token`) holding the git PAT, KMS-synced. Empty = public.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub credentials_secret: String,
-}
 
 fn default_git_ref() -> String {
     "main".to_string()
 }
-fn default_git_path() -> String {
-    "infra/k8s/operator/crs".to_string()
-}
-fn default_git_interval() -> u64 {
-    120
-}
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct GitSourceStatus {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub phase: Option<Phase>,
-    /// Short SHA of the last revision successfully applied.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub last_applied_revision: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_sync_time: Option<String>,
-    /// Objects applied on the last successful sync.
-    #[serde(default)]
-    pub applied_count: i32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conditions: Vec<Condition>,
-    #[serde(default)]
-    pub observed_generation: i64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub message: String,
-}
 
 /// ImageUpdate — registry→git image automation. Replaces the `notify-universe`
 /// GitHub `repository_dispatch` + universe's `image-update.yml`: the operator
 /// watches `imageRepository` for tags matching `policy` (semver range / regex),
 /// and when a newer one appears it writes the bump back to `writeback` git (the
-/// GitSource path), which the GitSource then rolls out. The whole loop —
+/// deploy path), which the cloud deploy engine then rolls out. The whole loop —
 /// build→push→bump→apply — is closed in-cluster with no CI callback.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
@@ -2588,7 +2509,7 @@ pub struct ImageUpdateSpec {
     /// (`-amd64`) is honored so it never selects an unpushed variant.
     #[serde(default = "default_image_policy")]
     pub policy: String,
-    /// The GitSource repo to write the bump into (usually the same universe repo).
+    /// The git repo to write the bump into (usually the same universe repo).
     pub writeback_repo: String,
     #[serde(default = "default_git_ref")]
     pub writeback_ref: String,
