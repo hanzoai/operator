@@ -602,14 +602,28 @@ mod tests {
         );
     }
 
-    /// The Service AND App CRDs carry the securityContext passthrough +
-    /// enableServiceLinks — proof `install`/`generate-crd-yaml` ship a schema
-    /// that accepts them (an unmodeled field would be pruned by the apiserver).
-    /// App is checked too because its schema flattens `ServiceSpec`.
+    /// The Service/App CRDs AND the six DBSpec-backed datastore CRDs carry the
+    /// securityContext passthrough + enableServiceLinks — proof `install`/
+    /// `generate-crd-yaml` ship a schema that accepts them (an unmodeled field
+    /// would be pruned by the apiserver). App flattens `ServiceSpec`; the
+    /// datastore CRDs model `DBSpec`, so all must carry the fields for a hardened
+    /// datastore App's projected spec to be stored rather than silently dropped.
     #[test]
-    fn service_and_app_crd_schema_carry_security_context_fields() {
+    fn crd_schemas_carry_security_context_fields() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
-        for kind in ["Service", "App"] {
+        // Service/App carry the fields on the ServiceSpec; the six DBSpec-backed
+        // datastore CRDs carry them too, so a hardened datastore App's projected
+        // spec is STORED (not pruned) and the standalone datastore CRs accept it.
+        for kind in [
+            "Service",
+            "App",
+            "SQL",
+            "KV",
+            "DocDB",
+            "S3",
+            "Datastore",
+            "ManagedDatabase",
+        ] {
             let crd = crds
                 .iter()
                 .find(|c| c.spec.names.kind == kind)
