@@ -542,6 +542,38 @@ impl SeccompProfile {
             },
         }
     }
+
+    /// Validate against k8s's rule: `localhostProfile` is set IF AND ONLY IF
+    /// `type` is `Localhost`, and `type` is one of `RuntimeDefault`/`Localhost`/
+    /// `Unconfined`. An invalid profile is rejected by the apiserver on apply,
+    /// which would wedge the reconcile in a status-less requeue loop; the
+    /// operator boundary calls this to degrade cleanly instead. Returns the
+    /// human-readable rejection reason.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        match self.type_.as_str() {
+            "Localhost" => {
+                if self.localhost_profile.is_empty() {
+                    Err("securityContext.seccompProfile.type Localhost requires localhostProfile"
+                        .to_string())
+                } else {
+                    Ok(())
+                }
+            }
+            "RuntimeDefault" | "Unconfined" => {
+                if self.localhost_profile.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "securityContext.seccompProfile.localhostProfile is only valid with type Localhost (got type {})",
+                        self.type_
+                    ))
+                }
+            }
+            other => Err(format!(
+                "securityContext.seccompProfile.type must be RuntimeDefault, Localhost, or Unconfined (got {other:?})"
+            )),
+        }
+    }
 }
 
 impl Condition {
@@ -766,5 +798,56 @@ mod tests {
             localhost_profile: String::new(),
         };
         assert_eq!(runtime.to_k8s().localhost_profile, None);
+    }
+
+    // k8s requires `localhostProfile` set IFF `type: Localhost`, with `type` one
+    // of RuntimeDefault/Localhost/Unconfined. The operator validates at its
+    // boundary so a bad profile degrades cleanly instead of the apiserver
+    // rejecting the apply in a status-less requeue loop.
+    #[test]
+    fn seccomp_profile_validate_accepts_the_valid_shapes() {
+        assert!(SeccompProfile {
+            type_: "RuntimeDefault".into(),
+            localhost_profile: String::new(),
+        }
+        .validate()
+        .is_ok());
+        assert!(SeccompProfile {
+            type_: "Unconfined".into(),
+            localhost_profile: String::new(),
+        }
+        .validate()
+        .is_ok());
+        assert!(SeccompProfile {
+            type_: "Localhost".into(),
+            localhost_profile: "profiles/audit.json".into(),
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn seccomp_profile_validate_rejects_the_invalid_shapes() {
+        // Localhost without a localhostProfile.
+        assert!(SeccompProfile {
+            type_: "Localhost".into(),
+            localhost_profile: String::new(),
+        }
+        .validate()
+        .is_err());
+        // localhostProfile on a non-Localhost type.
+        assert!(SeccompProfile {
+            type_: "RuntimeDefault".into(),
+            localhost_profile: "profiles/audit.json".into(),
+        }
+        .validate()
+        .is_err());
+        // Unknown type.
+        assert!(SeccompProfile {
+            type_: "Enforcing".into(),
+            localhost_profile: String::new(),
+        }
+        .validate()
+        .is_err());
     }
 }

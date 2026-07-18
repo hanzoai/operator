@@ -779,6 +779,35 @@ pub struct DBSpec {
     /// it None gets a byte-identical StatefulSet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
+    /// Pod-level `securityContext` passthrough — `runAsNonRoot`, `runAsUser`,
+    /// `runAsGroup`, `fsGroup`, `seccompProfile` — rendered onto the
+    /// StatefulSet PodSpec's `securityContext`. The legacy top-level `fsGroup`
+    /// above folds together with this: `securityContext.fsGroup` wins when both
+    /// are set, otherwise the top-level value is carried. Opt-in — a datastore
+    /// that omits it renders a byte-identical StatefulSet (one that sets only the
+    /// legacy `fsGroup` still renders exactly `securityContext: {fsGroup: N}` as
+    /// before). Symmetric with the Service path (`ServiceSpec.securityContext`)
+    /// so a hardened workload ported to a datastore role keeps its posture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security_context: Option<PodSecurityContext>,
+    /// Container-level `securityContext` for the MAIN engine container —
+    /// `readOnlyRootFilesystem`, `allowPrivilegeEscalation`,
+    /// `capabilities{drop,add}`, `runAsNonRoot`, `runAsUser` — rendered onto the
+    /// engine container's `securityContext` ONLY (never the replication sidecar,
+    /// which must keep a writable rootfs to stream the WAL). Opt-in — an omitting
+    /// datastore renders a byte-identical container. Symmetric with the Service
+    /// path (`ServiceSpec.containerSecurityContext`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_security_context: Option<SecurityContext>,
+    /// `enableServiceLinks` on the StatefulSet PodSpec. The object store
+    /// (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+    /// `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
+    /// s3 flag parser aborts startup on the unexpected vars. This is the field
+    /// the datastore path uniquely needs (the object store is a datastore role);
+    /// `None` ⇒ the field is omitted (k8s default `true`), byte-identical for
+    /// every datastore that does not set it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enable_service_links: Option<bool>,
 }
 
 /// `Datastore` Kind — the `hanzoai/datastore` analytics engine (ClickHouse).

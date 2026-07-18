@@ -162,6 +162,26 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
     let dispatch = classify(cr.spec.role.as_deref());
     debug!(name, namespace, ?dispatch, role = ?cr.spec.role, "App dispatch");
 
+    // Boundary validation for the pod-rendering profiles: a malformed
+    // `securityContext.seccompProfile` (type `Localhost` without a
+    // `localhostProfile`, a stray `localhostProfile` on another type, or an
+    // unknown type) is rejected by the apiserver on apply, wedging the reconcile
+    // in a status-less requeue loop. Catch it here and degrade cleanly (visible
+    // status, ordinary 60s requeue — no hot-loop).
+    if matches!(dispatch, Dispatch::Service | Dispatch::Datastore(_)) {
+        if let Some(profile) = cr
+            .spec
+            .service
+            .security_context
+            .as_ref()
+            .and_then(|c| c.seccomp_profile.as_ref())
+        {
+            if let Err(reason) = profile.validate() {
+                return Ok(degrade(&ctx, &name, &namespace, &cr, &reason).await);
+            }
+        }
+    }
+
     match &dispatch {
         Dispatch::Service => {
             // A service profile materializes a Deployment from `spec.image`; an
@@ -893,6 +913,304 @@ spec:
         let db: DBSpec = project(&app.spec).expect("kv → DBSpec");
         assert_eq!(db.storage.volume_name.as_deref(), Some("kv-data"));
         assert_eq!(db.credentials_secret, "kv-credentials");
+    }
+
+    // ---- securityContext / containerSecurityContext / enableServiceLinks on the
+    // DATASTORE render path (the HIGH-1 symmetry fix). Each test runs the FULL
+    // path a fleet App CR takes: deserialize → classify → project onto DBSpec
+    // (the serde round-trip that USED to DROP these fields) → render through the
+    // ONE datastore builder the controller uses (`datastore::build_datastore_workload`,
+    // not a re-implementation), then asserts the field reached the workload.
+
+    fn datastore_sts(app: &App, engine: Engine) -> StatefulSet {
+        let db: DBSpec = project(&app.spec).expect("datastore App must project to DBSpec");
+        datastore::build_datastore_workload(
+            app.metadata.name.as_deref().expect("App has a name"),
+            "hanzo",
+            &db,
+            engine,
+            &std::collections::BTreeMap::new(),
+        )
+        .statefulset
+    }
+
+    /// (a) An `s3` (SeaweedFS object store) App that sets `enableServiceLinks:
+    /// false` renders it on the StatefulSet PodSpec. This is the crown-jewel
+    /// field: k8s's default-`true` injects `*_SERVICE_HOST/PORT` env for every
+    /// namespace Service, which aborts the s3 flag parser on restart. Before the
+    /// DBSpec fix the serde projection silently dropped it → object store DOWN.
+    #[test]
+    fn s3_enable_service_links_false_reaches_the_statefulset() {
+        let s3 = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: s3, namespace: hanzo }
+spec:
+  role: s3
+  image: { repository: ghcr.io/hanzoai/s3, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 100Gi, volumeName: s3-data }
+  enableServiceLinks: false
+"#;
+        let app = app_from_yaml(s3);
+        assert_eq!(
+            classify(app.spec.role.as_deref()),
+            Dispatch::Datastore(Engine::Minio)
+        );
+        // The projection must carry it (this is the DBSpec round-trip fix).
+        let db: DBSpec = project(&app.spec).expect("s3 → DBSpec");
+        assert_eq!(
+            db.enable_service_links,
+            Some(false),
+            "enableServiceLinks must survive the App→DBSpec projection"
+        );
+        // And the render must place it on the PodSpec.
+        let sts = datastore_sts(&app, Engine::Minio);
+        let pod = sts.spec.unwrap().template.spec.unwrap();
+        assert_eq!(
+            pod.enable_service_links,
+            Some(false),
+            "enableServiceLinks:false must reach the StatefulSet PodSpec (the s3/SeaweedFS unlock)"
+        );
+    }
+
+    /// (b) A `kv` App with the fleet container-hardening baseline
+    /// (`readOnlyRootFilesystem: true` + `capabilities.drop: [ALL]`) renders it on
+    /// the MAIN engine container ONLY — a declared sidecar keeps its writable
+    /// rootfs (it must be able to write). Mirrors the Service-path invariant.
+    #[test]
+    fn kv_container_security_context_lands_on_main_not_sidecar() {
+        let kv = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: kv, namespace: hanzo }
+spec:
+  role: kv
+  image: { repository: ghcr.io/hanzoai/kv, tag: "9" }
+  storage: { storageClassName: do-block-storage, size: 2Gi, volumeName: kv-data }
+  containerSecurityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  sidecars:
+    - name: metrics
+      image: ghcr.io/hanzoai/exporter:latest
+"#;
+        let app = app_from_yaml(kv);
+        assert_eq!(
+            classify(app.spec.role.as_deref()),
+            Dispatch::Datastore(Engine::Valkey)
+        );
+        let db: DBSpec = project(&app.spec).expect("kv → DBSpec");
+        assert!(
+            db.container_security_context.is_some(),
+            "containerSecurityContext must survive the App→DBSpec projection"
+        );
+        assert_eq!(db.sidecars.len(), 1, "the sidecar must project onto DBSpec");
+
+        let sts = datastore_sts(&app, Engine::Valkey);
+        let pod = sts.spec.unwrap().template.spec.unwrap();
+        // The MAIN engine container is named after the datastore.
+        let main = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "kv")
+            .expect("main engine container");
+        let csc = main
+            .security_context
+            .as_ref()
+            .expect("main container must carry the hardening securityContext");
+        assert_eq!(csc.read_only_root_filesystem, Some(true));
+        assert_eq!(csc.allow_privilege_escalation, Some(false));
+        assert_eq!(
+            csc.capabilities.as_ref().unwrap().drop,
+            Some(vec!["ALL".to_string()]),
+            "capabilities.drop:[ALL] must reach the engine container (the hardening baseline)"
+        );
+        // The sidecar must NOT be hardened — it keeps a writable rootfs.
+        let sidecar = pod
+            .containers
+            .iter()
+            .find(|c| c.name == "metrics")
+            .expect("sidecar container");
+        assert!(
+            sidecar.security_context.is_none(),
+            "the sidecar keeps its own defaults (writable rootfs), never the main container's hardening"
+        );
+    }
+
+    /// (c) A datastore App that sets NONE of the three new fields renders a
+    /// StatefulSet whose PodSpec + engine container carry NO securityContext and
+    /// NO enableServiceLinks — byte-identical to the pre-fix render. Proven at the
+    /// serialization level: the rendered StatefulSet JSON contains neither key,
+    /// and the render is deterministic.
+    #[test]
+    fn datastore_without_new_fields_is_byte_identical() {
+        // SQL_CR (a real fleet CR) sets none of securityContext /
+        // containerSecurityContext / enableServiceLinks / fsGroup.
+        let app = app_from_yaml(SQL_CR);
+        let sts = datastore_sts(&app, Engine::Postgres);
+        let pod = sts.spec.clone().unwrap().template.spec.unwrap();
+        assert!(
+            pod.security_context.is_none(),
+            "an omitting datastore must carry no pod securityContext"
+        );
+        assert!(
+            pod.enable_service_links.is_none(),
+            "an omitting datastore must carry no enableServiceLinks (k8s default true)"
+        );
+        assert!(
+            pod.containers[0].security_context.is_none(),
+            "an omitting datastore's engine container must carry no securityContext"
+        );
+        // Serialization-level backward-compat: the security surface is wholly absent.
+        let json = serde_json::to_string(&sts).expect("serialize StatefulSet");
+        assert!(
+            !json.contains("securityContext"),
+            "no securityContext key may appear for an omitting datastore"
+        );
+        assert!(
+            !json.contains("enableServiceLinks"),
+            "no enableServiceLinks key may appear for an omitting datastore"
+        );
+        // Deterministic: rendering the same spec twice is byte-identical.
+        let again = datastore_sts(&app, Engine::Postgres);
+        assert_eq!(
+            serde_json::to_string(&sts).unwrap(),
+            serde_json::to_string(&again).unwrap(),
+            "datastore render must be deterministic"
+        );
+    }
+
+    /// (d) Pod securityContext + fsGroup precedence on the datastore path matches
+    /// the Service path: the structured `securityContext.fsGroup` WINS over the
+    /// legacy top-level `fsGroup`, and a structured context that omits `fsGroup`
+    /// inherits the legacy value — the exact fold `manifests::pod_security_context`
+    /// performs for BOTH paths.
+    #[test]
+    fn datastore_pod_security_context_and_fs_group_precedence() {
+        // Structured securityContext.fsGroup=2000 alongside legacy fsGroup=1000 →
+        // structured wins.
+        let a = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: docdb, namespace: hanzo }
+spec:
+  role: docdb
+  image: { repository: ghcr.io/hanzoai/docdb, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 5Gi, volumeName: docdb-data }
+  fsGroup: 1000
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+"#;
+        let app = app_from_yaml(a);
+        let sts = datastore_sts(&app, Engine::Docdb);
+        let psc = sts
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .expect("pod securityContext must render");
+        assert_eq!(psc.run_as_non_root, Some(true));
+        assert_eq!(psc.run_as_user, Some(1000));
+        assert_eq!(
+            psc.fs_group,
+            Some(2000),
+            "structured securityContext.fsGroup must win over the legacy top-level fsGroup"
+        );
+        assert_eq!(psc.seccomp_profile.unwrap().type_, "RuntimeDefault");
+
+        // A structured context WITHOUT fsGroup inherits the legacy top-level value.
+        let b = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: docdb, namespace: hanzo }
+spec:
+  role: docdb
+  image: { repository: ghcr.io/hanzoai/docdb, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 5Gi, volumeName: docdb-data }
+  fsGroup: 1000
+  securityContext:
+    runAsNonRoot: true
+"#;
+        let app_b = app_from_yaml(b);
+        let sts_b = datastore_sts(&app_b, Engine::Docdb);
+        let psc_b = sts_b
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .expect("pod securityContext must render");
+        assert_eq!(
+            psc_b.fs_group,
+            Some(1000),
+            "a structured context that omits fsGroup inherits the legacy top-level fsGroup"
+        );
+        assert_eq!(psc_b.run_as_non_root, Some(true));
+    }
+
+    /// The boundary guard reads `spec.securityContext.seccompProfile` (the
+    /// flattened ServiceSpec field, shared by both pod-rendering paths) and
+    /// degrades when it is invalid. This asserts the exact value the guard
+    /// evaluates: a `Localhost` profile with no `localhostProfile` fails
+    /// `validate()`, while a well-formed `RuntimeDefault` passes.
+    #[test]
+    fn boundary_reads_the_seccomp_profile_the_guard_rejects() {
+        let bad = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: s3, namespace: hanzo }
+spec:
+  role: s3
+  image: { repository: ghcr.io/hanzoai/s3, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 10Gi, volumeName: s3-data }
+  securityContext:
+    seccompProfile:
+      type: Localhost
+"#;
+        let app = app_from_yaml(bad);
+        let profile = app
+            .spec
+            .service
+            .security_context
+            .as_ref()
+            .and_then(|c| c.seccomp_profile.as_ref())
+            .expect("seccompProfile present");
+        assert!(
+            profile.validate().is_err(),
+            "Localhost without localhostProfile must be rejected at the boundary"
+        );
+
+        let ok = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: s3, namespace: hanzo }
+spec:
+  role: s3
+  image: { repository: ghcr.io/hanzoai/s3, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 10Gi, volumeName: s3-data }
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+"#;
+        let app_ok = app_from_yaml(ok);
+        assert!(app_ok
+            .spec
+            .service
+            .security_context
+            .as_ref()
+            .and_then(|c| c.seccomp_profile.as_ref())
+            .expect("seccompProfile present")
+            .validate()
+            .is_ok());
     }
 
     // ---- owner reference — the adoption shape ----
