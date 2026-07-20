@@ -400,6 +400,15 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
     let namespace = cr
         .namespace()
         .ok_or_else(|| OperatorError::Config("Service has no namespace".into()))?;
+
+    // Render from the AUTHORITATIVE Service, not the reflector-cached copy the
+    // Controller handed us: a stale copy makes the Deployment env oscillate (see
+    // `super::authoritative`). One extra GET keeps the render a deterministic
+    // function of the newest committed spec so an env change drains to
+    // convergence. `name`/`namespace` are generation-invariant.
+    let svc_api: Api<ServiceCR> = Api::namespaced(ctx.client.clone(), &namespace);
+    let cr = super::authoritative(cr, svc_api.get_opt(&name).await.ok().flatten());
+
     let api_version = format!("{}/v1", ctx.api_group);
     let owner = owner_ref_for(cr.as_ref(), &api_version, "Service");
 

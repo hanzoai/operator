@@ -545,8 +545,8 @@ mod tests {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            31,
-            "managed Kind count is 31 (28 canonical + App + the two native-GitOps Kinds)"
+            30,
+            "managed Kind count is 30 (28 canonical + App + ImageUpdate; GitSource retired — delivery is the cloud deploy engine)"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
