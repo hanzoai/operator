@@ -278,6 +278,13 @@ impl LeaderElection {
                     Some(t) => now.duration_since(t).as_secs() > duration as i64,
                     None => true,
                 };
+                // A lease nobody holds is free to take NOW, whatever its
+                // renewTime says. `release` clears the holder but leaves the
+                // renewTime it last wrote, so keying takeover on expiry alone
+                // makes a graceful handoff indistinguishable from a crash: the
+                // successor waits out the full lease duration and the operator
+                // stops reconciling for 30s on every restart.
+                let is_free = holder.is_none_or(|h| h.is_empty());
 
                 // Every write below is conditional on the resourceVersion read
                 // above. A live object always carries one; without it the write
@@ -300,7 +307,7 @@ impl LeaderElection {
                         serde_json::json!({ "renewTime": micro_time_value(now) }),
                     )
                     .await
-                } else if is_expired {
+                } else if is_expired || is_free {
                     let standing = self
                         .write(
                             leases,
@@ -787,6 +794,37 @@ mod tests {
             .collect();
         assert_eq!(held.len(), 1, "renew and takeover both succeeded: {held:?}");
         assert_eq!(f.holder().as_deref(), Some(held[0]));
+    }
+
+    /// A graceful handoff is prompt. The predecessor released the lease — its
+    /// holder is gone but the renewTime it last wrote is still fresh — so a
+    /// successor keying takeover on expiry alone would idle for the full lease
+    /// duration, which is exactly the 30s reconciliation gap every operator
+    /// restart used to cost.
+    #[tokio::test]
+    async fn a_released_lease_is_taken_at_once_not_after_it_expires() {
+        let f = fake::Fake::new();
+        // What `release` leaves behind: no holder, renewTime fresh.
+        let now = jiff::Timestamp::now();
+        let mut released = expired_lease("operator-a");
+        released["spec"]["renewTime"] = micro_time_value(now);
+        released["spec"]["acquireTime"] = micro_time_value(now);
+        released["spec"]
+            .as_object_mut()
+            .unwrap()
+            .remove("holderIdentity");
+        f.put(released);
+        let url = fake::serve(f.clone()).await;
+
+        let b = election(fake::client(&url), "operator-b");
+        let leases: Api<Lease> = Api::namespaced(b.client.clone(), &b.namespace);
+
+        assert_eq!(
+            b.try_acquire_or_renew(&leases).await.unwrap(),
+            Standing::Held,
+            "a lease nobody holds must be takeable without waiting for it to expire"
+        );
+        assert_eq!(f.holder().as_deref(), Some("operator-b"));
     }
 
     /// THE stop-writing property, observed as the cluster sees it.
