@@ -153,6 +153,18 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
     let namespace = cr
         .namespace()
         .ok_or_else(|| OperatorError::Config("App has no namespace".into()))?;
+
+    // Render from the AUTHORITATIVE App, not the reflector-cached copy the
+    // Controller handed us: the cache can lag the API server right after a spec
+    // edit, and rendering the Deployment env from a stale copy makes it oscillate
+    // (see `super::authoritative`). One extra GET per reconcile keeps the render a
+    // deterministic function of the newest committed spec, so an env change drains
+    // to convergence instead of surging a ReplicaSet forever. `name`/`namespace`
+    // are generation-invariant, so computing them from the cached copy first is
+    // safe.
+    let api: Api<App> = Api::namespaced(ctx.client.clone(), &namespace);
+    let cr = super::authoritative(cr, api.get_opt(&name).await.ok().flatten());
+
     let api_version = format!("{}/v1", ctx.api_group);
     // The owner reference on EVERY materialized child points at the App CR, so
     // server-side apply adopts an existing Deployment/StatefulSet by name and
@@ -1238,5 +1250,98 @@ spec:
             "App is the controlling owner (adopts the workload)"
         );
         assert_eq!(owner.block_owner_deletion, Some(true));
+    }
+
+    // ---- env-change convergence: the gateway audience-rollout wedge ----
+    //
+    // The bug: `reconcile` rendered the Deployment pod-template env from the
+    // reflector-CACHED App, which can lag the API server after a spec edit. One
+    // reconcile applied the OLD audience list, the next the NEW — each flip surged
+    // a ReplicaSet that `maxUnavailable: 0` pinned, so the change never landed
+    // (`GATEWAY_ALLOWED_AUDIENCES` oscillated 13↔14). The fix reads the
+    // AUTHORITATIVE copy (higher `metadata.generation`), so every reconcile renders
+    // the newest committed spec — a fixed point. These tests exercise the pure
+    // selection the controller now runs before it hands the spec to the
+    // (already-deterministic) renderer.
+
+    use crate::controllers::authoritative;
+    use crate::crd_types::EnvVar;
+
+    /// A gateway-shaped App at `generation` whose sole env var is the audience
+    /// allow-list with `n` comma-joined audiences — the exact field that wedged.
+    fn gateway_app(generation: i64, n: usize) -> App {
+        let auds: Vec<String> = (0..n).map(|i| format!("aud-{i}")).collect();
+        let mut app = app_from_yaml(SERVICE_CR);
+        app.metadata.name = Some("gateway".to_string());
+        app.metadata.namespace = Some("hanzo".to_string());
+        app.metadata.generation = Some(generation);
+        app.spec.service.env = vec![EnvVar {
+            name: "GATEWAY_ALLOWED_AUDIENCES".to_string(),
+            value: Some(auds.join(",")),
+            value_from: None,
+        }];
+        app
+    }
+
+    /// Number of comma-joined audiences on the (single) env var of the chosen App.
+    fn aud_count(app: &App) -> usize {
+        let v = app.spec.service.env[0].value.as_deref().unwrap_or("");
+        if v.is_empty() {
+            0
+        } else {
+            v.split(',').count()
+        }
+    }
+
+    #[test]
+    fn env_change_converges_regardless_of_which_copy_is_stale() {
+        // gen5 = the OLD 13-audience env; gen6 = the NEW 14-audience env.
+        let stale = gateway_app(5, 13);
+        let fresh = gateway_app(6, 14);
+
+        // Ordering (a): the reconcile's CACHED copy is fresh (gen6) but the live
+        // read momentarily lags (gen5). A naive "always trust live" would regress
+        // to 13; the max-generation rule keeps 14.
+        let a = authoritative(Arc::new(fresh.clone()), Some(stale.clone()));
+        // Ordering (b): the cached copy is STALE (gen5) and the live read is fresh
+        // (gen6) — the common case right after an edit. The pre-fix cache-only read
+        // rendered 13 here; now it renders 14.
+        let b = authoritative(Arc::new(stale.clone()), Some(fresh.clone()));
+
+        // BOTH orderings select the newest (gen6 / 14-audience) spec: the env the
+        // renderer receives is identical across reconciles → no 13↔14 flip → the
+        // ReplicaSet surge stops and the change lands. This is the convergence proof.
+        assert_eq!(aud_count(&a), 14, "ordering (a) must render the newest env");
+        assert_eq!(aud_count(&b), 14, "ordering (b) must render the newest env");
+        assert_eq!(
+            serde_json::to_value(&a.spec.service.env).unwrap(),
+            serde_json::to_value(&b.spec.service.env).unwrap(),
+            "the env fed to the deterministic renderer must be identical across reconcile orderings"
+        );
+        assert_eq!(a.meta().generation, Some(6));
+        assert_eq!(b.meta().generation, Some(6));
+    }
+
+    #[test]
+    fn authoritative_falls_back_to_cached_when_live_read_missing() {
+        // A transient API error (live = None) must be no worse than the cache-only
+        // read it replaces: reconcile proceeds on the cached copy, never panics,
+        // never blanks the workload.
+        let cached = gateway_app(6, 14);
+        let chosen = authoritative(Arc::new(cached), None);
+        assert_eq!(chosen.meta().generation, Some(6));
+        assert_eq!(aud_count(&chosen), 14);
+    }
+
+    #[test]
+    fn authoritative_keeps_newer_cached_when_live_is_behind() {
+        // Defensive: if the API GET is served from a stale apiserver watch-cache
+        // (live behind the informer), the max-generation rule keeps the newer
+        // cached copy rather than regressing to the older live one.
+        let newer_cached = gateway_app(7, 14);
+        let older_live = gateway_app(6, 13);
+        let chosen = authoritative(Arc::new(newer_cached), Some(older_live));
+        assert_eq!(chosen.meta().generation, Some(7));
+        assert_eq!(aud_count(&chosen), 14);
     }
 }

@@ -1,5 +1,7 @@
 //! Controllers for each CRD Kind.
 
+use std::sync::Arc;
+
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::Resource;
 
@@ -34,6 +36,35 @@ where
         uid: cr.meta().uid.clone().unwrap_or_default(),
         controller: Some(true),
         block_owner_deletion: Some(true),
+    }
+}
+
+/// Pick the AUTHORITATIVE copy of a CR to render from: whichever of the
+/// controller's reflector-cached object and a fresh API read carries the higher
+/// `metadata.generation`.
+///
+/// kube-rs hands `reconcile` the object from its reflector store, which can lag
+/// the API server right after a spec edit — a watch re-list race, or a reconcile
+/// re-triggered (requeue / owned-child event / status write) while the cache is
+/// briefly behind. Rendering a Deployment's pod-template env from a stale copy
+/// makes it OSCILLATE: one reconcile server-side-applies the OLD env, the next
+/// applies the NEW, and each flip surges a ReplicaSet that `maxUnavailable: 0`
+/// then pins — so the env change never lands (the gateway audience-rollout wedge,
+/// 2026-07). `generation` is monotonic and bumps ONLY on spec changes, so
+/// preferring the higher generation renders the newest committed spec on EVERY
+/// reconcile regardless of which copy is stale; the SSA then converges to a fixed
+/// point and the surge stops. Falls back to the cached copy when the live read is
+/// missing (transient API error, or the object is mid-delete) — never worse than
+/// the cache-only read it replaces.
+pub fn authoritative<K>(cached: Arc<K>, live: Option<K>) -> Arc<K>
+where
+    K: Resource<DynamicType = ()>,
+{
+    match live {
+        Some(l) if l.meta().generation.unwrap_or(0) >= cached.meta().generation.unwrap_or(0) => {
+            Arc::new(l)
+        }
+        _ => cached,
     }
 }
 
