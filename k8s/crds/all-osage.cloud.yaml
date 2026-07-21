@@ -2987,6 +2987,19 @@ spec:
               domains:
                 items:
                   properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      description: |-
+                        Per-domain annotations, merged on top of the CR-level `spec.annotations`
+                        onto this domain's generated Ingress ONLY. This is the edge-behavior seam:
+                        a host can carry its own Traefik middleware chain
+                        (`traefik.ingress.kubernetes.io/router.middlewares`), a redirect, an
+                        auth-guard, or a rate-limit without affecting sibling domains — so the
+                        declarative aggregator expresses per-host edge behavior the flat
+                        CR-level annotations could not (which applied uniformly to every domain).
+                      nullable: true
+                      type: object
                     domain:
                       type: string
                     routes:
@@ -21352,163 +21365,6 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
-  name: gitsources.osage.cloud
-spec:
-  group: osage.cloud
-  names:
-    categories: []
-    kind: GitSource
-    plural: gitsources
-    shortNames:
-    - gitsrc
-    singular: gitsource
-  scope: Namespaced
-  versions:
-  - additionalPrinterColumns:
-    - jsonPath: .spec.repo
-      name: Repo
-      type: string
-    - jsonPath: .spec.ref
-      name: Ref
-      type: string
-    - jsonPath: .status.lastAppliedRevision
-      name: Revision
-      type: string
-    - jsonPath: .status.phase
-      name: Ready
-      type: string
-    - jsonPath: .metadata.creationTimestamp
-      name: Age
-      type: date
-    name: v1
-    schema:
-      openAPIV3Schema:
-        description: Auto-generated derived type for GitSourceSpec via `CustomResource`
-        properties:
-          spec:
-            description: |-
-              GitSource — pull-based git→cluster sync. Replaces the `gitops-reconcile`
-              cron: the operator clones `repo@ref`, renders `path` (a directory of CR
-              manifests / a kustomization), and server-side-applies it on `interval`.
-              Continuous reconciliation, drift-correcting, no external trigger.
-            properties:
-              allowlist:
-                description: |-
-                  When set, restrict apply to these CR basenames (no `.yaml`) — the
-                  `RECONCILE_ALLOWLIST` the cron used, carried forward so an in-progress
-                  migration can heal a vetted subset before opening the full set.
-                items:
-                  type: string
-                type: array
-              credentialsSecret:
-                description: K8s Secret (key `token`) holding the git PAT, KMS-synced. Empty = public.
-                type: string
-              intervalSeconds:
-                default: 120
-                description: Reconcile interval in seconds. Default 120.
-                format: uint64
-                minimum: 0.0
-                type: integer
-              kustomize:
-                default: false
-                description: |-
-                  Treat `path` as a kustomization root (`kustomize build`) vs a plain
-                  directory of manifests. Default false (per-file apply, matching the cron).
-                type: boolean
-              path:
-                default: infra/k8s/operator/crs
-                description: |-
-                  Repo-relative directory to apply (dir of CR manifests, or a kustomize
-                  root when `kustomize: true`). Default `infra/k8s/operator/crs`.
-                type: string
-              prune:
-                default: false
-                description: |-
-                  Delete cluster objects that were applied by this GitSource but are no
-                  longer in git. OFF by default — pruning is unsafe until dual-declared
-                  plain Deployments are collapsed (see universe #64/LLM.md). The cron never
-                  pruned; this preserves that safety and makes enabling it a deliberate act.
-                type: boolean
-              ref:
-                default: main
-                description: Branch (or tag/sha) to track. Default `main`.
-                type: string
-              repo:
-                description: |-
-                  Git remote, https form (e.g. `github.com/hanzoai/universe`). The token is
-                  read from `credentialsSecret` — never embedded here.
-                type: string
-            required:
-            - repo
-            type: object
-          status:
-            nullable: true
-            properties:
-              appliedCount:
-                default: 0
-                description: Objects applied on the last successful sync.
-                format: int32
-                type: integer
-              conditions:
-                items:
-                  properties:
-                    lastTransitionTime:
-                      nullable: true
-                      type: string
-                    message:
-                      type: string
-                    observedGeneration:
-                      format: int64
-                      nullable: true
-                      type: integer
-                    reason:
-                      type: string
-                    status:
-                      type: string
-                    type:
-                      type: string
-                  required:
-                  - message
-                  - reason
-                  - status
-                  - type
-                  type: object
-                type: array
-              lastAppliedRevision:
-                description: Short SHA of the last revision successfully applied.
-                type: string
-              lastSyncTime:
-                nullable: true
-                type: string
-              message:
-                type: string
-              observedGeneration:
-                default: 0
-                format: int64
-                type: integer
-              phase:
-                enum:
-                - Pending
-                - Creating
-                - Running
-                - Degraded
-                - Deleting
-                - null
-                nullable: true
-                type: string
-            type: object
-        required:
-        - spec
-        title: GitSource
-        type: object
-    served: true
-    storage: true
-    subresources:
-      status: {}
----
-apiVersion: apiextensions.k8s.io/v1
-kind: CustomResourceDefinition
-metadata:
   name: imageupdates.osage.cloud
 spec:
   group: osage.cloud
@@ -21545,7 +21401,7 @@ spec:
               GitHub `repository_dispatch` + universe's `image-update.yml`: the operator
               watches `imageRepository` for tags matching `policy` (semver range / regex),
               and when a newer one appears it writes the bump back to `writeback` git (the
-              GitSource path), which the GitSource then rolls out. The whole loop —
+              deploy path), which the cloud deploy engine then rolls out. The whole loop —
               build→push→bump→apply — is closed in-cluster with no CI callback.
             properties:
               credentialsSecret:
@@ -21581,7 +21437,7 @@ spec:
                 default: main
                 type: string
               writebackRepo:
-                description: The GitSource repo to write the bump into (usually the same universe repo).
+                description: The git repo to write the bump into (usually the same universe repo).
                 type: string
             required:
             - imageRepository

@@ -1237,6 +1237,15 @@ pub struct DomainConfig {
     pub routes: Vec<IngressRoute>,
     #[serde(default = "default_true")]
     pub tls: bool,
+    /// Per-domain annotations, merged on top of the CR-level `spec.annotations`
+    /// onto this domain's generated Ingress ONLY. This is the edge-behavior seam:
+    /// a host can carry its own Traefik middleware chain
+    /// (`traefik.ingress.kubernetes.io/router.middlewares`), a redirect, an
+    /// auth-guard, or a rate-limit without affecting sibling domains — so the
+    /// declarative aggregator expresses per-host edge behavior the flat
+    /// CR-level annotations could not (which applied uniformly to every domain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
