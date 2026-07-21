@@ -214,6 +214,14 @@ fn build_domain_ingress(
             annotations.insert(k.clone(), v.clone());
         }
     }
+    // Per-domain annotations merge LAST, so a single host's edge-behavior
+    // (its Traefik middleware chain, a redirect, an auth-guard) lands on ONLY
+    // this domain's Ingress and wins over any CR-level default.
+    if let Some(per_domain) = domain.annotations.as_ref() {
+        for (k, v) in per_domain {
+            annotations.insert(k.clone(), v.clone());
+        }
+    }
 
     let path_type = "Prefix".to_string();
     let paths: Vec<HTTPIngressPath> = domain
@@ -332,6 +340,7 @@ mod tests {
             domain: "*.hanzo.app".to_string(),
             routes: vec![cloud_route()],
             tls: true,
+            annotations: None,
         };
         let ing = build_domain_ingress(
             "hanzo-app-sites",
@@ -353,11 +362,95 @@ mod tests {
     }
 
     #[test]
+    fn per_domain_annotations_land_on_that_domain_and_win_over_cr_level() {
+        // The edge-behavior seam: a host carries its own Traefik middleware chain
+        // (redirect / auth-guard / rewrite) via a per-domain annotation, merged on
+        // top of the CR-level annotations onto ONLY this domain's Ingress.
+        let mut per_domain = BTreeMap::new();
+        per_domain.insert(
+            "traefik.ingress.kubernetes.io/router.middlewares".to_string(),
+            "hanzo-oauth-authorize-to-login@kubernetescrd".to_string(),
+        );
+        // A CR-level default the per-domain entry must override for this host.
+        per_domain.insert("hanzo.ai/edge".to_string(), "per-domain".to_string());
+        let domain = DomainConfig {
+            domain: "iam.hanzo.ai".to_string(),
+            routes: vec![cloud_route()],
+            tls: true,
+            annotations: Some(per_domain),
+        };
+        let mut cr_level = BTreeMap::new();
+        cr_level.insert("hanzo.ai/edge".to_string(), "cr-level".to_string());
+        let ing = build_domain_ingress(
+            "hanzo-domains",
+            "hanzo",
+            0,
+            &domain,
+            "ingress",
+            "letsencrypt-prod",
+            Some(&cr_level),
+            None,
+            &owner(),
+        );
+        let ann = ing.metadata.annotations.as_ref().expect("annotations");
+        // The per-host middleware chain is present.
+        assert_eq!(
+            ann.get("traefik.ingress.kubernetes.io/router.middlewares")
+                .map(String::as_str),
+            Some("hanzo-oauth-authorize-to-login@kubernetescrd"),
+            "per-domain middleware annotation must land on this domain's Ingress"
+        );
+        // Per-domain wins over the CR-level default (merged last).
+        assert_eq!(
+            ann.get("hanzo.ai/edge").map(String::as_str),
+            Some("per-domain"),
+            "per-domain annotation must override the CR-level default"
+        );
+        // The operator's own annotations are still present.
+        assert_eq!(
+            ann.get("kubernetes.io/ingress.class").map(String::as_str),
+            Some("ingress")
+        );
+    }
+
+    #[test]
+    fn absent_per_domain_annotations_leave_cr_level_intact() {
+        // A domain with no per-domain annotations keeps the CR-level ones verbatim,
+        // so the field is purely additive (no behavior change for existing CRs).
+        let domain = DomainConfig {
+            domain: "cloud.hanzo.ai".to_string(),
+            routes: vec![cloud_route()],
+            tls: true,
+            annotations: None,
+        };
+        let mut cr_level = BTreeMap::new();
+        cr_level.insert("hanzo.ai/edge".to_string(), "cr-level".to_string());
+        let ing = build_domain_ingress(
+            "hanzo-domains",
+            "hanzo",
+            0,
+            &domain,
+            "ingress",
+            "letsencrypt-prod",
+            Some(&cr_level),
+            None,
+            &owner(),
+        );
+        let ann = ing.metadata.annotations.as_ref().expect("annotations");
+        assert_eq!(
+            ann.get("hanzo.ai/edge").map(String::as_str),
+            Some("cr-level"),
+            "CR-level annotation is untouched when no per-domain annotations are set"
+        );
+    }
+
+    #[test]
     fn wildcard_domain_emits_wildcard_tls_and_issuer() {
         let domain = DomainConfig {
             domain: "*.hanzo.app".to_string(),
             routes: vec![cloud_route()],
             tls: true,
+            annotations: None,
         };
         let ing = build_domain_ingress(
             "hanzo-app-sites",
@@ -400,6 +493,7 @@ mod tests {
             domain: "*.hanzo.app".to_string(),
             routes: vec![cloud_route()],
             tls: true,
+            annotations: None,
         };
         let ing = build_domain_ingress(
             "hanzo-app-sites",
