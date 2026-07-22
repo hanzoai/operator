@@ -203,13 +203,36 @@ async fn main() -> anyhow::Result<()> {
     let namespace = args.namespace.clone();
     let controllers_flag = leader_flag.clone();
 
+    // SIGINT (Ctrl-C) or SIGTERM (what k8s sends on pod stop) drives the
+    // shutdown channel, rather than racing the election as a `select!` sibling.
+    // A sibling arm WINS that race and drops the election future, so the release
+    // it performs on `shutdown.changed()` never runs and a successor waits out
+    // the full lease timeout before taking over (the 30s reconciliation gap on
+    // every operator restart). Driving the channel instead lets the election
+    // observe the signal, release the lease, and return — and its return is what
+    // completes the `select!`.
+    let signal_tx = shutdown_tx.clone();
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        info!("Received shutdown signal");
+        let _ = signal_tx.send(true);
+    });
+
     tokio::select! {
-        // Leader election loop (only if enabled).
+        // The election. It returns when this replica stops leading — on
+        // shutdown, or on losing the lease. Either way that return is what ends
+        // the operator: this `select!` is the ONE place every controller is
+        // scheduled from, so completing it drops all of them at once, and the
+        // process then exits for the Deployment to restart it into a clean
+        // election. No controller checks a leadership flag of its own; a
+        // non-leader stops reconciling because it stops running.
         _ = async {
             if args.leader_election {
                 leader_election.run(shutdown_rx.clone()).await;
             } else {
-                std::future::pending::<()>().await;
+                // Single-replica dev runs still stop on a signal.
+                let mut rx = shutdown_rx.clone();
+                let _ = rx.changed().await;
             }
         } => {
             info!("Leader election exited");
@@ -229,18 +252,9 @@ async fn main() -> anyhow::Result<()> {
                 tracing::error!(error = %e, "Health server exited");
             }
         }
-
-        // Graceful shutdown on SIGINT (Ctrl-C) or SIGTERM (what k8s sends on pod
-        // stop). Handling SIGTERM lets the leader release its lease promptly on a
-        // rolling operator restart instead of the successor waiting out the full
-        // lease timeout (MED-2).
-        _ = shutdown_signal() => {
-            info!("Received shutdown signal");
-        }
     }
 
     let _ = shutdown_tx.send(true);
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     info!("Operator stopped");
     Ok(())
 }
@@ -266,6 +280,12 @@ async fn shutdown_signal() {
 }
 
 /// Wait for leadership then run every controller in parallel.
+///
+/// The flag gates the START of reconciliation only. Nothing here re-checks it,
+/// and nothing needs to: the caller runs this whole tree inside a `select!`
+/// alongside the election, which returns the moment leadership is lost and drops
+/// every controller below with it. Leadership is enforced once, at that one
+/// seam, rather than by ~30 controllers each remembering to ask.
 async fn run_all_controllers(
     client: Client,
     namespace: String,
