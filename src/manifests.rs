@@ -18,7 +18,8 @@ use k8s_openapi::api::core::v1::{
     HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
     PodAffinity, PodAffinityTerm, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
     ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
-    ServiceSpec as CoreServiceSpec, TCPSocketAction, Volume, VolumeMount, WeightedPodAffinityTerm,
+    ServiceSpec as CoreServiceSpec, TCPSocketAction, TopologySpreadConstraint, Volume, VolumeMount,
+    WeightedPodAffinityTerm,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -347,6 +348,11 @@ pub fn build_deployment(
 
     let containers = inject_pre_stop(containers);
 
+    // Best-effort node spread so a multi-replica app is REAL HA — two replicas on
+    // one node die together on node loss. Computed before `selector_labels_map` is
+    // moved into the Deployment selector below.
+    let topology_spread = default_topology_spread(replicas, &selector_labels_map);
+
     Deployment {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
@@ -384,6 +390,7 @@ pub fn build_deployment(
                     } else {
                         Some(service_account_name.to_string())
                     },
+                    topology_spread_constraints: topology_spread,
                     termination_grace_period_seconds: Some(30),
                     ..Default::default()
                 }),
@@ -392,6 +399,36 @@ pub fn build_deployment(
         }),
         ..Default::default()
     }
+}
+
+/// Best-effort node spread for a multi-replica Deployment, so its replicas don't
+/// all land on one node and die together when that node is lost — the difference
+/// between nominal `replicas: 2` and REAL high availability.
+///
+/// `maxSkew: 1` over `kubernetes.io/hostname`, keyed on the app's OWN selector, so
+/// each app spreads only against itself. `whenUnsatisfiable: ScheduleAnyway` makes
+/// it SOFT: on a constrained cluster (fewer schedulable nodes than replicas, a
+/// drain, a taint) the pod still schedules rather than going Pending — availability
+/// is never traded for spread. Returns `None` for a singleton (`replicas <= 1`):
+/// nothing to spread, and an unset field keeps those Deployments byte-identical
+/// (incl. `surgeColocation` singletons, which are `replicas: 1`).
+pub fn default_topology_spread(
+    replicas: Option<i32>,
+    selector_labels_map: &BTreeMap<String, String>,
+) -> Option<Vec<TopologySpreadConstraint>> {
+    if replicas.unwrap_or(1) <= 1 {
+        return None;
+    }
+    Some(vec![TopologySpreadConstraint {
+        max_skew: 1,
+        topology_key: "kubernetes.io/hostname".to_string(),
+        when_unsatisfiable: "ScheduleAnyway".to_string(),
+        label_selector: Some(LabelSelector {
+            match_labels: Some(selector_labels_map.clone()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }])
 }
 
 /// Soft self-podAffinity that co-locates a rolling surge pod on the SAME node
@@ -1253,5 +1290,35 @@ mod tests {
             Some(2000),
             "structured fsGroup must win over the legacy top-level field"
         );
+    }
+
+    #[test]
+    fn topology_spread_is_soft_hostname_self_selecting_for_multi_replica() {
+        let mut sel = BTreeMap::new();
+        sel.insert("app.kubernetes.io/name".to_string(), "world".to_string());
+        sel.insert("app.kubernetes.io/instance".to_string(), "world".to_string());
+
+        let tsc = default_topology_spread(Some(2), &sel).expect("replicas>1 must spread");
+        assert_eq!(tsc.len(), 1);
+        let c = &tsc[0];
+        assert_eq!(c.max_skew, 1, "maxSkew 1 = even spread");
+        assert_eq!(c.topology_key, "kubernetes.io/hostname", "spread across nodes");
+        assert_eq!(
+            c.when_unsatisfiable, "ScheduleAnyway",
+            "SOFT — availability never traded for spread"
+        );
+        assert_eq!(
+            c.label_selector.as_ref().and_then(|s| s.match_labels.clone()),
+            Some(sel),
+            "each app spreads only against its OWN pods"
+        );
+    }
+
+    #[test]
+    fn topology_spread_absent_for_singleton_keeps_deployment_identical() {
+        let sel = BTreeMap::new();
+        assert!(default_topology_spread(Some(1), &sel).is_none());
+        assert!(default_topology_spread(Some(0), &sel).is_none());
+        assert!(default_topology_spread(None, &sel).is_none());
     }
 }
