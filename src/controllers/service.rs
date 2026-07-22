@@ -18,7 +18,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::autoscaling::v2::{CrossVersionObjectReference, HorizontalPodAutoscaler};
-use k8s_openapi::api::core::v1::{ConfigMap, Pod, Service as CoreService};
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Probe, Service as CoreService};
 use k8s_openapi::api::networking::v1::{Ingress, NetworkPolicy};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
@@ -573,6 +573,25 @@ fn should_colocate(surge_colocation: bool, strategy: &str, mounts_pvc: bool) -> 
     surge_colocation && strategy != "Recreate" && mounts_pvc
 }
 
+/// Resolve the main container's readiness probe — the ONE place that policy
+/// lives.
+///
+/// When the CR declares a `readinessProbe`, honor it exactly (build it from the
+/// declared handler). When the CR OMITS one, default a TCP-socket probe over
+/// `spec.ports` (see `manifests::default_readiness_probe`) so the rollout's
+/// `maxUnavailable=0` actually gates on the new pod being able to accept
+/// connections — a broken image that never listens is kept out of `Ready` and
+/// cannot roll over the healthy pod. Port-less workers still get no probe.
+///
+/// An explicitly-declared probe is NEVER overridden: only an absent one is
+/// filled, so the CRs that already declare a readiness probe stay byte-identical.
+fn resolve_readiness_probe(spec: &ServiceSpec) -> Option<Probe> {
+    match &spec.readiness_probe {
+        Some(rp) => manifests::build_probe(rp),
+        None => manifests::default_readiness_probe(&spec.ports),
+    }
+}
+
 /// Public alias for use by compat facades. Facades apply `spec.image` directly
 /// (`effective_image = None`); the managed-upgrade FSM is driven only by the
 /// canonical `Service` controller's `reconcile_service`.
@@ -651,9 +670,7 @@ async fn reconcile_service_inner(
         spec.liveness_probe
             .as_ref()
             .and_then(manifests::build_probe),
-        spec.readiness_probe
-            .as_ref()
-            .and_then(manifests::build_probe),
+        resolve_readiness_probe(spec),
     );
     // Container-level securityContext on the MAIN container — the fleet
     // hardening baseline (readOnlyRootFilesystem / capabilities.drop:[ALL] /
@@ -1611,7 +1628,8 @@ mod claim_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crd::{AutoscalingSpec, ImageSpec, ServicePort as CrServicePort};
+    use crate::crd::{AutoscalingSpec, ImageSpec, ProbeSpec, ServicePort as CrServicePort};
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
     fn base_spec() -> ServiceSpec {
         ServiceSpec {
@@ -1726,6 +1744,84 @@ mod tests {
         let vols = pod_spec.volumes.expect("volumes must be on pod spec");
         assert_eq!(vols.len(), 1);
         assert_eq!(vols[0].name, "data");
+    }
+
+    // ---- Readiness probe defaulting (maxUnavailable=0 gate) ----
+
+    // The fix: a CR that OMITS readinessProbe but exposes a port gets a
+    // defaulted TCP-socket probe on the first port, and that probe lands on the
+    // built main container — so maxUnavailable=0 actually gates the roll.
+    #[test]
+    fn omitted_readiness_probe_defaults_tcp_on_main_container() {
+        let spec = base_spec();
+        assert!(
+            spec.readiness_probe.is_none(),
+            "precondition: base_spec omits readinessProbe"
+        );
+        let probe = resolve_readiness_probe(&spec).expect("port-bearing CR gets a default probe");
+        assert_eq!(
+            probe
+                .tcp_socket
+                .as_ref()
+                .expect("default is tcpSocket")
+                .port,
+            IntOrString::Int(8080),
+        );
+
+        // And it reaches the actual main container the reconcile builds.
+        let main = manifests::build_container(
+            "test",
+            &manifests::image_ref(&spec.image.repository, &spec.image.tag),
+            &spec.image.pull_policy,
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            manifests::container_ports(&spec.ports),
+            None,
+            None,
+            resolve_readiness_probe(&spec),
+        );
+        let rp = main
+            .readiness_probe
+            .expect("main container must carry the defaulted readiness probe");
+        assert_eq!(rp.tcp_socket.unwrap().port, IntOrString::Int(8080));
+        assert!(rp.http_get.is_none(), "default must be TCP, never HTTP");
+    }
+
+    // An explicitly-declared readinessProbe is honored EXACTLY — the TCP default
+    // is not applied, so the 40 CRs that already declare one stay byte-identical.
+    #[test]
+    fn declared_readiness_probe_is_not_overridden() {
+        let mut spec = base_spec();
+        spec.readiness_probe = Some(ProbeSpec {
+            path: "/healthz".to_string(),
+            port: 8080,
+            ..Default::default()
+        });
+        let probe = resolve_readiness_probe(&spec).expect("declared probe renders");
+        let hg = probe
+            .http_get
+            .expect("declared HTTP probe must stay HTTP, not become TCP");
+        assert_eq!(hg.path.as_deref(), Some("/healthz"));
+        assert_eq!(hg.port, IntOrString::Int(8080));
+        assert!(
+            probe.tcp_socket.is_none(),
+            "declared probe must not be replaced by the TCP default"
+        );
+    }
+
+    // A port-less worker (no listener) that also omits readinessProbe gets no
+    // probe — its Deployment stays byte-identical.
+    #[test]
+    fn portless_worker_gets_no_default_readiness_probe() {
+        let mut spec = base_spec();
+        spec.ports = vec![];
+        assert!(
+            resolve_readiness_probe(&spec).is_none(),
+            "a port-less workload must get no readiness probe",
+        );
     }
 
     // ---- Replicas / HPA interaction ----

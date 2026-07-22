@@ -282,6 +282,49 @@ pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
     None
 }
 
+/// Default readiness probe for an App whose CR OMITS `readinessProbe`.
+///
+/// `maxUnavailable=0` (the rollout default in `build_deployment`) only gates a
+/// roll when k8s can tell the NEW pod is unhealthy. With NO readiness probe,
+/// k8s marks a broken-but-running pod `Ready` the instant its process starts,
+/// so `maxUnavailable=0` gives zero protection — a broken image rolls right
+/// over the healthy pod. Defaulting a probe here is what makes that outage
+/// class impossible.
+///
+/// The default is a TCP-socket "is the first port accepting connections?"
+/// probe, deliberately NOT an HTTP `/health` GET: an HTTP default would 404 on
+/// every service that does not implement that path, so a GOOD image would never
+/// become `Ready` and its roll would stall fleet-wide. A TCP-socket probe
+/// cannot false-negative a healthy service that binds its port, yet still
+/// catches a broken image that fails to listen — strictly better than no probe.
+///
+/// Returns `None` for a port-less workload (a queue worker with no listener has
+/// nothing to TCP-probe) so its Deployment stays byte-identical. Services that
+/// want real HTTP health-checking declare an explicit `readinessProbe` in their
+/// CR; those are honored as-is and never reach this default.
+///
+/// Timing is a deliberately-lenient fleet-wide floor: `initialDelay 10 +
+/// failureThreshold 6 × period 10 ≈ 70s` of not-listening before a pod fails
+/// readiness. Wide enough to cover on-boot-migration / model-load / JIT-warmup
+/// starters without stalling a GOOD roll, yet still catches a truly-broken image
+/// within ~a minute (its roll stalls under `maxUnavailable=0` while the healthy
+/// old pod keeps serving).
+pub fn default_readiness_probe(ports: &[CrServicePort]) -> Option<Probe> {
+    let first = ports.first()?;
+    Some(Probe {
+        tcp_socket: Some(TCPSocketAction {
+            port: IntOrString::Int(first.container_port),
+            ..Default::default()
+        }),
+        initial_delay_seconds: Some(10),
+        period_seconds: Some(10),
+        timeout_seconds: Some(3),
+        failure_threshold: Some(6),
+        success_threshold: Some(1),
+        ..Default::default()
+    })
+}
+
 /// Convert CR ServicePorts to k8s ContainerPorts.
 pub fn container_ports(ports: &[CrServicePort]) -> Vec<ContainerPort> {
     ports
@@ -1105,6 +1148,56 @@ mod tests {
         assert!(
             build_probe(&probe(0)).is_none(),
             "an empty probe must yield None, never httpGet{{port:0}}"
+        );
+    }
+
+    fn svc_port(name: &str, container_port: i32) -> CrServicePort {
+        CrServicePort {
+            name: name.to_string(),
+            container_port,
+            service_port: None,
+            protocol: String::new(),
+        }
+    }
+
+    // An App whose CR OMITS readinessProbe but exposes a port gets a DEFAULTED
+    // TCP-socket probe on the FIRST container port, so maxUnavailable=0 actually
+    // gates the roll: a broken image that never listens is kept out of `Ready`
+    // and cannot roll over the healthy pod. TCP, not HTTP — an HTTP default
+    // would 404 services without that path and stall GOOD rolls fleet-wide.
+    #[test]
+    fn default_readiness_probe_tcp_on_first_port() {
+        let ports = vec![svc_port("http", 8080), svc_port("metrics", 9090)];
+        let out =
+            default_readiness_probe(&ports).expect("a port-bearing workload gets a default probe");
+        assert_eq!(
+            out.tcp_socket
+                .expect("default must be a tcpSocket probe")
+                .port,
+            IntOrString::Int(8080),
+            "default probe must target the FIRST container port",
+        );
+        assert!(
+            out.http_get.is_none(),
+            "default must be TCP, never HTTP (an HTTP 404 stalls good rolls)"
+        );
+        assert!(out.exec.is_none());
+        // Lenient fleet-wide floor: ~70s grace (initialDelay 10 + 6×period 10)
+        // so slow-boot starters don't stall a good roll.
+        assert_eq!(out.initial_delay_seconds, Some(10));
+        assert_eq!(out.period_seconds, Some(10));
+        assert_eq!(out.timeout_seconds, Some(3));
+        assert_eq!(out.failure_threshold, Some(6));
+        assert_eq!(out.success_threshold, Some(1));
+    }
+
+    // A port-less worker (a queue consumer with no listener) gets NO default
+    // probe — nothing to TCP-probe — so its Deployment stays byte-identical.
+    #[test]
+    fn default_readiness_probe_none_for_portless_worker() {
+        assert!(
+            default_readiness_probe(&[]).is_none(),
+            "a port-less workload must get no default probe",
         );
     }
 
