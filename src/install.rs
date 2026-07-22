@@ -35,7 +35,7 @@ use crate::api_group::DEFAULT_API_GROUP;
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, GitSource,
+    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, GitSource,
     ImageUpdate, Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability,
     Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
@@ -55,7 +55,6 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
     let mut crds = vec![
         Service::crd(),
         Datastore::crd(),
-        Gateway::crd(),
         MPC::crd(),
         Network::crd(),
         Ingress::crd(),
@@ -132,7 +131,6 @@ const APP_ROLE_ENUM: &[&str] = &[
     "sql",
     "managedDatabase",
     "base",
-    "gateway",
     "ingress",
     "dns",
     "static",

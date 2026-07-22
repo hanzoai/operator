@@ -111,7 +111,6 @@ pub fn classify(role: Option<&str>) -> Dispatch {
         "dns" => Dispatch::Dns,
         "ingress" => Dispatch::Ingress,
         // Delegated — dedicated controller, no owner-taking inner_pub, no live CR.
-        "gateway" => Dispatch::Delegated("Gateway"),
         "base" => Dispatch::Delegated("Base"),
         "mpc" => Dispatch::Delegated("MPC"),
         "network" => Dispatch::Delegated("Network"),
@@ -559,7 +558,6 @@ mod tests {
     #[test]
     fn delegated_and_noop_roles_never_materialize() {
         for (r, k) in [
-            ("gateway", "Gateway"),
             ("base", "Base"),
             ("mpc", "MPC"),
             ("network", "Network"),

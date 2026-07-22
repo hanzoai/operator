@@ -348,11 +348,6 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::gateway::run_gateway_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         controllers::mpc::run_mpc_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::network::run_network_controller(
             client.clone(),

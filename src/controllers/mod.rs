@@ -6,7 +6,6 @@ use kube::Resource;
 pub mod base;
 pub mod datastore;
 pub mod dns;
-pub mod gateway;
 // Native GitOps — retires the gitops-reconcile cron + notify-universe dispatch.
 pub mod gitsource;
 pub mod imageupdate;
