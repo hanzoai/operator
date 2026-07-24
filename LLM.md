@@ -17,6 +17,22 @@ way. API group configurable at install time via `--api-group` /
 - Image: `ghcr.io/hanzoai/operator:vX.Y.Z` (semver only, no `:latest`).
 - Runs in `hanzo-operator-system` namespace.
 
+## Canonical role & brand (SDK model)
+
+**Canonical impl repo.** This is infrastructure, not an SDK — it lives at its
+canonical home `hanzoai/operator` (Rust, web2 canonical) with its Go sibling
+`luxfi/operator` (web3 canonical). One impl, one place: discovery/marketing
+repos link here, they never re-document the reconcile logic. Full model in
+`~/work/hanzo/SDK-ARCHITECTURE.md`.
+
+**Brand rules — hard, enforce in every doc/string written here:**
+- Hanzo is the **Open AI Cloud** — a full AI SDK / AI cloud, never an "LLM
+  gateway" and never positioned against LiteLLM or as an "OpenAI-compatible
+  proxy". (The `LLM` CRD Kind is just a `Service` facade for AI workloads —
+  that is a Kind name, not that framing.)
+- Paths are `/v1/...` only — never an `/api/` prefix.
+- Zen models are our own family; never name upstream models.
+
 ## CRD Kinds (28 total)
 
 ### Canonical (v1)
