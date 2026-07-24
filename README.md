@@ -2,10 +2,12 @@
 
 # operator
 
-Canonical **Rust** Kubernetes operator for the Hanzo platform — and, per
-the cross-impl parity goal, eventually all of Lux too. One binary, N CRD
-Kinds, configurable API group at install time. See [`LLM.md`](./LLM.md)
-for the agent-friendly overview.
+**One Rust binary that runs the Hanzo platform on Kubernetes** — N CRD Kinds,
+one reconcile loop, an API group you pick at install time. Declare a
+`Service`, `Gateway`, `Datastore`, `Network`, or `Ingress` (and 20+ more) and
+the operator materializes the Deployments, Services, StatefulSets, TLS,
+autoscaling, and KMS-synced secrets behind it. See [`LLM.md`](./LLM.md) for the
+agent-friendly deep dive.
 
 ## Canonical homes
 
@@ -14,15 +16,13 @@ for the agent-friendly overview.
 | Rust  | `hanzoai/operator` (this repo)    | `ghcr.io/hanzoai/operator`    |
 | Go    | `luxfi/operator`                  | `ghcr.io/luxfi/operator`      |
 
-Both implementations target **full feature parity** against a shared CRD
-wire contract: each k8s cluster deploys whichever language fits its
-operating context (Hanzo web2 ↔ Lux web3). Any change to the CRD wire
-shape must land in both impls.
+Both implementations target **full feature parity** against a shared CRD wire
+contract — each cluster deploys whichever language fits its operating context
+(Hanzo web2 ↔ Lux web3). Any change to the CRD wire shape lands in both impls.
 
 ## What it manages
 
-Kinds at `<api-group>/v1`. No compat aliases — the v1 Kinds are the one
-way.
+Kinds at `<api-group>/v1`. No compat aliases — the v1 Kinds are the one way.
 
 | Kind        | Purpose                                                   | Materializes |
 |-------------|-----------------------------------------------------------|--------------|
@@ -41,6 +41,38 @@ way.
 | SPA / Static / Queue / Observability / Function | App-shaped facades            | Service / Datastore facades |
 | Chain / Validator | Sub-resources of Network (NoOp stubs)               | — |
 
+## Quick start
+
+```bash
+# Install CRDs + operator (namespace, RBAC, Deployment) — idempotent SSA.
+operator install --image ghcr.io/hanzoai/operator:vX.Y.Z
+
+# Install, then apply your platform's App CRs so the operator brings the stack up.
+operator up --image ghcr.io/hanzoai/operator:vX.Y.Z --manifests ./crs
+```
+
+Then declare a workload:
+
+```yaml
+apiVersion: hanzo.ai/v1
+kind: Service
+metadata:
+  name: hello
+  namespace: hanzo
+spec:
+  image: ghcr.io/hanzoai/hello:v1.0.0
+  env:
+    - name: PORT
+      value: "8080"
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+```
+
+`kubectl apply -f` it and the operator reconciles the Deployment, Service,
+Ingress, HPA, PDB, NetworkPolicy, and KMSSecret behind it.
+
 ## Critical invariant
 
 `spec.env`, `spec.volumes`, `spec.volumeMounts` MUST be honored on every
@@ -53,10 +85,10 @@ cargo test --lib controllers::service::tests
 # deployment_carries_volumes ... ok
 ```
 
-When a Service CR sets `autoscaling.enabled = true`, the operator emits
-the Deployment with **no** `spec.replicas` so the HPA is the sole field
-manager for that field (server-side apply would otherwise fight the HPA
-on every reconcile cycle).
+When a Service CR sets `autoscaling.enabled = true`, the operator emits the
+Deployment with **no** `spec.replicas` so the HPA is the sole field manager for
+that field (server-side apply would otherwise fight the HPA on every reconcile
+cycle).
 
 ## Build / Test
 
@@ -69,9 +101,9 @@ cargo fmt --check
 
 ## API group rebinding
 
-kube-rs's `CustomResource` derive bakes the API group at compile time —
-the default is `hanzo.ai`. To target another universe's API group,
-regenerate the CRD YAML via the `generate-crd-yaml` binary:
+kube-rs's `CustomResource` derive bakes the API group at compile time — the
+default is `hanzo.ai`. To target another universe's API group, regenerate the
+CRD YAML via the `generate-crd-yaml` binary:
 
 ```bash
 generate-crd-yaml --api-group lux.cloud   --out k8s/crds/all-lux.cloud.yaml
@@ -80,9 +112,8 @@ generate-crd-yaml --api-group zoo.cloud   --out k8s/crds/all-zoo.cloud.yaml
 generate-crd-yaml --api-group osage.cloud --out k8s/crds/all-osage.cloud.yaml
 ```
 
-The running binary accepts `--api-group X.Y` / `OPERATOR_API_GROUP=X.Y`
-and uses the resolved group for owner references and dynamic KMSSecret
-references.
+The running binary accepts `--api-group X.Y` / `OPERATOR_API_GROUP=X.Y` and uses
+the resolved group for owner references and dynamic KMSSecret references.
 
 ## Layout
 
@@ -119,3 +150,9 @@ k8s/crds/               generated CRD YAMLs per universe
 ## License
 
 BSD-3-Clause (see [`LICENSE`](./LICENSE) — header in source files).
+
+## Hanzo — the Open AI Cloud
+
+Open source · every language · on-chain settlement. [hanzo.ai](https://hanzo.ai) · [docs.hanzo.ai](https://docs.hanzo.ai)
+
+**SDKs in every language** — [Python](https://github.com/hanzoai/python-sdk) (flagship) · [TypeScript](https://github.com/hanzo-js/sdk) · [Go](https://github.com/hanzo-go/sdk) · [Rust](https://github.com/hanzo-rs/sdk) · [C++](https://github.com/hanzo-cpp/sdk) · [Swift](https://github.com/hanzo-swift/sdk) · [Kotlin](https://github.com/hanzo-kt/sdk) · [umbrella](https://github.com/hanzoai/sdk)
