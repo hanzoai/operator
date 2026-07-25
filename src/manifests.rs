@@ -252,6 +252,16 @@ pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
         } else {
             10
         });
+        // Same lenient floor `default_readiness_probe` applies. Without it a CR
+        // that DECLARES a probe got a STRICTER budget (k8s defaults: 1s timeout,
+        // 3 failures) than one that declared none (3s, 6) — backwards, and the
+        // cause of spurious NotReady/restarts on any service that can block
+        // longer than a second. A single-writer store under load is the normal
+        // case, not the exception: hanzo-git liveness-timed-out on a healthy pod
+        // mid-mirror-sync. `ProbeSpec` models neither field, so there is nothing
+        // to override and this floor is unconditional.
+        p.timeout_seconds = Some(3);
+        p.failure_threshold = Some(6);
         p
     };
     if let Some(e) = &spec.exec {
@@ -276,8 +286,9 @@ pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
         }
     }
     if spec.port > 0 {
-        // Reuse the HTTP builder (already applies path/timing defaults).
-        return Some(build_http_probe(spec));
+        // Reuse the HTTP builder for the handler + path, but route it through
+        // `timing` like every other handler so ONE place owns probe timing.
+        return Some(timing(build_http_probe(spec)));
     }
     None
 }
@@ -1089,6 +1100,26 @@ mod tests {
         let out = build_probe(&p).expect("tcp probe must render");
         assert_eq!(out.tcp_socket.unwrap().port, IntOrString::Int(9092));
         assert!(out.http_get.is_none(), "tcp probe must not emit httpGet");
+    }
+
+    // A DECLARED probe must never get a stricter budget than the one the
+    // operator supplies for a CR that declares nothing. Leaving these to the
+    // k8s defaults (1s timeout, 3 failures) restarts healthy single-writer
+    // services that block for a second under load.
+    #[test]
+    fn declared_probe_gets_the_same_lenient_floor_as_the_default() {
+        let floor = default_readiness_probe(&[svc_port("http", 3000)])
+            .expect("default probe must render for a ported workload");
+
+        let mut tcp = probe(0);
+        tcp.tcp_socket = Some(CrTcp { port: 3000 });
+        for out in [
+            build_probe(&probe(3000)).expect("http probe must render"),
+            build_probe(&tcp).expect("tcp probe must render"),
+        ] {
+            assert_eq!(out.timeout_seconds, floor.timeout_seconds);
+            assert_eq!(out.failure_threshold, floor.failure_threshold);
+        }
     }
 
     // A plain HTTP probe (port > 0) still renders as httpGet.
