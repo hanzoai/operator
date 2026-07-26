@@ -74,11 +74,10 @@ async fn reconcile_inner(
 
     let ings: Api<Ingress> = Api::namespaced(client.clone(), namespace);
     let mut desired: BTreeSet<String> = BTreeSet::new();
-    for (idx, domain) in spec.domains.iter().enumerate() {
+    for domain in spec.domains.iter() {
         let ing = build_domain_ingress(
             name,
             namespace,
-            idx,
             domain,
             class,
             issuer,
@@ -86,7 +85,17 @@ async fn reconcile_inner(
             spec.labels.as_ref(),
             &owner,
         );
-        desired.insert(ing.name_any());
+        // Names come from hosts now, so a host listed twice collides instead of
+        // quietly producing two Ingresses for it — which was never routable
+        // anyway, just harder to see. Say so and keep the last one.
+        if !desired.insert(ing.name_any()) {
+            warn!(
+                name,
+                namespace,
+                domain = %domain.domain,
+                "duplicate domain in spec.domains; later entry wins"
+            );
+        }
         apply::apply(&ings, &ing).await?;
     }
 
@@ -103,10 +112,12 @@ async fn reconcile_inner(
 }
 
 /// Delete the Ingress shards this CR previously wrote that the current
-/// generation no longer declares. A shard becomes superseded when its host
-/// moves index within the CR's `domains` array, the host is dropped from the
-/// CR (a backend cutover), or the child-name scheme changed across operator
-/// versions. In every case the stale shard keeps a valid `ownerReference` to
+/// generation no longer declares. A shard becomes superseded when the host is
+/// dropped from the CR (a backend cutover) or the child-name scheme changed
+/// across operator versions — including the index-to-host rename, whose stale
+/// `<parent>-<idx>-<host>` shards this sweep is what clears.  Moving a host
+/// within `domains` is no longer a supersede cause: names are host-derived, so
+/// order is not identity. In every case the stale shard keeps a valid `ownerReference` to
 /// the still-live CR, so k8s garbage collection never fires — owner-ref GC only
 /// triggers on CR *deletion*. Left alone, the stale shard stays live at equal
 /// priority and keeps routing a cut-over host to its OLD backend.
@@ -191,7 +202,6 @@ fn is_superseded(
 fn build_domain_ingress(
     parent_name: &str,
     namespace: &str,
-    idx: usize,
     domain: &DomainConfig,
     class: &str,
     issuer: &str,
@@ -199,7 +209,21 @@ fn build_domain_ingress(
     extra_labels: Option<&BTreeMap<String, String>>,
     owner: &OwnerReference,
 ) -> Ingress {
-    let ing_name = format!("{}-{}-{}", parent_name, idx, sanitize_label(&domain.domain));
+    // Named for the host, NOT its position in `spec.domains`. The index used to
+    // be in here, which made the name a function of list order: inserting one
+    // domain renamed every Ingress after it, and each rename is a new name is a
+    // new cert-manager Certificate is a new Let's Encrypt issuance. The old
+    // Ingress got pruned and its Certificate garbage-collected with it, but
+    // cert-manager deliberately never deletes the Secret — so each reorder left
+    // a dead TLS Secret behind for every domain downstream of the edit. That is
+    // how one namespace accumulated 141 orphaned Secrets and nine generations of
+    // certs for the same four kms hosts, burning issuances against the
+    // per-registered-domain rate limit for no reason at all.
+    //
+    // The host is already unique within a parent's domain list and is what the
+    // Ingress actually serves, so it is the honest name. Reordering `domains` is
+    // now a no-op.
+    let ing_name = format!("{}-{}", parent_name, sanitize_label(&domain.domain));
 
     let mut annotations: BTreeMap<String, String> = BTreeMap::new();
     annotations.insert("kubernetes.io/ingress.class".to_string(), class.to_string());
@@ -345,7 +369,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -384,7 +407,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-domains",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -425,7 +447,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-domains",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -452,7 +473,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -480,7 +500,7 @@ mod tests {
         // Object-name-safe secret name (no leading-dash fragment from the `*`).
         assert_eq!(
             tls[0].secret_name.as_deref(),
-            Some("hanzo-app-sites-0-wildcard-hanzo-app-tls")
+            Some("hanzo-app-sites-wildcard-hanzo-app-tls")
         );
     }
 
@@ -495,7 +515,6 @@ mod tests {
         let ing = build_domain_ingress(
             "hanzo-app-sites",
             "hanzo",
-            0,
             &domain,
             "ingress",
             "letsencrypt-prod",
@@ -528,21 +547,86 @@ mod tests {
         assert_eq!(sanitize_label("api.cloud.hanzo.ai"), "api-cloud-hanzo-ai");
     }
 
+    #[test]
+    fn child_name_is_a_function_of_the_host_not_the_list_position() {
+        // The property the old `<parent>-<idx>-<host>` scheme did not have.
+        // Under it, inserting a domain at the front renamed every Ingress behind
+        // it, and each rename bought a fresh cert-manager Certificate, a fresh
+        // Let's Encrypt issuance, and one permanently orphaned TLS Secret (the
+        // Ingress is pruned and its Certificate GC'd, but cert-manager never
+        // deletes the Secret). Nine such generations accumulated for the four
+        // `kms.*` hosts alone. Naming by host makes a reorder a no-op.
+        let d = |host: &str| DomainConfig {
+            domain: host.to_string(),
+            routes: vec![cloud_route()],
+            tls: true,
+            annotations: None,
+        };
+        let build = |dom: &DomainConfig| {
+            build_domain_ingress(
+                "hanzo-domains",
+                "hanzo",
+                dom,
+                "ingress",
+                "letsencrypt-prod",
+                None,
+                None,
+                &owner(),
+            )
+            .name_any()
+        };
+
+        let kms = d("kms.hanzo.ai");
+        // Same host, whatever it is preceded by in `spec.domains`.
+        assert_eq!(build(&kms), "hanzo-domains-kms-hanzo-ai");
+        assert_eq!(build(&kms), build(&d("kms.hanzo.ai")));
+        // Distinct hosts still get distinct names — collapsing them would be the
+        // opposite failure.
+        assert_ne!(build(&kms), build(&d("kms.lux.network")));
+        // And no index survives anywhere in the name.
+        assert!(!build(&kms).contains("-0-"));
+    }
+
+    #[test]
+    fn tls_secret_name_tracks_the_host_too() {
+        // The Secret name is derived from the Ingress name, so it inherits the
+        // stability — this is the name whose churn actually cost issuances.
+        let dom = DomainConfig {
+            domain: "kms.hanzo.ai".to_string(),
+            routes: vec![cloud_route()],
+            tls: true,
+            annotations: None,
+        };
+        let ing = build_domain_ingress(
+            "hanzo-domains",
+            "hanzo",
+            &dom,
+            "ingress",
+            "letsencrypt-prod",
+            None,
+            None,
+            &owner(),
+        );
+        let secret = ing.spec.unwrap().tls.unwrap()[0].secret_name.clone();
+        assert_eq!(secret.as_deref(), Some("hanzo-domains-kms-hanzo-ai-tls"));
+    }
+
     // Prune decision — the `platform.hanzo.ai` cutover leak and its boundaries.
-    // The current generation writes `hanzo-domains-2-platform-hanzo-ai`; the old
-    // index shard (`-4-`) and the pre-index-scheme shard both linger with a valid
-    // ownerReference to the still-live `hanzo-domains` CR (uid `cr-uid`).
+    // The current generation writes the host-derived `hanzo-domains-platform-hanzo-ai`.
+    // Every index-scheme shard it replaces (`-2-`, `-4-`, …) lingers with a valid
+    // ownerReference to the still-live `hanzo-domains` CR (uid `cr-uid`), so this
+    // sweep is what retires them — owner-ref GC never fires while the CR lives.
 
     const CR_UID: &str = "cr-uid";
 
     fn desired() -> BTreeSet<String> {
-        BTreeSet::from(["hanzo-domains-2-platform-hanzo-ai".to_string()])
+        BTreeSet::from(["hanzo-domains-platform-hanzo-ai".to_string()])
     }
 
     #[test]
     fn current_generation_shard_is_kept() {
         assert!(!is_superseded(
-            "hanzo-domains-2-platform-hanzo-ai",
+            "hanzo-domains-platform-hanzo-ai",
             &[CR_UID],
             CR_UID,
             &desired(),
@@ -562,9 +646,9 @@ mod tests {
 
     #[test]
     fn old_scheme_shard_is_pruned() {
-        // `hanzo-domains-platform-hanzo-ai` — pre-index naming, same CR.
+        // A second index shard from another reorder — same CR, no longer desired.
         assert!(is_superseded(
-            "hanzo-domains-platform-hanzo-ai",
+            "hanzo-domains-2-platform-hanzo-ai",
             &[CR_UID],
             CR_UID,
             &desired(),
