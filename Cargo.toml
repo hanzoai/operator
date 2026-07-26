@@ -4,7 +4,7 @@
 
 [package]
 name = "operator"
-version = "0.7.12"
+version = "0.7.17"
 edition = "2021"
 license = "BSD-3-Clause"
 repository = "https://github.com/hanzoai/operator"

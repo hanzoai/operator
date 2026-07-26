@@ -1374,7 +1374,7 @@ spec:
         properties:
           spec:
             description: |-
-              `Datastore` Kind — the `hanzoai/datastore` analytics engine (ClickHouse).
+              `Datastore` Kind — the `hanzoai/datastore` analytics engine (Hanzo Datastore).
               A concrete engine, not a generic catch-all: the engine IS the Kind.
             properties:
               args:
@@ -1547,7 +1547,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64
@@ -3955,7 +3955,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64
@@ -4680,7 +4680,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64
@@ -5405,7 +5405,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64
@@ -10132,7 +10132,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64
@@ -10871,7 +10871,7 @@ spec:
                   entrypoint can chown) must write its data PVC: the kubelet chowns the
                   mounted volume to this GID + adds it to every container's supplementary
                   groups, so the app can write. Omit for root or self-chowning images
-                  (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+                  (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
                   changing it never restarts unrelated datastores (a datastore that leaves
                   it None gets a byte-identical StatefulSet).
                 format: int64

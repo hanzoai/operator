@@ -116,6 +116,15 @@ pub struct ServicePort {
     pub protocol: String,
 }
 
+/// The class every Ingress we emit falls back to when a CR names none.
+///
+/// hanzoai/ingress runs with `--providers.kubernetesingress.ingressclass=ingress`,
+/// so an Ingress carrying no class matches no provider and builds no router. It
+/// is inert, and silently so: the host 404s with router "-" while its Service
+/// keeps ready endpoints, which reads as an app bug rather than a routing gap.
+/// Defaulting here is what keeps "class omitted" from meaning "dark".
+pub const DEFAULT_INGRESS_CLASS: &str = "ingress";
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct IngressSpec {
@@ -703,7 +712,7 @@ pub enum Engine {
     Docdb,
     /// MinIO S3 (`hanzoai/s3`).
     Minio,
-    /// hanzoai/datastore analytics engine (ClickHouse).
+    /// hanzoai/datastore analytics engine (Hanzo Datastore).
     Datastore,
 }
 
@@ -774,7 +783,7 @@ pub struct DBSpec {
     /// entrypoint can chown) must write its data PVC: the kubelet chowns the
     /// mounted volume to this GID + adds it to every container's supplementary
     /// groups, so the app can write. Omit for root or self-chowning images
-    /// (e.g. ClickHouse `datastore`), which already write any volume. Opt-in so
+    /// (e.g. Hanzo Datastore `datastore`), which already write any volume. Opt-in so
     /// changing it never restarts unrelated datastores (a datastore that leaves
     /// it None gets a byte-identical StatefulSet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -810,7 +819,7 @@ pub struct DBSpec {
     pub enable_service_links: Option<bool>,
 }
 
-/// `Datastore` Kind — the `hanzoai/datastore` analytics engine (ClickHouse).
+/// `Datastore` Kind — the `hanzoai/datastore` analytics engine (Hanzo Datastore).
 /// A concrete engine, not a generic catch-all: the engine IS the Kind.
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(

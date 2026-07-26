@@ -33,7 +33,7 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 use crate::crd::{
     AutoscalingSpec, IngressSpec, NetworkPolicySpec, PodDisruptionBudgetSpec, ProbeSpec,
-    ResourceRequirements, ServicePort as CrServicePort,
+    ResourceRequirements, ServicePort as CrServicePort, DEFAULT_INGRESS_CLASS,
 };
 
 pub const LABEL_NAME: &str = "app.kubernetes.io/name";
@@ -252,6 +252,16 @@ pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
         } else {
             10
         });
+        // Same lenient floor `default_readiness_probe` applies. Without it a CR
+        // that DECLARES a probe got a STRICTER budget (k8s defaults: 1s timeout,
+        // 3 failures) than one that declared none (3s, 6) — backwards, and the
+        // cause of spurious NotReady/restarts on any service that can block
+        // longer than a second. A single-writer store under load is the normal
+        // case, not the exception: hanzo-git liveness-timed-out on a healthy pod
+        // mid-mirror-sync. `ProbeSpec` models neither field, so there is nothing
+        // to override and this floor is unconditional.
+        p.timeout_seconds = Some(3);
+        p.failure_threshold = Some(6);
         p
     };
     if let Some(e) = &spec.exec {
@@ -276,8 +286,9 @@ pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
         }
     }
     if spec.port > 0 {
-        // Reuse the HTTP builder (already applies path/timing defaults).
-        return Some(build_http_probe(spec));
+        // Reuse the HTTP builder for the handler + path, but route it through
+        // `timing` like every other handler so ONE place owns probe timing.
+        return Some(timing(build_http_probe(spec)));
     }
     None
 }
@@ -675,10 +686,24 @@ pub fn build_ingress(
             annotations.insert(k.clone(), v.clone());
         }
     }
-    // hanzoai/ingress (Traefik fork) silently drops spec.tls when the caller
-    // sets spec.ingressClassName instead of the annotation. Emit the
-    // annotation form so TLS stays hooked up.
-    if !spec.ingress_class_name.is_empty() {
+    // Always in the annotation form, never spec.ingressClassName: the field takes
+    // precedence over the annotation and then fails the IngressClass controller
+    // check, so hanzoai/ingress (Traefik fork) serves nothing and drops spec.tls.
+    //
+    // And always present. This used to be emitted only when a CR set
+    // `ingressClassName`, but that field defaults to "", so every App that just
+    // said `ingress: {enabled: true}` got an Ingress with no class at all — which
+    // matches no provider either. That is how hanzo-devnet/{cloud-api,commerce,
+    // console2,iam} and hanzo-testnet/{cloud-api,iam} sat dark for a month,
+    // 404ing with router "-" while their Services had ready endpoints.
+    //
+    // Precedence: the explicit field, else an operator-supplied annotation, else
+    // the default. The one thing that cannot happen is no class.
+    if spec.ingress_class_name.is_empty() {
+        annotations
+            .entry("kubernetes.io/ingress.class".to_string())
+            .or_insert_with(|| DEFAULT_INGRESS_CLASS.to_string());
+    } else {
         annotations.insert(
             "kubernetes.io/ingress.class".to_string(),
             spec.ingress_class_name.clone(),
@@ -688,20 +713,30 @@ pub fn build_ingress(
     let path_type = "Prefix".to_string();
     let mut rules = Vec::new();
     for host in &spec.hosts {
-        let mut paths = vec![HTTPIngressPath {
-            path: Some("/".to_string()),
-            path_type: path_type.clone(),
-            backend: IngressBackend {
-                service: Some(IngressServiceBackend {
-                    name: service_name.to_string(),
-                    port: Some(ServiceBackendPort {
-                        number: Some(service_port),
-                        ..Default::default()
+        // The implicit "/" is a DEFAULT, not an addition: it applies only when the
+        // CR declares no pathRules. Emitting it unconditionally and then appending
+        // the explicit rules produced TWO "/" paths, and the implicit one — pinned
+        // to the app's FIRST service port — won. `dns` declares `/ -> dns:8443` yet
+        // its first port is 53, so dns.hanzo.ai routed HTTP at the DNS port and
+        // served a bare 404. Explicit configuration wins over a default.
+        let mut paths = if spec.path_rules.is_empty() {
+            vec![HTTPIngressPath {
+                path: Some("/".to_string()),
+                path_type: path_type.clone(),
+                backend: IngressBackend {
+                    service: Some(IngressServiceBackend {
+                        name: service_name.to_string(),
+                        port: Some(ServiceBackendPort {
+                            number: Some(service_port),
+                            ..Default::default()
+                        }),
                     }),
-                }),
-                ..Default::default()
-            },
-        }];
+                    ..Default::default()
+                },
+            }]
+        } else {
+            Vec::new()
+        };
 
         for pr in &spec.path_rules {
             let pt = match pr.path_type.as_str() {
@@ -1091,6 +1126,154 @@ mod tests {
         assert!(out.http_get.is_none(), "tcp probe must not emit httpGet");
     }
 
+    // Explicit pathRules are AUTHORITATIVE: the implicit "/" is a default that
+    // applies only when none are declared. Emitting both gave two "/" paths and
+    // the implicit one won, pinned to the app's FIRST service port — which routed
+    // dns.hanzo.ai's HTTP at port 53 (DNS) and served a bare 404.
+    #[test]
+    fn explicit_path_rules_replace_the_implicit_root_default() {
+        fn ports_of(ing: &Ingress) -> Vec<i32> {
+            let rules = ing.spec.as_ref().unwrap().rules.as_ref().unwrap();
+            let paths = &rules[0].http.as_ref().unwrap().paths;
+            paths
+                .iter()
+                .filter_map(|p| p.backend.service.as_ref()?.port.as_ref()?.number)
+                .collect()
+        }
+
+        let mut ing = crate::crd::IngressSpec {
+            enabled: true,
+            hosts: vec!["dns.hanzo.ai".into()],
+            ..Default::default()
+        };
+
+        // No rules -> exactly the default root, at the given service port.
+        let out = build_ingress("dns", "hanzo", &ing, "dns", 53, BTreeMap::new());
+        assert_eq!(ports_of(&out), vec![53]);
+
+        // With an explicit root, the default must NOT also be emitted.
+        ing.path_rules = vec![crate::crd::PathRule {
+            path: "/".into(),
+            path_type: "Prefix".into(),
+            port: 8443,
+            service_name: "dns".into(),
+        }];
+        let out = build_ingress("dns", "hanzo", &ing, "dns", 53, BTreeMap::new());
+        assert_eq!(
+            ports_of(&out),
+            vec![8443],
+            "declared port wins; the first service port must not also be routed",
+        );
+    }
+
+    // An Ingress with no class matches no provider under
+    // --providers.kubernetesingress.ingressclass=ingress: no router, host 404s,
+    // and nothing anywhere says so. Six live Ingresses (hanzo-devnet/{cloud-api,
+    // commerce,console2,iam}, hanzo-testnet/{cloud-api,iam}) were dark exactly
+    // this way because their App CRs never set `ingressClassName`. The class must
+    // survive every path through build_ingress.
+    #[test]
+    fn every_ingress_carries_a_class() {
+        fn class_of(ing: &Ingress) -> Option<String> {
+            ing.metadata
+                .annotations
+                .as_ref()?
+                .get("kubernetes.io/ingress.class")
+                .cloned()
+        }
+
+        // The regression: a CR that names no class at all.
+        let bare = crate::crd::IngressSpec {
+            enabled: true,
+            hosts: vec!["api.devnet.hanzo.ai".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "cloud-api",
+                "hanzo-devnet",
+                &bare,
+                "cloud-api",
+                8000,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some(DEFAULT_INGRESS_CLASS),
+            "an App that omits ingressClassName must still get a routable class",
+        );
+
+        // An explicit class still wins.
+        let explicit = crate::crd::IngressSpec {
+            ingress_class_name: "gateway".into(),
+            ..bare.clone()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "bot",
+                "hanzo",
+                &explicit,
+                "bot",
+                80,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some("gateway"),
+        );
+
+        // So does an operator-supplied annotation, when the field is empty —
+        // defaulting must not clobber a deliberate override.
+        let annotated = crate::crd::IngressSpec {
+            annotations: Some(BTreeMap::from([(
+                "kubernetes.io/ingress.class".to_string(),
+                "gateway".to_string(),
+            )])),
+            ..bare.clone()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "bot",
+                "hanzo",
+                &annotated,
+                "bot",
+                80,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some("gateway"),
+        );
+
+        // The class is an annotation, never spec.ingressClassName: the field
+        // takes precedence and then fails the IngressClass controller check.
+        for spec in [&bare, &explicit, &annotated] {
+            let out = build_ingress("x", "hanzo", spec, "x", 80, BTreeMap::new());
+            assert_eq!(
+                out.spec.as_ref().unwrap().ingress_class_name,
+                None,
+                "spec.ingressClassName serves nothing; the class belongs in the annotation",
+            );
+        }
+    }
+
+    // A DECLARED probe must never get a stricter budget than the one the
+    // operator supplies for a CR that declares nothing. Leaving these to the
+    // k8s defaults (1s timeout, 3 failures) restarts healthy single-writer
+    // services that block for a second under load.
+    #[test]
+    fn declared_probe_gets_the_same_lenient_floor_as_the_default() {
+        let floor = default_readiness_probe(&[svc_port("http", 3000)])
+            .expect("default probe must render for a ported workload");
+
+        let mut tcp = probe(0);
+        tcp.tcp_socket = Some(CrTcp { port: 3000 });
+        for out in [
+            build_probe(&probe(3000)).expect("http probe must render"),
+            build_probe(&tcp).expect("tcp probe must render"),
+        ] {
+            assert_eq!(out.timeout_seconds, floor.timeout_seconds);
+            assert_eq!(out.failure_threshold, floor.failure_threshold);
+        }
+    }
+
     // A plain HTTP probe (port > 0) still renders as httpGet.
     #[test]
     fn build_probe_renders_http_handler() {
@@ -1389,19 +1572,27 @@ mod tests {
     fn topology_spread_is_soft_hostname_self_selecting_for_multi_replica() {
         let mut sel = BTreeMap::new();
         sel.insert("app.kubernetes.io/name".to_string(), "world".to_string());
-        sel.insert("app.kubernetes.io/instance".to_string(), "world".to_string());
+        sel.insert(
+            "app.kubernetes.io/instance".to_string(),
+            "world".to_string(),
+        );
 
         let tsc = default_topology_spread(Some(2), &sel).expect("replicas>1 must spread");
         assert_eq!(tsc.len(), 1);
         let c = &tsc[0];
         assert_eq!(c.max_skew, 1, "maxSkew 1 = even spread");
-        assert_eq!(c.topology_key, "kubernetes.io/hostname", "spread across nodes");
+        assert_eq!(
+            c.topology_key, "kubernetes.io/hostname",
+            "spread across nodes"
+        );
         assert_eq!(
             c.when_unsatisfiable, "ScheduleAnyway",
             "SOFT — availability never traded for spread"
         );
         assert_eq!(
-            c.label_selector.as_ref().and_then(|s| s.match_labels.clone()),
+            c.label_selector
+                .as_ref()
+                .and_then(|s| s.match_labels.clone()),
             Some(sel),
             "each app spreads only against its OWN pods"
         );

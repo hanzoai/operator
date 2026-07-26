@@ -36,24 +36,29 @@ const LEASE_DURATION_SECONDS: i32 = 30;
 const RENEW_INTERVAL_SECS: u64 = 10;
 const RETRY_INTERVAL_SECS: u64 = 15;
 
-/// Format a microsecond-rounded timestamp as a k8s `MicroTime` string: RFC3339
-/// with EXACTLY 6 fractional digits.
+/// Render a timestamp for a Lease `renewTime`/`acquireTime` field, using the
+/// SAME serializer the typed path uses.
 ///
-/// jiff's `Timestamp` Display trims trailing zeros (`.457070` -> `.45707`, and
-/// a whole-second instant drops the fraction entirely), but the apiserver
-/// validates a Lease's `renewTime`/`acquireTime` against the fixed Go layout
-/// `2006-01-02T15:04:05.000000Z07:00` and 422-rejects anything without exactly
-/// six fractional digits. That rejection failed every lease renew, thrashing
-/// leader election (`leaseTransitions` climbing, reconciliation starved). We
-/// take the micro-rounded Display and right-pad (or truncate) the fraction to
-/// six, so the value is always accepted. Display never trims *leading* zeros,
-/// so re-padding on the right faithfully reconstructs the microsecond value.
-fn micro_time_string(ts: jiff::Timestamp) -> String {
-    let s = ts.to_string();
-    let body = s.strip_suffix('Z').unwrap_or(&s);
-    let (secs, frac) = body.split_once('.').unwrap_or((body, ""));
-    let frac6: String = frac.chars().chain(std::iter::repeat('0')).take(6).collect();
-    format!("{secs}.{frac6}Z")
+/// The apiserver validates a Lease's MicroTime fields against the fixed Go
+/// layout `2006-01-02T15:04:05.000000Z07:00` and 422-rejects anything that is
+/// not RFC3339 with EXACTLY six fractional digits. jiff's bare `Timestamp`
+/// Display trims trailing zeros (`.457070` -> `.45707`; a whole-second instant
+/// drops the fraction entirely), which is how the original 422 got in: every
+/// renew failed, so the lease looked perpetually expired and leader election
+/// thrashed (`leaseTransitions` climbing, reconciliation starved).
+///
+/// The canonical form is not ours to invent — `k8s_openapi`'s `MicroTime`
+/// already serializes as `%.6f`, and the typed create path below goes through
+/// it. So we round-trip through that one serializer instead of hand-rolling a
+/// second formatter: the JSON-merge patch and the typed write are then
+/// byte-identical BY CONSTRUCTION rather than by a coincidence someone has to
+/// keep re-verifying. One way to render a MicroTime, defined in one place.
+///
+/// Note the freshness test in `try_acquire_or_renew` compares *parsed*
+/// `jiff::Timestamp` values, never serialized strings — so formatting only has
+/// to satisfy the apiserver, never our own equality.
+fn micro_time_value(ts: jiff::Timestamp) -> serde_json::Value {
+    serde_json::to_value(MicroTime(ts)).expect("MicroTime always serializes to an RFC3339 string")
 }
 
 /// Whether this identity holds the lease, as of one acquire-or-renew cycle.
@@ -292,7 +297,7 @@ impl LeaderElection {
                     self.write(
                         leases,
                         rv,
-                        serde_json::json!({ "renewTime": micro_time_string(now) }),
+                        serde_json::json!({ "renewTime": micro_time_value(now) }),
                     )
                     .await
                 } else if is_expired {
@@ -303,8 +308,8 @@ impl LeaderElection {
                             serde_json::json!({
                                 "holderIdentity": self.identity,
                                 "leaseDurationSeconds": LEASE_DURATION_SECONDS,
-                                "acquireTime": micro_time_string(now),
-                                "renewTime": micro_time_string(now),
+                                "acquireTime": micro_time_value(now),
+                                "renewTime": micro_time_value(now),
                                 "leaseTransitions": transitions + 1,
                             }),
                         )
@@ -705,8 +710,8 @@ mod tests {
             "spec": {
                 "holderIdentity": holder,
                 "leaseDurationSeconds": LEASE_DURATION_SECONDS,
-                "acquireTime": micro_time_string(old),
-                "renewTime": micro_time_string(old),
+                "acquireTime": micro_time_value(old),
+                "renewTime": micro_time_value(old),
                 "leaseTransitions": 7,
             }
         })
@@ -824,8 +829,8 @@ mod tests {
                     }
                     let now = jiff::Timestamp::now();
                     let mut fresh = expired_lease("operator-b");
-                    fresh["spec"]["renewTime"] = serde_json::json!(micro_time_string(now));
-                    fresh["spec"]["acquireTime"] = serde_json::json!(micro_time_string(now));
+                    fresh["spec"]["renewTime"] = micro_time_value(now);
+                    fresh["spec"]["acquireTime"] = micro_time_value(now);
                     stolen.put(fresh);
                     std::future::pending::<()>().await;
                 } => "thief returned",
@@ -857,8 +862,13 @@ mod tests {
         assert_eq!(f.holder().as_deref(), Some("operator-b"));
     }
 
+    /// Unwrap the JSON string a Lease patch would carry.
+    fn patched(ts: jiff::Timestamp) -> String {
+        micro_time_value(ts).as_str().expect("a JSON string").to_string()
+    }
+
     #[test]
-    fn micro_time_string_is_always_six_fractional_digits() {
+    fn micro_time_value_is_always_six_fractional_digits() {
         // (nanoseconds within the second, expected fractional part). All inputs
         // are microsecond-multiples (production rounds to micros before calling).
         let cases = [
@@ -871,7 +881,7 @@ mod tests {
         ];
         for (nanos, want_frac) in cases {
             let ts = jiff::Timestamp::new(0, nanos).unwrap();
-            let s = micro_time_string(ts);
+            let s = patched(ts);
             let frac = s.strip_suffix('Z').unwrap().split_once('.').unwrap().1;
             assert_eq!(
                 frac.len(),
@@ -885,5 +895,54 @@ mod tests {
             assert_eq!(frac, want_frac, "input nanos={nanos}");
             assert!(s.ends_with(&format!(".{want_frac}Z")));
         }
+    }
+
+    /// The regression the whole fix exists to prevent: the JSON-merge patch
+    /// (renew/acquire) and the typed `LeaseSpec` write (create) must produce the
+    /// SAME bytes. Previously these were two independent formatters that merely
+    /// happened to agree; now the patch path delegates to the typed serializer,
+    /// so this holds by construction.
+    #[test]
+    fn patch_and_typed_writes_are_byte_identical() {
+        for nanos in [457_070_000, 500_000_000, 0, 45_707_000, 1_000, 999_999_000] {
+            let ts = jiff::Timestamp::new(0, nanos).unwrap();
+
+            let spec = LeaseSpec {
+                acquire_time: Some(MicroTime(ts)),
+                renew_time: Some(MicroTime(ts)),
+                ..Default::default()
+            };
+            let typed = serde_json::to_value(&spec).unwrap();
+
+            assert_eq!(
+                typed["renewTime"],
+                micro_time_value(ts),
+                "patch renewTime must match the typed create write"
+            );
+            assert_eq!(
+                typed["acquireTime"],
+                micro_time_value(ts),
+                "patch acquireTime must match the typed create write"
+            );
+        }
+    }
+
+    /// Freshness is decided on parsed `jiff::Timestamp` values, never on the
+    /// serialized string — so a formatting change can never make a live lease
+    /// look expired.
+    #[test]
+    fn expiry_compares_parsed_instants_not_strings() {
+        let now = jiff::Timestamp::new(1_000, 0).unwrap();
+        let fresh = jiff::Timestamp::new(995, 0).unwrap(); // 5s old, duration 30 -> alive
+        let stale = jiff::Timestamp::new(900, 0).unwrap(); // 100s old -> expired
+
+        assert!(now.duration_since(fresh).as_secs() <= LEASE_DURATION_SECONDS as i64);
+        assert!(now.duration_since(stale).as_secs() > LEASE_DURATION_SECONDS as i64);
+
+        // Same instant, differently-spelled fractions parse equal; string
+        // comparison would have called these different.
+        let a: MicroTime = serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.500000Z")).unwrap();
+        let b: MicroTime = serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.5Z")).unwrap();
+        assert_eq!(a.0, b.0);
     }
 }
