@@ -33,7 +33,7 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 use crate::crd::{
     AutoscalingSpec, IngressSpec, NetworkPolicySpec, PodDisruptionBudgetSpec, ProbeSpec,
-    ResourceRequirements, ServicePort as CrServicePort,
+    ResourceRequirements, ServicePort as CrServicePort, DEFAULT_INGRESS_CLASS,
 };
 
 pub const LABEL_NAME: &str = "app.kubernetes.io/name";
@@ -686,10 +686,24 @@ pub fn build_ingress(
             annotations.insert(k.clone(), v.clone());
         }
     }
-    // hanzoai/ingress (Traefik fork) silently drops spec.tls when the caller
-    // sets spec.ingressClassName instead of the annotation. Emit the
-    // annotation form so TLS stays hooked up.
-    if !spec.ingress_class_name.is_empty() {
+    // Always in the annotation form, never spec.ingressClassName: the field takes
+    // precedence over the annotation and then fails the IngressClass controller
+    // check, so hanzoai/ingress (Traefik fork) serves nothing and drops spec.tls.
+    //
+    // And always present. This used to be emitted only when a CR set
+    // `ingressClassName`, but that field defaults to "", so every App that just
+    // said `ingress: {enabled: true}` got an Ingress with no class at all — which
+    // matches no provider either. That is how hanzo-devnet/{cloud-api,commerce,
+    // console2,iam} and hanzo-testnet/{cloud-api,iam} sat dark for a month,
+    // 404ing with router "-" while their Services had ready endpoints.
+    //
+    // Precedence: the explicit field, else an operator-supplied annotation, else
+    // the default. The one thing that cannot happen is no class.
+    if spec.ingress_class_name.is_empty() {
+        annotations
+            .entry("kubernetes.io/ingress.class".to_string())
+            .or_insert_with(|| DEFAULT_INGRESS_CLASS.to_string());
+    } else {
         annotations.insert(
             "kubernetes.io/ingress.class".to_string(),
             spec.ingress_class_name.clone(),
@@ -1152,6 +1166,94 @@ mod tests {
         );
     }
 
+    // An Ingress with no class matches no provider under
+    // --providers.kubernetesingress.ingressclass=ingress: no router, host 404s,
+    // and nothing anywhere says so. Six live Ingresses (hanzo-devnet/{cloud-api,
+    // commerce,console2,iam}, hanzo-testnet/{cloud-api,iam}) were dark exactly
+    // this way because their App CRs never set `ingressClassName`. The class must
+    // survive every path through build_ingress.
+    #[test]
+    fn every_ingress_carries_a_class() {
+        fn class_of(ing: &Ingress) -> Option<String> {
+            ing.metadata
+                .annotations
+                .as_ref()?
+                .get("kubernetes.io/ingress.class")
+                .cloned()
+        }
+
+        // The regression: a CR that names no class at all.
+        let bare = crate::crd::IngressSpec {
+            enabled: true,
+            hosts: vec!["api.devnet.hanzo.ai".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "cloud-api",
+                "hanzo-devnet",
+                &bare,
+                "cloud-api",
+                8000,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some(DEFAULT_INGRESS_CLASS),
+            "an App that omits ingressClassName must still get a routable class",
+        );
+
+        // An explicit class still wins.
+        let explicit = crate::crd::IngressSpec {
+            ingress_class_name: "gateway".into(),
+            ..bare.clone()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "bot",
+                "hanzo",
+                &explicit,
+                "bot",
+                80,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some("gateway"),
+        );
+
+        // So does an operator-supplied annotation, when the field is empty —
+        // defaulting must not clobber a deliberate override.
+        let annotated = crate::crd::IngressSpec {
+            annotations: Some(BTreeMap::from([(
+                "kubernetes.io/ingress.class".to_string(),
+                "gateway".to_string(),
+            )])),
+            ..bare.clone()
+        };
+        assert_eq!(
+            class_of(&build_ingress(
+                "bot",
+                "hanzo",
+                &annotated,
+                "bot",
+                80,
+                BTreeMap::new()
+            ))
+            .as_deref(),
+            Some("gateway"),
+        );
+
+        // The class is an annotation, never spec.ingressClassName: the field
+        // takes precedence and then fails the IngressClass controller check.
+        for spec in [&bare, &explicit, &annotated] {
+            let out = build_ingress("x", "hanzo", spec, "x", 80, BTreeMap::new());
+            assert_eq!(
+                out.spec.as_ref().unwrap().ingress_class_name,
+                None,
+                "spec.ingressClassName serves nothing; the class belongs in the annotation",
+            );
+        }
+    }
+
     // A DECLARED probe must never get a stricter budget than the one the
     // operator supplies for a CR that declares nothing. Leaving these to the
     // k8s defaults (1s timeout, 3 failures) restarts healthy single-writer
@@ -1470,19 +1572,27 @@ mod tests {
     fn topology_spread_is_soft_hostname_self_selecting_for_multi_replica() {
         let mut sel = BTreeMap::new();
         sel.insert("app.kubernetes.io/name".to_string(), "world".to_string());
-        sel.insert("app.kubernetes.io/instance".to_string(), "world".to_string());
+        sel.insert(
+            "app.kubernetes.io/instance".to_string(),
+            "world".to_string(),
+        );
 
         let tsc = default_topology_spread(Some(2), &sel).expect("replicas>1 must spread");
         assert_eq!(tsc.len(), 1);
         let c = &tsc[0];
         assert_eq!(c.max_skew, 1, "maxSkew 1 = even spread");
-        assert_eq!(c.topology_key, "kubernetes.io/hostname", "spread across nodes");
+        assert_eq!(
+            c.topology_key, "kubernetes.io/hostname",
+            "spread across nodes"
+        );
         assert_eq!(
             c.when_unsatisfiable, "ScheduleAnyway",
             "SOFT — availability never traded for spread"
         );
         assert_eq!(
-            c.label_selector.as_ref().and_then(|s| s.match_labels.clone()),
+            c.label_selector
+                .as_ref()
+                .and_then(|s| s.match_labels.clone()),
             Some(sel),
             "each app spreads only against its OWN pods"
         );
