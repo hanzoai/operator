@@ -18,7 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{DomainConfig, Ingress as IngressCR, IngressKindSpec};
+use crate::crd::{DomainConfig, Ingress as IngressCR, IngressKindSpec, DEFAULT_INGRESS_CLASS};
 
 use super::owner_ref_for;
 
@@ -62,7 +62,7 @@ async fn reconcile_inner(
     owner: OwnerReference,
 ) -> Result<()> {
     let class = if spec.ingress_class_name.is_empty() {
-        "ingress"
+        DEFAULT_INGRESS_CLASS
     } else {
         &spec.ingress_class_name
     };

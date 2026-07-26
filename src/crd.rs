@@ -116,6 +116,15 @@ pub struct ServicePort {
     pub protocol: String,
 }
 
+/// The class every Ingress we emit falls back to when a CR names none.
+///
+/// hanzoai/ingress runs with `--providers.kubernetesingress.ingressclass=ingress`,
+/// so an Ingress carrying no class matches no provider and builds no router. It
+/// is inert, and silently so: the host 404s with router "-" while its Service
+/// keeps ready endpoints, which reads as an app bug rather than a routing gap.
+/// Defaulting here is what keeps "class omitted" from meaning "dark".
+pub const DEFAULT_INGRESS_CLASS: &str = "ingress";
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct IngressSpec {
