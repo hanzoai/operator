@@ -337,7 +337,7 @@ pub(crate) fn build_datastore_workload(
 ///
 /// - `securityContext`/`fsGroup` both absent ⇒ the pod's `securityContext` is
 ///   left untouched (byte-identical StatefulSet for a root/self-chowning engine
-///   like ClickHouse `datastore`).
+///   like Hanzo Datastore `datastore`).
 /// - only the legacy `fsGroup` set ⇒ exactly `securityContext: {fsGroup: N}`, so
 ///   a non-root engine (FerretDB `docdb`, uid:gid 1000, distroless — no
 ///   entrypoint can chown) group-owns its data PVC. Unchanged from the prior
@@ -627,7 +627,7 @@ mod tests {
         assert!(pod.enable_service_links.is_none());
     }
 
-    // A root/self-chowning engine (ClickHouse datastore) leaves fsGroup None →
+    // A root/self-chowning engine (Hanzo Datastore) leaves fsGroup None →
     // no securityContext → byte-identical StatefulSet (no needless restart).
     #[test]
     fn fs_group_none_leaves_pod_untouched() {
