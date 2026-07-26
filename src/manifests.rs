@@ -699,20 +699,30 @@ pub fn build_ingress(
     let path_type = "Prefix".to_string();
     let mut rules = Vec::new();
     for host in &spec.hosts {
-        let mut paths = vec![HTTPIngressPath {
-            path: Some("/".to_string()),
-            path_type: path_type.clone(),
-            backend: IngressBackend {
-                service: Some(IngressServiceBackend {
-                    name: service_name.to_string(),
-                    port: Some(ServiceBackendPort {
-                        number: Some(service_port),
-                        ..Default::default()
+        // The implicit "/" is a DEFAULT, not an addition: it applies only when the
+        // CR declares no pathRules. Emitting it unconditionally and then appending
+        // the explicit rules produced TWO "/" paths, and the implicit one — pinned
+        // to the app's FIRST service port — won. `dns` declares `/ -> dns:8443` yet
+        // its first port is 53, so dns.hanzo.ai routed HTTP at the DNS port and
+        // served a bare 404. Explicit configuration wins over a default.
+        let mut paths = if spec.path_rules.is_empty() {
+            vec![HTTPIngressPath {
+                path: Some("/".to_string()),
+                path_type: path_type.clone(),
+                backend: IngressBackend {
+                    service: Some(IngressServiceBackend {
+                        name: service_name.to_string(),
+                        port: Some(ServiceBackendPort {
+                            number: Some(service_port),
+                            ..Default::default()
+                        }),
                     }),
-                }),
-                ..Default::default()
-            },
-        }];
+                    ..Default::default()
+                },
+            }]
+        } else {
+            Vec::new()
+        };
 
         for pr in &spec.path_rules {
             let pt = match pr.path_type.as_str() {
@@ -1100,6 +1110,46 @@ mod tests {
         let out = build_probe(&p).expect("tcp probe must render");
         assert_eq!(out.tcp_socket.unwrap().port, IntOrString::Int(9092));
         assert!(out.http_get.is_none(), "tcp probe must not emit httpGet");
+    }
+
+    // Explicit pathRules are AUTHORITATIVE: the implicit "/" is a default that
+    // applies only when none are declared. Emitting both gave two "/" paths and
+    // the implicit one won, pinned to the app's FIRST service port — which routed
+    // dns.hanzo.ai's HTTP at port 53 (DNS) and served a bare 404.
+    #[test]
+    fn explicit_path_rules_replace_the_implicit_root_default() {
+        fn ports_of(ing: &Ingress) -> Vec<i32> {
+            let rules = ing.spec.as_ref().unwrap().rules.as_ref().unwrap();
+            let paths = &rules[0].http.as_ref().unwrap().paths;
+            paths
+                .iter()
+                .filter_map(|p| p.backend.service.as_ref()?.port.as_ref()?.number)
+                .collect()
+        }
+
+        let mut ing = crate::crd::IngressSpec {
+            enabled: true,
+            hosts: vec!["dns.hanzo.ai".into()],
+            ..Default::default()
+        };
+
+        // No rules -> exactly the default root, at the given service port.
+        let out = build_ingress("dns", "hanzo", &ing, "dns", 53, BTreeMap::new());
+        assert_eq!(ports_of(&out), vec![53]);
+
+        // With an explicit root, the default must NOT also be emitted.
+        ing.path_rules = vec![crate::crd::PathRule {
+            path: "/".into(),
+            path_type: "Prefix".into(),
+            port: 8443,
+            service_name: "dns".into(),
+        }];
+        let out = build_ingress("dns", "hanzo", &ing, "dns", 53, BTreeMap::new());
+        assert_eq!(
+            ports_of(&out),
+            vec![8443],
+            "declared port wins; the first service port must not also be routed",
+        );
     }
 
     // A DECLARED probe must never get a stricter budget than the one the
