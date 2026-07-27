@@ -20483,6 +20483,62 @@ spec:
         properties:
           spec:
             properties:
+              # Declared so the PUBLISHED OpenAPI model is complete. These eight were in live
+              # use while undeclared, which forced x-kubernetes-preserve-unknown-fields onto
+              # spec — and that flag collapses the published model to ZERO properties, so the
+              # control plane's structured-merge diff died on ".spec.image: field not declared
+              # in schema" and silently stopped reconciling EVERY App CR in the fleet.
+              clusterIssuer:
+                type: string
+              credentialsSecret:
+                type: string
+              domains:
+                items:
+                  properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    domain:
+                      type: string
+                    routes:
+                      items:
+                        properties:
+                          path:
+                            type: string
+                          pathType:
+                            type: string
+                          serviceName:
+                            type: string
+                          servicePort:
+                            type: integer
+                        type: object
+                      type: array
+                    tls:
+                      type: boolean
+                  type: object
+                type: array
+              ingressClassName:
+                type: string
+              serviceAliases:
+                items:
+                  type: string
+                type: array
+              storage:
+                properties:
+                  retentionPolicy:
+                    type: string
+                  size:
+                    type: string
+                  storageClassName:
+                    type: string
+                  volumeName:
+                    type: string
+                type: object
+              tag:
+                type: string
+              type:
+                type: string
               annotations:
                 additionalProperties:
                   type: string
@@ -21739,7 +21795,6 @@ spec:
                   type: object
                 type: array
             type: object
-            x-kubernetes-preserve-unknown-fields: true
           status:
             nullable: true
             properties:
