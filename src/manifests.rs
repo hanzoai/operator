@@ -994,6 +994,45 @@ pub fn build_network_policy(
     }
 }
 
+/// The tag of an image reference, when it has one.
+///
+/// `ghcr.io/hanzoai/cloud:v1.2.3` → `v1.2.3`. Returns None for a digest pin
+/// (`repo@sha256:…`) and for an untagged `repo`, and is not fooled by a registry
+/// port (`localhost:5000/repo`), where the colon precedes the last slash.
+fn image_tag(image: &str) -> Option<&str> {
+    let base = image.split('@').next().unwrap_or(image);
+    let colon = base.rfind(':')?;
+    let tag = &base[colon + 1..];
+    if tag.is_empty() || tag.contains('/') {
+        return None;
+    }
+    Some(tag)
+}
+
+/// Report the image tag a container was rendered from as `HANZO_VERSION`.
+///
+/// A workload that cannot name its own build makes a rollout unverifiable from
+/// outside: a fresh deploy and a pod that never restarted answer identically.
+/// Sourcing it here means it can never drift from `image`, and it costs no
+/// rebuild — the release assigns the final version only after the image is
+/// pushed, so a link-time stamp would race it.
+///
+/// An explicit `HANZO_VERSION` in the spec wins; the operator does not overwrite
+/// what an author set deliberately.
+fn with_version_env(mut env: Vec<EnvVar>, image: &str) -> Vec<EnvVar> {
+    if env.iter().any(|e| e.name == "HANZO_VERSION") {
+        return env;
+    }
+    if let Some(tag) = image_tag(image) {
+        env.push(EnvVar {
+            name: "HANZO_VERSION".to_string(),
+            value: Some(tag.to_string()),
+            ..Default::default()
+        });
+    }
+    env
+}
+
 /// Build a single container with image+ports+env+volumes+probes wired.
 #[allow(clippy::too_many_arguments)]
 pub fn build_container(
@@ -1010,6 +1049,7 @@ pub fn build_container(
     liveness_probe: Option<Probe>,
     readiness_probe: Option<Probe>,
 ) -> Container {
+    let env = with_version_env(env, image);
     Container {
         name: name.to_string(),
         image: Some(image.to_string()),
@@ -1751,5 +1791,47 @@ mod tests {
         assert!(default_topology_spread(Some(1), &sel).is_none());
         assert!(default_topology_spread(Some(0), &sel).is_none());
         assert!(default_topology_spread(None, &sel).is_none());
+    }
+
+    #[test]
+    fn image_tag_reads_the_tag_and_ignores_a_registry_port() {
+        assert_eq!(image_tag("ghcr.io/hanzoai/cloud:v1.801.233"), Some("v1.801.233"));
+        assert_eq!(image_tag("localhost:5000/hanzoai/cloud:v1.2.3"), Some("v1.2.3"));
+        // A registry port with no tag must not be mistaken for one.
+        assert_eq!(image_tag("localhost:5000/hanzoai/cloud"), None);
+        assert_eq!(image_tag("ghcr.io/hanzoai/cloud"), None);
+        assert_eq!(image_tag("ghcr.io/hanzoai/cloud:"), None);
+    }
+
+    #[test]
+    fn image_tag_declines_a_digest_pin() {
+        assert_eq!(
+            image_tag("ghcr.io/hanzoai/cloud@sha256:5f2b8c1d9e4a7b3c6d8e0f1a2b3c4d5e"),
+            None
+        );
+    }
+
+    #[test]
+    fn version_env_is_injected_from_the_image_tag() {
+        let env = with_version_env(vec![], "ghcr.io/hanzoai/cloud:v1.801.233");
+        let v = env.iter().find(|e| e.name == "HANZO_VERSION").expect("injected");
+        assert_eq!(v.value.as_deref(), Some("v1.801.233"));
+    }
+
+    #[test]
+    fn version_env_never_overwrites_an_explicit_one() {
+        let explicit = vec![EnvVar {
+            name: "HANZO_VERSION".to_string(),
+            value: Some("pinned-by-author".to_string()),
+            ..Default::default()
+        }];
+        let env = with_version_env(explicit, "ghcr.io/hanzoai/cloud:v1.801.233");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].value.as_deref(), Some("pinned-by-author"));
+    }
+
+    #[test]
+    fn version_env_absent_when_the_image_carries_no_tag() {
+        assert!(with_version_env(vec![], "ghcr.io/hanzoai/cloud").is_empty());
     }
 }
