@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crd_types::{
     Condition, Container, EnvFromSource, EnvVar, LocalObjectReference, PodSecurityContext,
-    SecretReference, SecurityContext, Time, Volume, VolumeMount,
+    SecretReference, SecurityContext, Time, Toleration, Volume, VolumeMount,
 };
 
 // ============================================================================
@@ -640,6 +640,51 @@ pub struct ServiceSpec {
     /// pre-flight → health-gate → auto-rollback FSM (see `controllers::upgrade`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upgrade_policy: Option<UpgradePolicySpec>,
+
+    // ── Placement ────────────────────────────────────────────────────────────
+    // WHY THESE EXIST. Without them the spec could express what a workload NEEDS
+    // (`resources`) but not WHERE it must go, so an App that required a specific
+    // node had exactly one lever: inflate `resources.requests` until only that
+    // node could fit it. crs/cloud.yaml did precisely that — a 9Gi request whose
+    // stated purpose was "force the scheduler to place cloud [on worker-xl] (the
+    // App CRD cannot express nodeSelector/tolerations)".
+    //
+    // That idiom is not a reservation, it is a RACE, and it lost live on
+    // 2026-07-26: `strategy: Recreate` deletes the pod before its replacement is
+    // scheduled, a 4Gi neighbour took the only 16Gi node during that window, and
+    // the 9Gi writer could then fit NOWHERE — a hard scheduling deadlock that
+    // took billing.hanzo.ai down until the neighbour was moved by hand. A request
+    // reserves nothing while the pod is gone.
+    //
+    // So: resources say what it NEEDS, placement says WHERE it goes, and
+    // `priorityClassName` is what turns the seat into an actual reservation —
+    // a preempting pod evicts a squatter instead of queueing behind it.
+    //
+    // All three are Option/empty-default with `skip_serializing_if`, and each
+    // renders `None` on the PodSpec when unset, so every CR that omits them
+    // reconciles to a byte-identical Deployment (the same additive contract the
+    // securityContext passthrough holds to).
+    /// `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+    /// Prefer this over an inflated `resources.requests` when the intent is
+    /// placement: it says so out loud, and it keeps the request honest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_selector: Option<BTreeMap<String, String>>,
+
+    /// `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+    /// companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+    /// nothing else lands there, then tolerate the taint here. That pair is a
+    /// real reservation; a big memory request is not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tolerations: Vec<Toleration>,
+
+    /// `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+    /// This is the field that makes a seat survive the `Recreate` window: a
+    /// higher-priority pod PREEMPTS a lower-priority squatter rather than going
+    /// Pending behind it. The referenced PriorityClass is cluster-scoped and is
+    /// NOT created here — naming one that does not exist makes the apiserver
+    /// reject the pod, so it fails loudly rather than silently placing wrong.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub priority_class_name: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]

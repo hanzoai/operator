@@ -124,6 +124,8 @@ async fn reconcile_inner(
         "RollingUpdate",
         vec![],
         "",
+        // No placement: an internal controller-managed workload, unpinned.
+        manifests::Placement::default(),
     );
     dep.metadata.owner_references = Some(vec![owner.clone()]);
     let deps: Api<Deployment> = Api::namespaced(client.clone(), namespace);

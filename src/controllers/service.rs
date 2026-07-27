@@ -718,6 +718,18 @@ async fn reconcile_service_inner(
     } else {
         Some(spec.replicas.unwrap_or(1))
     };
+    // Placement, carried verbatim from the CR. Empty for every App that says
+    // nothing, which renders an unchanged PodSpec.
+    let placement = manifests::Placement {
+        node_selector: spec.node_selector.clone(),
+        tolerations: spec
+            .tolerations
+            .iter()
+            .map(crd_types::Toleration::to_k8s)
+            .collect(),
+        priority_class_name: spec.priority_class_name.clone(),
+    };
+
     let mut deploy = manifests::build_deployment(
         name,
         namespace,
@@ -729,6 +741,7 @@ async fn reconcile_service_inner(
         &spec.strategy,
         ips_k8s,
         &spec.service_account_name,
+        placement,
     );
     if let Some(d_spec) = deploy.spec.as_mut() {
         if let Some(annotations) = &spec.annotations {
@@ -1739,6 +1752,7 @@ mod tests {
             "",
             vec![],
             "",
+            manifests::Placement::default(),
         );
         let pod_spec = dep.spec.unwrap().template.spec.unwrap();
         let vols = pod_spec.volumes.expect("volumes must be on pod spec");
@@ -2097,6 +2111,16 @@ mod tests {
             "Recreate",
             vec![],
             "",
+            // Mirror the controller: placement carried verbatim from the spec.
+            manifests::Placement {
+                node_selector: spec.node_selector.clone(),
+                tolerations: spec
+                    .tolerations
+                    .iter()
+                    .map(crd_types::Toleration::to_k8s)
+                    .collect(),
+                priority_class_name: spec.priority_class_name.clone(),
+            },
         );
         if let Some(d_spec) = deploy.spec.as_mut() {
             let mut inits: Vec<_> = spec

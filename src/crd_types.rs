@@ -16,7 +16,8 @@ use k8s_openapi::api::core::v1::{
     PersistentVolumeClaimVolumeSource as K8sPersistentVolumeClaimVolumeSource,
     PodSecurityContext as K8sPodSecurityContext, SeccompProfile as K8sSeccompProfile,
     SecretReference as K8sSecretReference, SecretVolumeSource as K8sSecretVolumeSource,
-    SecurityContext as K8sSecurityContext, Volume as K8sVolume, VolumeMount as K8sVolumeMount,
+    SecurityContext as K8sSecurityContext, Toleration as K8sToleration, Volume as K8sVolume,
+    VolumeMount as K8sVolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition as K8sCondition, Time as K8sTime};
@@ -417,6 +418,48 @@ impl Container {
                 Some(self.image_pull_policy.clone())
             },
             ..Default::default()
+        }
+    }
+}
+
+// ---- Placement ----
+//
+// k8s core/v1 `Toleration` doesn't derive `JsonSchema`, so — exactly as with
+// `EnvVar` / `Volume` / `PodSecurityContext` above — we mirror the wire shape
+// and convert at the boundary. Every field is optional, matching k8s: an empty
+// `Toleration {}` legally tolerates EVERYTHING, so this type cannot be made
+// stricter than k8s without rejecting a valid pod spec.
+
+/// A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+/// `Toleration` — same keys, same optionality — so a CR author transcribes a
+/// toleration from any k8s doc verbatim.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Toleration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// `Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    /// `NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<String>,
+    /// Only meaningful with `effect: NoExecute` — how long the pod stays bound
+    /// after the taint is added. Absent = forever.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toleration_seconds: Option<i64>,
+}
+
+impl Toleration {
+    pub fn to_k8s(&self) -> K8sToleration {
+        K8sToleration {
+            key: self.key.clone(),
+            operator: self.operator.clone(),
+            value: self.value.clone(),
+            effect: self.effect.clone(),
+            toleration_seconds: self.toleration_seconds,
         }
     }
 }

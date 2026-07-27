@@ -560,6 +560,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -681,6 +690,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -945,6 +963,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -6481,6 +6534,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -6602,6 +6664,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -6866,6 +6937,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -7815,6 +7921,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -7936,6 +8051,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -8200,6 +8324,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -9149,6 +9308,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -9270,6 +9438,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -9534,6 +9711,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -12316,6 +12528,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -12437,6 +12658,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -12701,6 +12931,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -13650,6 +13915,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -13771,6 +14045,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -14035,6 +14318,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -15548,6 +15866,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -15669,6 +15996,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -15933,6 +16269,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -16882,6 +17253,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -17003,6 +17383,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -17267,6 +17656,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -18216,6 +18640,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -18337,6 +18770,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -18601,6 +19043,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -20532,6 +21009,15 @@ spec:
                     nullable: true
                     type: boolean
                 type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  `PodSpec.nodeSelector` — the hard "only nodes with these labels" filter.
+                  Prefer this over an inflated `resources.requests` when the intent is
+                  placement: it says so out loud, and it keeps the request honest.
+                nullable: true
+                type: object
               partOf:
                 type: string
               pdb:
@@ -20653,6 +21139,15 @@ spec:
                   - name
                   type: object
                 type: array
+              priorityClassName:
+                description: |-
+                  `PodSpec.priorityClassName` — the name of an existing PriorityClass.
+                  This is the field that makes a seat survive the `Recreate` window: a
+                  higher-priority pod PREEMPTS a lower-priority squatter rather than going
+                  Pending behind it. The referenced PriorityClass is cluster-scoped and is
+                  NOT created here — naming one that does not exist makes the apiserver
+                  reject the pod, so it fails loudly rather than silently placing wrong.
+                type: string
               readinessProbe:
                 nullable: true
                 properties:
@@ -20961,6 +21456,41 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tolerations:
+                description: |-
+                  `PodSpec.tolerations` — lets this workload onto tainted nodes. The
+                  companion to `nodeSelector` for a DEDICATED pool: taint the pool so
+                  nothing else lands there, then tolerate the taint here. That pair is a
+                  real reservation; a big memory request is not.
+                items:
+                  description: |-
+                    A single `PodSpec.tolerations` entry. Wire-identical to k8s core/v1
+                    `Toleration` — same keys, same optionality — so a CR author transcribes a
+                    toleration from any k8s doc verbatim.
+                  properties:
+                    effect:
+                      description: '`NoSchedule` / `PreferNoSchedule` / `NoExecute`. Empty matches all effects.'
+                      nullable: true
+                      type: string
+                    key:
+                      nullable: true
+                      type: string
+                    operator:
+                      description: '`Equal` (default) or `Exists`. `Exists` with no `key` tolerates all taints.'
+                      nullable: true
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        Only meaningful with `effect: NoExecute` — how long the pod stays bound
+                        after the taint is added. Absent = forever.
+                      format: int64
+                      nullable: true
+                      type: integer
+                    value:
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied

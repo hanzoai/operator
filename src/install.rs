@@ -647,6 +647,47 @@ mod tests {
         }
     }
 
+    /// Placement is modeled on the workload Kinds, so a CR can say WHERE it runs
+    /// instead of encoding that intent as an inflated `resources.requests`.
+    #[test]
+    fn crd_schemas_carry_placement_fields() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        for kind in ["Service", "App"] {
+            let crd = crds
+                .iter()
+                .find(|c| c.spec.names.kind == kind)
+                .unwrap_or_else(|| panic!("{kind} CRD"));
+            let schema = serde_json::to_string(&crd.spec.versions[0].schema).unwrap();
+            for field in ["nodeSelector", "tolerations", "priorityClassName"] {
+                assert!(
+                    schema.contains(field),
+                    "{kind}: spec.{field} must be in the schema"
+                );
+            }
+            // The toleration shape survives, so a CR can express a real dedicated
+            // pool rather than only a node label.
+            assert!(
+                schema.contains("tolerationSeconds") && schema.contains("effect"),
+                "{kind}: the nested Toleration shape must be modeled"
+            );
+        }
+    }
+
+    /// Additive-only: the API version is unchanged. Bumping it would orphan the
+    /// live CRs, so this locks the one thing that must never drift here.
+    #[test]
+    fn placement_is_additive_on_the_existing_v1() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        let app = crds.iter().find(|c| c.spec.names.kind == "App").unwrap();
+        assert_eq!(app.spec.versions.len(), 1, "exactly one served version");
+        assert_eq!(
+            app.spec.versions[0].name, "v1",
+            "placement must land on v1 — a version bump orphans every live CR"
+        );
+        assert!(app.spec.versions[0].served);
+        assert!(app.spec.versions[0].storage);
+    }
+
     // ---- operator manifests ----
 
     #[test]

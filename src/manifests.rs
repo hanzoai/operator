@@ -18,8 +18,8 @@ use k8s_openapi::api::core::v1::{
     HTTPGetAction, Lifecycle, LifecycleHandler, LocalObjectReference, PersistentVolumeClaim,
     PodAffinity, PodAffinityTerm, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
     ResourceRequirements as K8sResourceRequirements, Service as CoreService, ServicePort,
-    ServiceSpec as CoreServiceSpec, TCPSocketAction, TopologySpreadConstraint, Volume, VolumeMount,
-    WeightedPodAffinityTerm,
+    ServiceSpec as CoreServiceSpec, TCPSocketAction, Toleration, TopologySpreadConstraint, Volume,
+    VolumeMount, WeightedPodAffinityTerm,
 };
 use k8s_openapi::api::networking::v1::{
     HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressBackend, IngressRule,
@@ -373,6 +373,35 @@ pub fn service_ports(ports: &[CrServicePort]) -> Vec<ServicePort> {
 
 /// Build a Deployment with standard rolling-update settings.
 #[allow(clippy::too_many_arguments)]
+/// WHERE a workload runs, as ONE value.
+///
+/// Grouped rather than splayed into three more positional parameters because
+/// placement is a single concern: a dedicated pool is `nodeSelector` +
+/// `tolerations` + a preempting `priorityClassName` acting TOGETHER, and any one
+/// of them alone is a partial answer. `Placement::default()` means "no opinion",
+/// which renders every field `None` — a byte-identical PodSpec.
+///
+/// This is the abstraction whose absence made `crs/cloud.yaml` express placement
+/// through `resources.requests`. Resources say what a workload NEEDS; this says
+/// where it GOES. Keeping them separate is the whole point.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Placement {
+    pub node_selector: Option<BTreeMap<String, String>>,
+    pub tolerations: Vec<Toleration>,
+    pub priority_class_name: String,
+}
+
+impl Placement {
+    /// True when the caller expressed no placement opinion at all — the state in
+    /// which this feature must be invisible.
+    pub fn is_empty(&self) -> bool {
+        self.node_selector.as_ref().is_none_or(|m| m.is_empty())
+            && self.tolerations.is_empty()
+            && self.priority_class_name.is_empty()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn build_deployment(
     name: &str,
     namespace: &str,
@@ -384,6 +413,7 @@ pub fn build_deployment(
     strategy: &str,
     image_pull_secrets: Vec<LocalObjectReference>,
     service_account_name: &str,
+    placement: Placement,
 ) -> Deployment {
     let s = if strategy == "Recreate" {
         DeploymentStrategy {
@@ -445,6 +475,20 @@ pub fn build_deployment(
                         Some(service_account_name.to_string())
                     },
                     topology_spread_constraints: topology_spread,
+                    // Placement. Each renders `None` when the CR said nothing,
+                    // so an omitting App is byte-identical to one built before
+                    // these fields existed.
+                    node_selector: placement.node_selector.filter(|m| !m.is_empty()),
+                    tolerations: if placement.tolerations.is_empty() {
+                        None
+                    } else {
+                        Some(placement.tolerations)
+                    },
+                    priority_class_name: if placement.priority_class_name.is_empty() {
+                        None
+                    } else {
+                        Some(placement.priority_class_name)
+                    },
                     termination_grace_period_seconds: Some(30),
                     ..Default::default()
                 }),
@@ -1085,6 +1129,109 @@ pub fn build_pvc_template(name: &str, storage_class: &str, size: &str) -> Persis
 mod tests {
     use super::*;
     use crate::crd::{ExecAction as CrExec, TcpSocketAction as CrTcp};
+
+    fn deploy_with(placement: Placement) -> Deployment {
+        build_deployment(
+            "cloud",
+            "hanzo",
+            standard_labels("cloud", "", "", "v1"),
+            selector_labels("cloud"),
+            Some(1),
+            vec![],
+            vec![],
+            "Recreate",
+            vec![],
+            "",
+            placement,
+        )
+    }
+
+    /// THE NO-OP CLAIM. An App that says nothing about placement must render the
+    /// Deployment it rendered before these fields existed — not "almost", not
+    /// "semantically equivalent": the same bytes.
+    ///
+    /// Asserted structurally (the three fields are absent, so they serialize
+    /// away entirely under `skip_serializing_if`) rather than by eyeballing a
+    /// golden file, so it stays true as the rest of the PodSpec evolves.
+    #[test]
+    fn absent_placement_renders_a_byte_identical_deployment() {
+        let before = serde_json::to_value(deploy_with(Placement::default())).unwrap();
+
+        // The three keys must not appear ANYWHERE in the rendered object — an
+        // explicit `null` would still be a wire change on a server-side apply.
+        let s = serde_json::to_string(&before).unwrap();
+        for key in ["nodeSelector", "tolerations", "priorityClassName"] {
+            assert!(
+                !s.contains(key),
+                "an App with no placement must not render `{key}` at all — found it in {s}"
+            );
+        }
+
+        let pod = before["spec"]["template"]["spec"].clone();
+        assert!(pod.get("nodeSelector").is_none());
+        assert!(pod.get("tolerations").is_none());
+        assert!(pod.get("priorityClassName").is_none());
+
+        // And the whole object is identical to the same build repeated, i.e. the
+        // new parameter introduced no nondeterminism.
+        assert_eq!(
+            before,
+            serde_json::to_value(deploy_with(Placement::default())).unwrap()
+        );
+    }
+
+    /// An all-empty `Placement` built from an omitting CR is `is_empty`, and a
+    /// `nodeSelector: {}` (present but empty) is treated as no opinion too — it
+    /// must not render an empty map onto the PodSpec.
+    #[test]
+    fn empty_node_selector_map_is_still_no_placement() {
+        assert!(Placement::default().is_empty());
+        let p = Placement {
+            node_selector: Some(BTreeMap::new()),
+            ..Default::default()
+        };
+        assert!(p.is_empty(), "an empty map is no opinion");
+        let d = deploy_with(p);
+        let pod = d.spec.unwrap().template.spec.unwrap();
+        assert!(
+            pod.node_selector.is_none(),
+            "an empty nodeSelector map must render as absent, not `{{}}`"
+        );
+    }
+
+    /// The whole point: when a CR DOES state placement, all three reach the
+    /// PodSpec verbatim — this is what makes the writer's seat a reservation
+    /// instead of a race.
+    #[test]
+    fn stated_placement_reaches_the_pod_spec() {
+        let mut ns = BTreeMap::new();
+        ns.insert("hanzo.ai/pool".to_string(), "writer".to_string());
+        let d = deploy_with(Placement {
+            node_selector: Some(ns),
+            tolerations: vec![Toleration {
+                key: Some("dedicated".to_string()),
+                operator: Some("Equal".to_string()),
+                value: Some("writer".to_string()),
+                effect: Some("NoSchedule".to_string()),
+                ..Default::default()
+            }],
+            priority_class_name: "hanzo-writer".to_string(),
+        });
+        let pod = d.spec.unwrap().template.spec.unwrap();
+        assert_eq!(
+            pod.node_selector.unwrap().get("hanzo.ai/pool").unwrap(),
+            "writer"
+        );
+        let tol = pod.tolerations.expect("tolerations must reach the PodSpec");
+        assert_eq!(tol.len(), 1);
+        assert_eq!(tol[0].key.as_deref(), Some("dedicated"));
+        assert_eq!(tol[0].effect.as_deref(), Some("NoSchedule"));
+        assert_eq!(
+            pod.priority_class_name.as_deref(),
+            Some("hanzo-writer"),
+            "priorityClassName is what preempts a squatter"
+        );
+    }
 
     fn probe(port: i32) -> ProbeSpec {
         ProbeSpec {
