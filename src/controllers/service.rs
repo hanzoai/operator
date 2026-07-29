@@ -2660,6 +2660,19 @@ mod age_optional_tests {
         p
     }
 
+    /// Read the rendered document the way `replicate` does — parse it — and hand
+    /// back the one s3 replica every config has.
+    ///
+    /// Parsing is the whole point. A misindented stanza does not yield a subtly
+    /// different structure, it yields NO structure: the parser stops at "mapping
+    /// values are not allowed in this context", which is verbatim what the
+    /// `replicate-restore` init container died on when it took hanzo.chat to 503.
+    fn replica(cfg: &str) -> serde_yaml::Value {
+        let doc: serde_yaml::Value = serde_yaml::from_str(cfg)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{cfg}"));
+        doc["dbs"][0]["replicas"][0].clone()
+    }
+
     /// A plaintext bucket must produce a config with NO age stanza. Emitting one
     /// anyway is what left `replicate` unable to write ("invalid LTX file") or
     /// restore ("age decrypt: unexpected intro: LTX1") — backups that looked
@@ -2719,6 +2732,78 @@ mod age_optional_tests {
                 "AGE_IDENTITY",
                 "AGE_RECIPIENT"
             ]
+        );
+    }
+
+    /// The columns above are the letter of the contract; this is its meaning.
+    /// `age` is a KEY OF THE REPLICA and its identities/recipients are its
+    /// children — resolved through the parsed structure, so no arrangement of
+    /// whitespace that fails to nest them can pass.
+    #[test]
+    fn the_config_parses_and_the_age_keys_resolve_under_the_replica() {
+        let cfg = render_replicate_yml(&spec("my-age"));
+        let doc: serde_yaml::Value = serde_yaml::from_str(&cfg)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{cfg}"));
+        assert_eq!(doc["dbs"][0]["path"].as_str(), Some("/data/app.db"));
+
+        let r = &doc["dbs"][0]["replicas"][0];
+        assert_eq!(
+            r["age"]["identities"][0].as_str(),
+            Some("${AGE_IDENTITY}"),
+            "age.identities does not resolve under the replica:\n{cfg}"
+        );
+        assert_eq!(
+            r["age"]["recipients"][0].as_str(),
+            Some("${AGE_RECIPIENT}"),
+            "age.recipients does not resolve under the replica:\n{cfg}"
+        );
+        // Nested UNDER age, never beside it: a stanza that leaked its children up
+        // to the replica parses fine and is still the broken config.
+        assert!(
+            r["identities"].is_null() && r["recipients"].is_null(),
+            "identities/recipients escaped the age block:\n{cfg}"
+        );
+        // And they sit with the credentials they belong to, in one mapping.
+        assert_eq!(r["access-key-id"].as_str(), Some("${S3_ACCESS_KEY_ID}"));
+    }
+
+    /// The per-tenant fan-out renders a different target block, so it is a
+    /// different document and gets its own parse. The glob must survive as a
+    /// STRING — unquoted, `**/*.db` is an alias reference and the parse dies.
+    #[test]
+    fn dir_mode_parses_and_keeps_the_glob_a_string() {
+        let mut p = spec("my-age");
+        p.dir_mode = true;
+        p.pattern = "**/*.db".into();
+        let cfg = render_replicate_yml(&p);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&cfg)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{cfg}"));
+
+        assert_eq!(doc["dbs"][0]["dir"].as_str(), Some("/data"));
+        assert_eq!(doc["dbs"][0]["pattern"].as_str(), Some("**/*.db"));
+        assert_eq!(doc["dbs"][0]["watch"].as_bool(), Some(true));
+        assert_eq!(
+            doc["dbs"][0]["replicas"][0]["age"]["identities"][0].as_str(),
+            Some("${AGE_IDENTITY}"),
+            "age.identities does not resolve in dir mode:\n{cfg}"
+        );
+    }
+
+    /// The plaintext config is a document too, and dropping the age block must
+    /// leave a whole one behind — not a truncated replica.
+    #[test]
+    fn the_plaintext_config_parses_with_no_age_key() {
+        let cfg = render_replicate_yml(&spec(""));
+        let r = replica(&cfg);
+        assert_eq!(r["type"].as_str(), Some("s3"));
+        assert_eq!(r["bucket"].as_str(), Some("b"));
+        assert_eq!(
+            r["secret-access-key"].as_str(),
+            Some("${S3_SECRET_ACCESS_KEY}")
+        );
+        assert!(
+            r["age"].is_null(),
+            "plaintext replica got an age key:\n{cfg}"
         );
     }
 
