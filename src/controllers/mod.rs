@@ -5,15 +5,10 @@ use std::sync::Arc;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::Resource;
 
-pub mod base;
 pub mod datastore;
-pub mod dns;
-pub mod gateway;
 // Image automation: registry→git tag bumps (delivery is the cloud deploy engine).
 pub mod ingress;
 pub mod kms_zap;
-pub mod mpc;
-pub mod network;
 pub mod service;
 
 // Managed-upgrade FSM — the deploy discipline (pre-flight → health-gate →
@@ -68,19 +63,9 @@ where
 }
 
 // v0.3.2: new Kinds
-pub mod function;
-pub mod observability;
-pub mod queue;
-pub mod spa;
 
 // v0.3.3: facade Kinds (orphaned in v0.3.0 — controllers added here).
-pub mod docdb;
-pub mod explorer;
-pub mod iam;
-pub mod indexer;
-pub mod kms;
 pub mod kv;
-pub mod s3;
 pub mod sql;
 
 // v0.3.4: union with go/ — the Node blockchain Kind.

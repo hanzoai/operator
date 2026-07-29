@@ -322,68 +322,17 @@ async fn run_all_controllers(
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::gateway::run_gateway_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::mpc::run_mpc_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::network::run_network_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         controllers::ingress::run_ingress_controller(
             client.clone(),
             namespace.clone(),
             api_group.clone()
         ),
-        controllers::dns::run_dns_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::base::run_base_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::queue::run_queue_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::observability::run_observability_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::function::run_function_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::spa::run_spa_controller(client.clone(), namespace.clone(), api_group.clone()),
         // Image automation (retires notify-universe dispatch): watches registries
         // and writes image-tag bumps back to git. The git→cluster delivery half is
         // now the cloud deploy engine (/v1/deploy), not a second reconciler here.
         // v0.3.3: facade Kinds.
         controllers::sql::run_sql_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::kv::run_kv_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::docdb::run_docdb_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::s3::run_s3_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::iam::run_iam_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::kms::run_kms_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::indexer::run_indexer_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::explorer::run_explorer_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // v0.3.4: union with go/ — blockchain Kinds.
         // ManagedDatabase facade — per-tenant isolated Datastore workload.
         // App Kind — the role-dispatch super-facade. The App-collapse: the fleet's
