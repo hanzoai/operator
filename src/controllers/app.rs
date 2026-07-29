@@ -16,7 +16,6 @@
 //! |-------------------------------------------------------------------|--------------------------------------|
 //! | absent / `generic` / `service` / `llm` / `iam` / `kms` / `explorer` / `function` / `indexer` / `observability` / `queue` / `spa` / `static` | `service::reconcile_service_inner_pub` |
 //! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`→minio, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
-//! | `dns`                                                             | `dns::reconcile_dns_inner_pub`       |
 //! | `ingress`                                                         | `ingress::reconcile_ingress_inner_pub` |
 //! | `gateway` / `base` / `mpc` / `network` / `node` | delegated (dedicated controller; App stands aside) |
 //! | `chain` / `validator`                                             | NoOp stub (Network owns them)        |
@@ -52,7 +51,7 @@ use crate::core::{OperatorError, Result};
 use crate::crd::{App, AppSpec, DBSpec, DNSSpec, Engine, IngressKindSpec, Phase, ServiceStatus};
 use crate::crd_types::{build_condition, carry_transition_time, status_changed, Condition};
 
-use super::{datastore, dns, ingress, owner_ref_for, service};
+use super::{datastore, ingress, owner_ref_for, service};
 
 #[derive(Clone)]
 pub struct Ctx {
@@ -74,8 +73,6 @@ pub enum Dispatch {
     /// Datastore profile — `reconcile_datastore_inner_pub(&db, engine)`, engine
     /// forced by the role so a `role: sql` App can never materialize as Valkey.
     Datastore(Engine),
-    /// DNS controller — `reconcile_dns_inner_pub`.
-    Dns,
     /// Ingress controller — `reconcile_ingress_inner_pub`.
     Ingress,
     /// A role owned by a dedicated controller that exposes no owner-taking inner
@@ -108,7 +105,6 @@ pub fn classify(role: Option<&str>) -> Dispatch {
         "s3" => Dispatch::Datastore(Engine::Minio),
         "datastore" => Dispatch::Datastore(Engine::Datastore),
         // Infra controllers with an owner-taking inner entrypoint.
-        "dns" => Dispatch::Dns,
         "ingress" => Dispatch::Ingress,
         // Delegated — dedicated controller, no owner-taking inner_pub, no live CR.
         "gateway" => Dispatch::Delegated("Gateway"),
@@ -248,20 +244,6 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
             .await?;
             let status =
                 workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::StatefulSet).await;
-            write_status(&ctx.client, &name, &namespace, &cr, status).await;
-        }
-        Dispatch::Dns => {
-            let spec: DNSSpec = match project(&cr.spec) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Ok(
-                        degrade(&ctx, &name, &namespace, &cr, &format!("role dns: {e}")).await,
-                    )
-                }
-            };
-            dns::reconcile_dns_inner_pub(&ctx.client, &name, &namespace, &spec, owner).await?;
-            let status =
-                workload_status(&ctx, &name, &namespace, &cr, WorkloadKind::Deployment).await;
             write_status(&ctx.client, &name, &namespace, &cr, status).await;
         }
         Dispatch::Ingress => {
@@ -578,7 +560,6 @@ mod tests {
 
     #[test]
     fn infra_roles_route_to_their_controllers() {
-        assert_eq!(classify(Some("dns")), Dispatch::Dns);
         assert_eq!(classify(Some("ingress")), Dispatch::Ingress);
     }
 
@@ -630,7 +611,6 @@ mod tests {
             "base",
             "gateway",
             "ingress",
-            "dns",
             "static",
             "spa",
             "mpc",
@@ -871,7 +851,6 @@ spec:
         // dns/ingress App CRs carry NO image — they MUST still deserialize (the
         // reason ServiceSpec.image gained #[serde(default)]).
         let dns = app_from_yaml(DNS_CR);
-        assert_eq!(classify(dns.spec.role.as_deref()), Dispatch::Dns);
         assert_eq!(
             dns.spec.service.image.repository, "",
             "no image ⇒ default empty"
