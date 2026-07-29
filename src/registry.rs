@@ -236,15 +236,24 @@ mod tests {
     fn parse_ref_splits_host_and_path() {
         assert_eq!(
             parse_ref("registry.hanzo.ai/hanzo/cloud"),
-            ImageRef { host: "registry.hanzo.ai".into(), path: "hanzo/cloud".into() }
+            ImageRef {
+                host: "registry.hanzo.ai".into(),
+                path: "hanzo/cloud".into()
+            }
         );
         assert_eq!(
             parse_ref("https://ghcr.io/hanzoai/studio"),
-            ImageRef { host: "ghcr.io".into(), path: "hanzoai/studio".into() }
+            ImageRef {
+                host: "ghcr.io".into(),
+                path: "hanzoai/studio".into()
+            }
         );
         assert_eq!(
             parse_ref("registry.hanzo.ai:5000/hanzo/cms"),
-            ImageRef { host: "registry.hanzo.ai:5000".into(), path: "hanzo/cms".into() }
+            ImageRef {
+                host: "registry.hanzo.ai:5000".into(),
+                path: "hanzo/cms".into()
+            }
         );
     }
 
@@ -252,15 +261,24 @@ mod tests {
     fn parse_ref_hostless_falls_back_to_fleet_registry() {
         assert_eq!(
             parse_ref("hanzo/cloud"),
-            ImageRef { host: "registry.hanzo.ai".into(), path: "hanzo/cloud".into() }
+            ImageRef {
+                host: "registry.hanzo.ai".into(),
+                path: "hanzo/cloud".into()
+            }
         );
     }
 
     #[test]
     fn challenge_param_extracts_quoted_values() {
         let c = r#"realm="https://auth.hanzo.ai/token",service="registry.hanzo.ai",scope="repository:hanzo/cloud:pull""#;
-        assert_eq!(challenge_param(c, "realm").as_deref(), Some("https://auth.hanzo.ai/token"));
-        assert_eq!(challenge_param(c, "service").as_deref(), Some("registry.hanzo.ai"));
+        assert_eq!(
+            challenge_param(c, "realm").as_deref(),
+            Some("https://auth.hanzo.ai/token")
+        );
+        assert_eq!(
+            challenge_param(c, "service").as_deref(),
+            Some("registry.hanzo.ai")
+        );
         assert_eq!(
             challenge_param(c, "scope").as_deref(),
             Some("repository:hanzo/cloud:pull")
@@ -271,11 +289,18 @@ mod tests {
     #[test]
     fn basic_for_host_reads_auth_or_userpass() {
         let cfg = r#"{"auths":{"registry.hanzo.ai":{"auth":"YWJjOnh5eg=="}}}"#;
-        assert_eq!(basic_for_host(cfg, "registry.hanzo.ai").as_deref(), Some("YWJjOnh5eg=="));
+        assert_eq!(
+            basic_for_host(cfg, "registry.hanzo.ai").as_deref(),
+            Some("YWJjOnh5eg==")
+        );
         assert_eq!(basic_for_host(cfg, "ghcr.io"), None);
 
-        let cfg2 = r#"{"auths":{"https://registry.hanzo.ai/":{"username":"abc","password":"xyz"}}}"#;
+        let cfg2 =
+            r#"{"auths":{"https://registry.hanzo.ai/":{"username":"abc","password":"xyz"}}}"#;
         // base64("abc:xyz") == "YWJjOnh5eg=="
-        assert_eq!(basic_for_host(cfg2, "registry.hanzo.ai").as_deref(), Some("YWJjOnh5eg=="));
+        assert_eq!(
+            basic_for_host(cfg2, "registry.hanzo.ai").as_deref(),
+            Some("YWJjOnh5eg==")
+        );
     }
 }

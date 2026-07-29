@@ -15,10 +15,10 @@
 //! | role                                                              | profile                              |
 //! |-------------------------------------------------------------------|--------------------------------------|
 //! | absent / `generic` / `service` / `llm` / `iam` / `kms` / `explorer` / `function` / `indexer` / `observability` / `queue` / `spa` / `static` | `service::reconcile_service_inner_pub` |
-//! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`→minio, `datastore`, `managedDatabase` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
+//! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`→minio, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
 //! | `dns`                                                             | `dns::reconcile_dns_inner_pub`       |
 //! | `ingress`                                                         | `ingress::reconcile_ingress_inner_pub` |
-//! | `gateway` / `base` / `mpc` / `network` / `luxRuntime` / `nodeFleet` / `agentDeployment` | delegated (dedicated controller; App stands aside) |
+//! | `gateway` / `base` / `mpc` / `network` / `node` | delegated (dedicated controller; App stands aside) |
 //! | `chain` / `validator`                                             | NoOp stub (Network owns them)        |
 //! | anything else                                                     | fail-safe: report + requeue, never materialize/delete |
 //!
@@ -93,7 +93,7 @@ pub enum Dispatch {
 /// Classify a `spec.role` string into its reconcile [`Dispatch`]. Absent/empty ⇒
 /// the Service profile (the hot path: 62 of the 67 live App CRs carry no role).
 /// Matches the merged universe App CRD's `role` enum VALUES exactly (including the
-/// camelCase `managedDatabase`/`luxRuntime`/`nodeFleet`/`agentDeployment`) and the
+/// camelCase `managedDatabase`) and the
 /// node `classify()` taxonomy (its `Generic` set + `spa`/`static`). Pure over
 /// `Option<&str>` so the whole dispatch table is a table-driven unit test.
 pub fn classify(role: Option<&str>) -> Dispatch {
@@ -106,7 +106,7 @@ pub fn classify(role: Option<&str>) -> Dispatch {
         "kv" => Dispatch::Datastore(Engine::Valkey),
         "docdb" => Dispatch::Datastore(Engine::Docdb),
         "s3" => Dispatch::Datastore(Engine::Minio),
-        "datastore" | "managedDatabase" => Dispatch::Datastore(Engine::Datastore),
+        "datastore" => Dispatch::Datastore(Engine::Datastore),
         // Infra controllers with an owner-taking inner entrypoint.
         "dns" => Dispatch::Dns,
         "ingress" => Dispatch::Ingress,
@@ -115,9 +115,7 @@ pub fn classify(role: Option<&str>) -> Dispatch {
         "base" => Dispatch::Delegated("Base"),
         "mpc" => Dispatch::Delegated("MPC"),
         "network" => Dispatch::Delegated("Network"),
-        "luxRuntime" => Dispatch::Delegated("LuxRuntime"),
-        "nodeFleet" => Dispatch::Delegated("NodeFleet"),
-        "agentDeployment" => Dispatch::Delegated("AgentDeployment"),
+        "node" => Dispatch::Delegated("Node"),
         // Network sub-resource stubs.
         "chain" => Dispatch::NoOp("Chain"),
         "validator" => Dispatch::NoOp("Validator"),
@@ -576,10 +574,6 @@ mod tests {
             classify(Some("datastore")),
             Dispatch::Datastore(Engine::Datastore)
         );
-        assert_eq!(
-            classify(Some("managedDatabase")),
-            Dispatch::Datastore(Engine::Datastore)
-        );
     }
 
     #[test]
@@ -595,9 +589,7 @@ mod tests {
             ("base", "Base"),
             ("mpc", "MPC"),
             ("network", "Network"),
-            ("luxRuntime", "LuxRuntime"),
-            ("nodeFleet", "NodeFleet"),
-            ("agentDeployment", "AgentDeployment"),
+            ("node", "Node"),
         ] {
             assert_eq!(classify(Some(r)), Dispatch::Delegated(k), "role {r}");
         }
@@ -635,7 +627,6 @@ mod tests {
             "kv",
             "s3",
             "sql",
-            "managedDatabase",
             "base",
             "gateway",
             "ingress",
@@ -645,10 +636,7 @@ mod tests {
             "mpc",
             "chain",
             "network",
-            "nodeFleet",
-            "luxRuntime",
             "validator",
-            "agentDeployment",
         ] {
             assert_ne!(
                 classify(Some(r)),

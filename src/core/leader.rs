@@ -439,11 +439,11 @@ mod fake {
         }
 
         pub fn holder(&self) -> Option<String> {
-            self.lease.lock().unwrap().as_ref().and_then(|l| {
-                l["spec"]["holderIdentity"]
-                    .as_str()
-                    .map(|s| s.to_string())
-            })
+            self.lease
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|l| l["spec"]["holderIdentity"].as_str().map(|s| s.to_string()))
         }
     }
 
@@ -479,7 +479,10 @@ mod fake {
         )
     }
 
-    async fn read(State(f): State<Arc<Fake>>, Path(_): Path<(String, String)>) -> impl IntoResponse {
+    async fn read(
+        State(f): State<Arc<Fake>>,
+        Path(_): Path<(String, String)>,
+    ) -> impl IntoResponse {
         let snapshot = f.lease.lock().unwrap().clone();
         // Release both contenders only once each has taken its snapshot, so the
         // versions they pin are equal — the exact interleaving a real partition
@@ -520,7 +523,9 @@ mod fake {
         // The precondition. A patch pinning a version other than the live one
         // lost a race and is rejected, exactly as the apiserver does.
         if let Some(pinned) = patch["metadata"]["resourceVersion"].as_str() {
-            let live = current["metadata"]["resourceVersion"].as_str().unwrap_or("");
+            let live = current["metadata"]["resourceVersion"]
+                .as_str()
+                .unwrap_or("");
             if pinned != live {
                 return conflict("the object has been modified").into_response();
             }
@@ -688,8 +693,16 @@ mod tests {
                 "at +{elapsed}s both the holder trusts its lease and a contender takes it"
             );
         }
-        assert!(within_lease(t0, t0 + jiff::SignedDuration::from_secs(29), duration));
-        assert!(!within_lease(t0, t0 + jiff::SignedDuration::from_secs(30), duration));
+        assert!(within_lease(
+            t0,
+            t0 + jiff::SignedDuration::from_secs(29),
+            duration
+        ));
+        assert!(!within_lease(
+            t0,
+            t0 + jiff::SignedDuration::from_secs(30),
+            duration
+        ));
     }
 
     // ========================================================================
@@ -902,7 +915,10 @@ mod tests {
 
     /// Unwrap the JSON string a Lease patch would carry.
     fn patched(ts: jiff::Timestamp) -> String {
-        micro_time_value(ts).as_str().expect("a JSON string").to_string()
+        micro_time_value(ts)
+            .as_str()
+            .expect("a JSON string")
+            .to_string()
     }
 
     #[test]
@@ -979,8 +995,10 @@ mod tests {
 
         // Same instant, differently-spelled fractions parse equal; string
         // comparison would have called these different.
-        let a: MicroTime = serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.500000Z")).unwrap();
-        let b: MicroTime = serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.5Z")).unwrap();
+        let a: MicroTime =
+            serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.500000Z")).unwrap();
+        let b: MicroTime =
+            serde_json::from_value(serde_json::json!("2026-07-26T00:56:07.5Z")).unwrap();
         assert_eq!(a.0, b.0);
     }
 }

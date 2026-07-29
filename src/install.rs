@@ -35,9 +35,9 @@ use crate::api_group::DEFAULT_API_GROUP;
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway,
-    ImageUpdate, Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability,
-    Queue, Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
+    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, ImageUpdate,
+    Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue,
+    Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
 };
 
 /// Default operator image (pinned semver; the caller overrides at install time).

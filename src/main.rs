@@ -24,10 +24,7 @@ mod zapclient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::{
-    routing::get,
-    Router,
-};
+use axum::{routing::get, Router};
 use clap::Parser;
 use kube::Client;
 use std::net::SocketAddr;
@@ -363,19 +360,9 @@ async fn run_all_controllers(
             api_group.clone()
         ),
         controllers::spa::run_spa_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::static_site::run_static_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // Image automation (retires notify-universe dispatch): watches registries
         // and writes image-tag bumps back to git. The git→cluster delivery half is
         // now the cloud deploy engine (/v1/deploy), not a second reconciler here.
-        controllers::imageupdate::run_imageupdate_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // v0.3.3: facade Kinds.
         controllers::sql::run_sql_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::kv::run_kv_controller(client.clone(), namespace.clone(), api_group.clone()),
@@ -387,7 +374,6 @@ async fn run_all_controllers(
         controllers::s3::run_s3_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::iam::run_iam_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::kms::run_kms_controller(client.clone(), namespace.clone(), api_group.clone()),
-        controllers::llm::run_llm_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::indexer::run_indexer_controller(
             client.clone(),
             namespace.clone(),
@@ -399,22 +385,7 @@ async fn run_all_controllers(
             api_group.clone()
         ),
         // v0.3.4: union with go/ — blockchain Kinds.
-        controllers::luxruntime::run_luxruntime_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
-        controllers::nodefleet::run_nodefleet_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // ManagedDatabase facade — per-tenant isolated Datastore workload.
-        controllers::managed_database::run_managed_database_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // App Kind — the role-dispatch super-facade. The App-collapse: the fleet's
         // workload CRs are `kind: App`; this controller dispatches on `spec.role`
         // to the existing per-profile reconciles (service/datastore/dns/ingress)
@@ -427,11 +398,6 @@ async fn run_all_controllers(
         // HTTP. Provisioning is opt-in + fail-safe: without AGENT_DEPLOY_CLOUD_URL
         // / AGENT_DEPLOY_VISOR_URL / token it runs READ-ONLY, and even configured
         // it never launches a machine unless AGENT_DEPLOY_MODE=on.
-        controllers::agent_deployment::run_agent_deployment_controller(
-            client.clone(),
-            namespace.clone(),
-            api_group.clone()
-        ),
         // Additive ZAP-native KMS secret projector — opt-in (off unless
         // KMS_ZAP_CONTROLLER=true). Watches the fixed kms.hanzo.ai KMSSecret
         // family; ignores non-zap-native CRs so the REST projector is untouched.

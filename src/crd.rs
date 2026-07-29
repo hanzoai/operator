@@ -2536,11 +2536,9 @@ pub struct AppSpec {
 // existing apply/status machinery — not a vendored platform.
 // ─────────────────────────────────────────────────────────────────────────────
 
-
 fn default_git_ref() -> String {
     "main".to_string()
 }
-
 
 /// ImageUpdate — registry→git image automation. Replaces the `notify-universe`
 /// GitHub `repository_dispatch` + universe's `image-update.yml`: the operator

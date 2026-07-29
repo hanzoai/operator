@@ -1898,8 +1898,14 @@ mod tests {
 
     #[test]
     fn image_tag_reads_the_tag_and_ignores_a_registry_port() {
-        assert_eq!(image_tag("ghcr.io/hanzoai/cloud:v1.801.233"), Some("v1.801.233"));
-        assert_eq!(image_tag("localhost:5000/hanzoai/cloud:v1.2.3"), Some("v1.2.3"));
+        assert_eq!(
+            image_tag("ghcr.io/hanzoai/cloud:v1.801.233"),
+            Some("v1.801.233")
+        );
+        assert_eq!(
+            image_tag("localhost:5000/hanzoai/cloud:v1.2.3"),
+            Some("v1.2.3")
+        );
         // A registry port with no tag must not be mistaken for one.
         assert_eq!(image_tag("localhost:5000/hanzoai/cloud"), None);
         assert_eq!(image_tag("ghcr.io/hanzoai/cloud"), None);
@@ -1917,7 +1923,10 @@ mod tests {
     #[test]
     fn version_env_is_injected_from_the_image_tag() {
         let env = with_version_env(vec![], "ghcr.io/hanzoai/cloud:v1.801.233");
-        let v = env.iter().find(|e| e.name == "HANZO_VERSION").expect("injected");
+        let v = env
+            .iter()
+            .find(|e| e.name == "HANZO_VERSION")
+            .expect("injected");
         assert_eq!(v.value.as_deref(), Some("v1.801.233"));
     }
 

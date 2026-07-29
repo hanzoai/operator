@@ -45,14 +45,13 @@ pub async fn read_secret_key(
         .get(name)
         .await
         .map_err(|e| OperatorError::Reconcile(format!("get secret {namespace}/{name}: {e}")))?;
-    let bytes = secret
-        .data
-        .and_then(|mut d| d.remove(key))
-        .ok_or_else(|| {
-            OperatorError::Reconcile(format!("secret {namespace}/{name} has no key '{key}'"))
-        })?;
+    let bytes = secret.data.and_then(|mut d| d.remove(key)).ok_or_else(|| {
+        OperatorError::Reconcile(format!("secret {namespace}/{name} has no key '{key}'"))
+    })?;
     String::from_utf8(bytes.0).map_err(|e| {
-        OperatorError::Reconcile(format!("secret {namespace}/{name} key '{key}' not utf-8: {e}"))
+        OperatorError::Reconcile(format!(
+            "secret {namespace}/{name} key '{key}' not utf-8: {e}"
+        ))
     })
 }
 
@@ -178,12 +177,20 @@ impl Checkout {
             .arg("rev-parse")
             .arg("--short")
             .arg("HEAD");
-        Ok(run_capture(cmd, &self.token, "git rev-parse").await?.trim().to_string())
+        Ok(run_capture(cmd, &self.token, "git rev-parse")
+            .await?
+            .trim()
+            .to_string())
     }
 
     /// Stage `rel_paths`, commit as the operator identity, and push to
     /// `origin HEAD:<git_ref>`. Identity flags are argv-safe (no secret).
-    pub async fn commit_and_push(&self, rel_paths: &[&str], message: &str, git_ref: &str) -> Result<()> {
+    pub async fn commit_and_push(
+        &self,
+        rel_paths: &[&str],
+        message: &str,
+        git_ref: &str,
+    ) -> Result<()> {
         let mut add = self.git();
         add.current_dir(&self.repo).arg("add");
         for p in rel_paths {
@@ -251,10 +258,11 @@ fn set_exec(_p: &Path) -> Result<()> {
 /// Run a git command, discarding stdout, mapping a non-zero exit to a scrubbed
 /// error. `what` names the step for the error message.
 async fn run(mut cmd: Command, token: &str, what: &str) -> Result<()> {
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| OperatorError::Reconcile(format!("{what}: spawn failed: {e} (is `git` on PATH in the operator image?)")))?;
+    let out = cmd.output().await.map_err(|e| {
+        OperatorError::Reconcile(format!(
+            "{what}: spawn failed: {e} (is `git` on PATH in the operator image?)"
+        ))
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(OperatorError::Reconcile(format!(
@@ -287,10 +295,22 @@ mod tests {
 
     #[test]
     fn host_path_normalizes_schemes_and_slash() {
-        assert_eq!(host_path("https://github.com/hanzoai/universe"), "github.com/hanzoai/universe");
-        assert_eq!(host_path("github.com/hanzoai/universe"), "github.com/hanzoai/universe");
-        assert_eq!(host_path("http://github.com/hanzoai/universe/"), "github.com/hanzoai/universe");
-        assert_eq!(host_path("  github.com/hanzoai/universe  "), "github.com/hanzoai/universe");
+        assert_eq!(
+            host_path("https://github.com/hanzoai/universe"),
+            "github.com/hanzoai/universe"
+        );
+        assert_eq!(
+            host_path("github.com/hanzoai/universe"),
+            "github.com/hanzoai/universe"
+        );
+        assert_eq!(
+            host_path("http://github.com/hanzoai/universe/"),
+            "github.com/hanzoai/universe"
+        );
+        assert_eq!(
+            host_path("  github.com/hanzoai/universe  "),
+            "github.com/hanzoai/universe"
+        );
     }
 
     #[test]

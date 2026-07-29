@@ -10,7 +10,6 @@ pub mod datastore;
 pub mod dns;
 pub mod gateway;
 // Image automation: registry→git tag bumps (delivery is the cloud deploy engine).
-pub mod imageupdate;
 pub mod ingress;
 pub mod kms_zap;
 pub mod mpc;
@@ -73,7 +72,6 @@ pub mod function;
 pub mod observability;
 pub mod queue;
 pub mod spa;
-pub mod static_site;
 
 // v0.3.3: facade Kinds (orphaned in v0.3.0 — controllers added here).
 pub mod docdb;
@@ -82,16 +80,12 @@ pub mod iam;
 pub mod indexer;
 pub mod kms;
 pub mod kv;
-pub mod llm;
 pub mod s3;
 pub mod sql;
 
-// v0.3.4: union with go/ — LuxRuntime + NodeFleet blockchain Kinds.
-pub mod luxruntime;
-pub mod nodefleet;
+// v0.3.4: union with go/ — the Node blockchain Kind.
 
 // ManagedDatabase facade — per-tenant isolated Datastore workload.
-pub mod managed_database;
 
 // App Kind — the role-dispatch super-facade (`apps.hanzo.ai`, kind `App`). The
 // App-collapse: the fleet's workload CRs are `kind: App`, one deployable whose
@@ -105,7 +99,6 @@ pub mod app;
 // AgentDeployment — the autonomous-bot lifecycle (cloud Agent + visor-bound
 // @hanzo/bot machine). Reconcile ACTIONS reach cloud /v1/agents + visor
 // /v1/machines over HTTP; provisioning is opt-in + fail-safe (AGENT_DEPLOY_MODE).
-pub mod agent_deployment;
 
 // Tenant controller. Not a CRD Kind — its reconcile source is the set of
 // platform-managed tenant namespaces (`tenant-<org>`, labeled

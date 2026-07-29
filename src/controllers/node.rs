@@ -1,9 +1,17 @@
-//! LuxRuntime reconciler — luxd validator-set deployment. Renders a luxd
+//! Node reconciler — a node this platform runs.
+//!
+//! Named for what it IS, not for whose software it happens to run: Hanzo runs
+//! Lux nodes, so `Node` braided a vendor into a kind name that describes a
+//! node. The archive / state-sync topology the old NodeFleet kind carried is the
+//! SAME concept at higher cardinality and belongs here as fields when something
+//! needs it — a second kind for "more than one of these" is not a second thing.
+//!
+//! Renders luxd validator-set deployment. Renders a luxd
 //! StatefulSet plus a headless Service (pod DNS) and a ClusterIP Service
 //! (JSON-RPC / staking) via the shared `manifests` + `apply` helpers — the
 //! same render path the canonical `Network` controller uses. The rich
 //! seed-restore / plugin-fetch / export-CronJob machinery in the Go impl is
-//! reconcile-internal; the canonical workload a LuxRuntime CR produces is the
+//! reconcile-internal; the canonical workload a Node CR produces is the
 //! validator StatefulSet + its Services.
 
 use std::sync::Arc;
@@ -22,7 +30,7 @@ use tracing::{error, info, warn};
 use crate::apply;
 use crate::core::{OperatorError, Result};
 use crate::crd::{
-    LuxRuntime, LuxRuntimeSpec, LuxRuntimeStatus, Phase, ServicePort as CrServicePort,
+    Node, NodeSpec, NodeStatus, Phase, ServicePort as CrServicePort,
 };
 use crate::crd_types::build_condition;
 use crate::manifests;
@@ -35,13 +43,13 @@ pub struct Ctx {
     pub api_group: String,
 }
 
-pub async fn reconcile(cr: Arc<LuxRuntime>, ctx: Arc<Ctx>) -> Result<Action> {
+pub async fn reconcile(cr: Arc<Node>, ctx: Arc<Ctx>) -> Result<Action> {
     let name = cr.name_any();
     let namespace = cr
         .namespace()
-        .ok_or_else(|| OperatorError::Config("LuxRuntime has no namespace".into()))?;
+        .ok_or_else(|| OperatorError::Config("Node has no namespace".into()))?;
     let api_version = format!("{}/v1", ctx.api_group);
-    let owner = owner_ref_for(cr.as_ref(), &api_version, "LuxRuntime");
+    let owner = owner_ref_for(cr.as_ref(), &api_version, "Node");
     reconcile_inner(&ctx.client, &name, &namespace, &cr.spec, owner).await?;
     write_status(&ctx.client, &name, &namespace, &cr).await;
     Ok(Action::requeue(Duration::from_secs(60)))
@@ -51,7 +59,7 @@ async fn reconcile_inner(
     client: &Client,
     name: &str,
     namespace: &str,
-    spec: &LuxRuntimeSpec,
+    spec: &NodeSpec,
     owner: OwnerReference,
 ) -> Result<()> {
     let labels = manifests::standard_labels(name, "validator", "", &spec.image.tag);
@@ -151,21 +159,21 @@ async fn reconcile_inner(
         namespace,
         network_id = spec.network_id,
         chains = spec.chains.len(),
-        "LuxRuntime reconciled"
+        "Node reconciled"
     );
     Ok(())
 }
 
-async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxRuntime) {
+async fn write_status(client: &Client, name: &str, namespace: &str, cr: &Node) {
     let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
     let sts = match stss.get_opt(name).await {
         Ok(s) => s,
         Err(e) => {
-            warn!(error = %e, "failed to fetch StatefulSet for LuxRuntime status");
+            warn!(error = %e, "failed to fetch StatefulSet for Node status");
             return;
         }
     };
-    let mut status = LuxRuntimeStatus {
+    let mut status = NodeStatus {
         observed_generation: cr.meta().generation.unwrap_or(0),
         ..Default::default()
     };
@@ -188,32 +196,32 @@ async fn write_status(client: &Client, name: &str, namespace: &str, cr: &LuxRunt
         &format!("{}/{} validators ready", status.active_validators, desired),
         status.observed_generation,
     ));
-    let api: Api<LuxRuntime> = Api::namespaced(client.clone(), namespace);
+    let api: Api<Node> = Api::namespaced(client.clone(), namespace);
     let patch = serde_json::json!({ "status": status });
     let pp = PatchParams::apply(apply::FIELD_MANAGER);
     if let Err(e) = api.patch_status(name, &pp, &Patch::Merge(&patch)).await {
-        warn!(error = %e, "failed to update LuxRuntime status");
+        warn!(error = %e, "failed to update Node status");
     }
 }
 
-pub fn on_error(_obj: Arc<LuxRuntime>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
-    error!(error = %err, "LuxRuntime reconcile failed");
+pub fn on_error(_obj: Arc<Node>, err: &OperatorError, _ctx: Arc<Ctx>) -> Action {
+    error!(error = %err, "Node reconcile failed");
     Action::requeue(Duration::from_secs(30))
 }
 
-pub async fn run_luxruntime_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<LuxRuntime> = if namespace.is_empty() {
+pub async fn run_node_controller(client: Client, namespace: String, api_group: String) {
+    let api: Api<Node> = if namespace.is_empty() {
         Api::all(client.clone())
     } else {
         Api::namespaced(client.clone(), &namespace)
     };
-    info!(group = %api_group, "Starting LuxRuntime controller");
+    info!(group = %api_group, "Starting Node controller");
     let ctx = Arc::new(Ctx { client, api_group });
     Controller::new(api, Config::default())
         .run(reconcile, on_error, ctx)
         .for_each(|res| async move {
             if let Err(e) = res {
-                warn!(error = %e, "LuxRuntime reconcile error");
+                warn!(error = %e, "Node reconcile error");
             }
         })
         .await;
@@ -221,10 +229,10 @@ pub async fn run_luxruntime_controller(client: Client, namespace: String, api_gr
 
 #[cfg(test)]
 mod tests {
-    use crate::crd::{ImageSpec, LuxChainSpec, LuxRuntimeSpec, ReplicationSpec, StorageSpec};
+    use crate::crd::{ImageSpec, LuxChainSpec, NodeSpec, ReplicationSpec, StorageSpec};
 
-    fn spec() -> LuxRuntimeSpec {
-        LuxRuntimeSpec {
+    fn spec() -> NodeSpec {
+        NodeSpec {
             network_id: 1,
             validators: Some(5),
             image: ImageSpec {
@@ -258,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn luxruntime_spec_round_trips_through_json() {
+    fn node_spec_round_trips_through_json() {
         let s = spec();
         let json = serde_json::to_value(&s).expect("serialize");
         // camelCase + rename overrides land on the wire as the Go CRD expects.
@@ -266,7 +274,7 @@ mod tests {
         assert_eq!(json["validators"], 5);
         assert_eq!(json["chains"][0]["chainID"], "C");
         assert_eq!(json["chains"][0]["bootstrapBlocking"], true);
-        let back: LuxRuntimeSpec = serde_json::from_value(json).expect("deserialize");
+        let back: NodeSpec = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back.network_id, 1);
         assert_eq!(back.validators, Some(5));
         assert_eq!(back.chains.len(), 1);
@@ -288,7 +296,7 @@ mod tests {
         assert_eq!(rep["sourceNodeIndex"], 0);
         assert_eq!(rep["snapshotIntervalSeconds"], 3600);
         assert_eq!(rep["incrementalIntervalSeconds"], 5);
-        let back: LuxRuntimeSpec = serde_json::from_value(json).expect("deserialize");
+        let back: NodeSpec = serde_json::from_value(json).expect("deserialize");
         let br = back.replication.expect("replication present");
         assert!(br.enabled);
         assert!(br.s3_use_ssl);
