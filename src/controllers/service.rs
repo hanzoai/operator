@@ -248,10 +248,21 @@ fn age_block(p: &PersistenceSpec) -> String {
     if p.age_secret.is_empty() {
         return String::new();
     }
-    "         age:\n         \
-     identities:\n           - ${AGE_IDENTITY}\n         \
-     recipients:\n           - ${AGE_RECIPIENT}\n"
-        .to_string()
+    // Indentation is the contract here: these keys sit BESIDE access-key-id (8
+    // spaces) with their lists nested under them. Getting it wrong does not
+    // produce a subtly different config, it produces "yaml: line 14: mapping
+    // values are not allowed in this context" and the init container dies —
+    // which is exactly what a line-continuation in the first version of this
+    // function did, because Rust's `\` strips the leading whitespace it was
+    // meant to keep.
+    concat!(
+        "        age:\n",
+        "          identities:\n",
+        "            - ${AGE_IDENTITY}\n",
+        "          recipients:\n",
+        "            - ${AGE_RECIPIENT}\n",
+    )
+    .to_string()
 }
 
 /// The age credentials, present only when the replica is encrypted.
@@ -2676,6 +2687,29 @@ mod age_optional_tests {
             "encrypted replica lost its age stanza:\n{cfg}"
         );
         assert!(cfg.contains("${AGE_IDENTITY}") && cfg.contains("${AGE_RECIPIENT}"));
+        // INDENTATION IS THE CONTRACT. The first version of age_block used a
+        // Rust line-continuation, which strips the leading whitespace it was
+        // meant to keep: `age:` landed at 9 spaces with identities/recipients
+        // un-nested beside it. That is not a subtly different config, it is
+        // "yaml: line 14: mapping values are not allowed in this context" and a
+        // dead init container. Asserting the exact block is what turns a silent
+        // whitespace bug into a failing test.
+        assert!(
+            cfg.contains(concat!(
+                "        age:\n",
+                "          identities:\n",
+                "            - ${AGE_IDENTITY}\n",
+                "          recipients:\n",
+                "            - ${AGE_RECIPIENT}\n",
+            )),
+            "age stanza is misindented — replicate will refuse the config:\n{cfg}"
+        );
+        // And the whole document must still be a mapping of the shape replicate
+        // reads: `dbs:` at column 0 with the age keys BESIDE access-key-id.
+        assert!(
+            cfg.contains("        access-key-id:"),
+            "indent baseline moved:\n{cfg}"
+        );
         let names: Vec<_> = replicate_env(&p).into_iter().map(|e| e.name).collect();
         assert_eq!(
             names,
