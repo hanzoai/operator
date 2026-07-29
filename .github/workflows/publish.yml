@@ -1,23 +1,17 @@
-name: Docker
+name: sync
+# THE LAW: .github/workflows holds no CI. Everything that gates, builds or
+# deploys lives in .hanzo/workflows and runs on our own runners.
+#
+# This file used to import hanzoai/.github/.github/workflows/docker-build.yml, a
+# deprecated reusable, and had been failing to start on every push since — the
+# operator image was never rebuilt, so merged fixes never reached the cluster
+# while main reported nothing wrong. Kept as an empty marker rather than deleted
+# so the next person finds this note instead of re-adding a GitHub build lane.
 on:
   workflow_dispatch:
-  push:
-    branches: [main, dev]
-    tags: ['v*']
-permissions:
-  contents: read
-  packages: write
-  id-token: write
 jobs:
-  docker:
-    uses: hanzoai/.github/.github/workflows/docker-build.yml@main
-    with:
-      image: ghcr.io/hanzoai/operator
-      # amd64-only: the arm64 ARC scale-set is offline (no runner matches
-      # runner-arm64 ["self-hosted","linux","arm64"] → the arm64 job hangs
-      # queued and the multi-arch manifest never publishes). DOKS
-      # (do-sfo3-hanzo-k8s) is amd64, so amd64 is what prod runs. Restore
-      # linux/amd64,linux/arm64 when the arm64 runner is back OR the native
-      # build plane (platform BuildKit / git.hanzo.ai Actions) takes over.
-      platforms: linux/amd64
-    secrets: inherit
+  noop:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'

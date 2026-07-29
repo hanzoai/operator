@@ -1,0 +1,39 @@
+# Canonical CI config for hanzoai/operator — read by the hanzoai/ci reusable
+# (.hanzo/workflows/cicd.yml) and by platform.hanzo.ai.
+#
+# WHY THIS FILE EXISTS. The operator had no hanzo.yml and its only workflow
+# imported `hanzoai/.github/.github/workflows/docker-build.yml`, a deprecated
+# reusable. Every run since has ended "completed/failure" with GitHub's
+# "this run likely failed because of a workflow file issue" — the workflow never
+# started, so nothing was ever built. The consequence was invisible and real:
+# the deployed operator is still ghcr.io/hanzoai/operator:sha-2cdfdbb, so merged
+# fixes (the replicate age fix among them) sat on main and never reached the
+# cluster. A build lane that fails to START looks the same as no push happening.
+#
+# ONE way to build, in one place: hanzo.yml declares WHAT, hanzoai/ci owns HOW.
+
+images:
+  - name: operator
+    # ghcr for the OSS artifact other orgs pull; the fleet registry is where the
+    # deploy lane reads from. Both are the same build.
+    image: ghcr.io/hanzoai/operator
+    dockerfile: Dockerfile
+    context: .
+    # amd64 only, deliberately. DOKS (do-sfo3-hanzo-k8s, lux-k8s, zoo-k8s) is
+    # amd64, and the arm64 ARC scale-set is offline — an arm64 job queues
+    # forever against a runner label nothing matches, and the multi-arch
+    # manifest then never publishes, which is a build that "passes" while
+    # shipping nothing. Restore linux/amd64,linux/arm64 when that pool is back.
+    platforms: [linux/amd64]
+
+test:
+  # cargo test is the gate. One test (env_is_carried_to_main_container) fails on
+  # a clean tree today and is tracked separately; it is NOT excluded here,
+  # because a gate that skips the failing test is not a gate.
+  - name: cargo test
+    run: cargo test --lib
+
+# NO deploy: lane. The operator is deployed like everything else — universe
+# records the desired tag and CD reconciles it. A deploy step here would be a
+# second mover for the same object, which is the exact failure this fleet spent
+# today unwinding.
