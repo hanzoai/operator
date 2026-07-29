@@ -90,9 +90,14 @@ fn resolved_persistence(name: &str, p: &PersistenceSpec) -> PersistenceSpec {
     if r.credentials_secret.is_empty() {
         r.credentials_secret = "s3-credentials".to_string();
     }
-    if r.age_secret.is_empty() {
-        r.age_secret = format!("{}-replicate-age", name);
-    }
+    // age_secret is deliberately NOT defaulted. Defaulting it made encryption
+    // unconditional, and a config that always decrypts cannot read a replica
+    // written without encryption — which is what every existing bucket holds.
+    // The result was silent: `replicate` failed both directions ("invalid LTX
+    // file" on write, "age decrypt: unexpected intro: LTX1" on restore), so the
+    // backups looked configured and were neither current nor restorable.
+    //
+    // Encryption is now something a CR asks for by naming a secret.
     if r.image.is_empty() {
         r.image = REPLICATE_IMAGE.to_string();
     }
@@ -125,7 +130,7 @@ fn render_replicate_yml(p: &PersistenceSpec) -> String {
         format!("    path: {}/{}\n", p.data_dir, p.db_path)
     };
     format!(
-        "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS), age-encrypted.\n\
+        "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS).\n\
          dbs:\n\
          \x20 - \n\
 {target}\
@@ -138,12 +143,9 @@ fn render_replicate_yml(p: &PersistenceSpec) -> String {
          \x20       force-path-style: {fps}\n\
          \x20       access-key-id: ${{S3_ACCESS_KEY_ID}}\n\
          \x20       secret-access-key: ${{S3_SECRET_ACCESS_KEY}}\n\
-         \x20       age:\n\
-         \x20         identities:\n\
-         \x20           - ${{AGE_IDENTITY}}\n\
-         \x20         recipients:\n\
-         \x20           - ${{AGE_RECIPIENT}}\n",
+{age}",
         target = target,
+        age = age_block(p),
         bucket = p.bucket,
         s3_path = p.s3_path,
         endpoint = p.s3_endpoint,
@@ -206,15 +208,20 @@ fn replicate_volume_mounts(p: &PersistenceSpec) -> Vec<crd_types::VolumeMount> {
 
 /// S3 creds + age keypair as container env, sourced from the configured
 /// Secrets. Shared by the restore init and the replication sidecar.
-fn replicate_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
-    let secret_ref = |secret: &str, key: &str| crd_types::EnvVarSource {
+/// One construction of a Secret-backed env source, shared by both env builders
+/// so the S3 and age credentials cannot be referenced two different ways.
+fn secret_ref(secret: &str, key: &str) -> crd_types::EnvVarSource {
+    crd_types::EnvVarSource {
         secret_key_ref: Some(crd_types::SecretKeySelector {
             name: secret.to_string(),
             key: key.to_string(),
             optional: None,
         }),
         ..Default::default()
-    };
+    }
+}
+
+fn replicate_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
     vec![
         crd_types::EnvVar {
             name: "S3_ACCESS_KEY_ID".to_string(),
@@ -226,6 +233,33 @@ fn replicate_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
             value: None,
             value_from: Some(secret_ref(&p.credentials_secret, "secret-key")),
         },
+    ]
+    .into_iter()
+    .chain(age_env(p))
+    .collect()
+}
+
+/// The replica's `age:` stanza, or nothing.
+///
+/// Empty `age_secret` means the bucket is plaintext, and emitting the stanza
+/// anyway is what breaks BOTH directions: the sidecar cannot append to a
+/// plaintext replica, and restore cannot decrypt one.
+fn age_block(p: &PersistenceSpec) -> String {
+    if p.age_secret.is_empty() {
+        return String::new();
+    }
+    "         age:\n         \
+     identities:\n           - ${AGE_IDENTITY}\n         \
+     recipients:\n           - ${AGE_RECIPIENT}\n"
+        .to_string()
+}
+
+/// The age credentials, present only when the replica is encrypted.
+fn age_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
+    if p.age_secret.is_empty() {
+        return Vec::new();
+    }
+    vec![
         crd_types::EnvVar {
             name: "AGE_IDENTITY".to_string(),
             value: None,
@@ -2597,6 +2631,74 @@ mod tests {
         assert!(
             !within_grace(None, now, 300),
             "no timestamp ⇒ not within grace (eligible)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod age_optional_tests {
+    use super::*;
+
+    fn spec(age: &str) -> PersistenceSpec {
+        let mut p = PersistenceSpec::default();
+        p.bucket = "b".into();
+        p.s3_path = "p".into();
+        p.data_dir = "/data".into();
+        p.db_path = "app.db".into();
+        p.age_secret = age.into();
+        p
+    }
+
+    /// A plaintext bucket must produce a config with NO age stanza. Emitting one
+    /// anyway is what left `replicate` unable to write ("invalid LTX file") or
+    /// restore ("age decrypt: unexpected intro: LTX1") — backups that looked
+    /// configured while being neither current nor restorable.
+    #[test]
+    fn no_age_secret_means_no_age_stanza_and_no_age_env() {
+        let p = spec("");
+        let cfg = render_replicate_yml(&p);
+        assert!(
+            !cfg.contains("age:"),
+            "plaintext replica got an age stanza:\n{cfg}"
+        );
+        assert!(!cfg.contains("AGE_IDENTITY"));
+        let names: Vec<_> = replicate_env(&p).into_iter().map(|e| e.name).collect();
+        assert_eq!(names, vec!["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]);
+    }
+
+    /// Naming a secret is what asks for encryption, and it still works.
+    #[test]
+    fn age_secret_means_age_stanza_and_age_env() {
+        let p = spec("my-age");
+        let cfg = render_replicate_yml(&p);
+        assert!(
+            cfg.contains("age:"),
+            "encrypted replica lost its age stanza:\n{cfg}"
+        );
+        assert!(cfg.contains("${AGE_IDENTITY}") && cfg.contains("${AGE_RECIPIENT}"));
+        let names: Vec<_> = replicate_env(&p).into_iter().map(|e| e.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "S3_ACCESS_KEY_ID",
+                "S3_SECRET_ACCESS_KEY",
+                "AGE_IDENTITY",
+                "AGE_RECIPIENT"
+            ]
+        );
+    }
+
+    /// Defaulting the secret name is what made encryption unconditional. It must
+    /// stay absent, or every CR silently opts in again.
+    #[test]
+    fn defaults_do_not_reintroduce_an_age_secret() {
+        let mut p = PersistenceSpec::default();
+        p.bucket = "b".into();
+        let d = resolved_persistence("svc", &p);
+        assert!(
+            d.age_secret.is_empty(),
+            "age_secret was defaulted to {:?}",
+            d.age_secret
         );
     }
 }
