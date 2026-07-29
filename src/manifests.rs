@@ -579,21 +579,55 @@ pub fn colocation_affinity(selector_labels_map: &BTreeMap<String, String>) -> Af
 ///   Some(N), .. }` — byte-identical to the pre-passthrough behavior.
 /// - Structured context set ⇒ its fields, with the legacy `fsGroup` folded in
 ///   ONLY when the structured context omits `fsGroup` (structured wins).
+///
+/// Whenever an `fsGroup` ends up in effect, `fsGroupChangePolicy` defaults to
+/// `OnRootMismatch` unless the CR states one. WHY, and why here:
+///
+/// `hanzo-git` (git.hanzo.ai, the canonical forge for the whole estate) served
+/// 503 for several minutes with its pod in `Init:0/1` while the kubelet logged
+/// `VolumePermissionChangeInProgress … is taking longer than expected, consider
+/// using OnRootMismatch`. It carries `securityContext: {fsGroup: 1000}` over a
+/// 250Gi PVC holding a git forge — millions of tiny loose objects — and k8s
+/// defaults `fsGroupChangePolicy` to `Always`, so the kubelet recursively
+/// chowned EVERY file before the container could start, restarting the walk from
+/// zero on each ReplicaSet roll. The cost is paid on every restart forever, so
+/// any service whose volume grows large enough becomes un-restartable.
+///
+/// `Always` is the k8s default, but it is the wrong default HERE: an `fsGroup`
+/// is declared in this operator for exactly one reason — a non-root image must
+/// write a persistence PVC — so the population that sets it IS the population of
+/// long-lived volumes that `Always` degrades without bound, and it degrades
+/// silently until it takes an outage. Opt-in would mean every such service pays
+/// one outage before someone thinks to set the field. The changeover is cheap:
+/// `Always` has already left the volume root owned by the fsGroup, so the first
+/// roll under `OnRootMismatch` matches on the root check and skips the walk.
+///
+/// What this gives up: `Always` also repairs files DEEP in a volume whose
+/// ownership drifted (a restore that dropped root-owned files in). That is not a
+/// property a workload should depend on, and it stays one explicit field away.
 pub fn pod_security_context(
     ctx: Option<&crate::crd_types::PodSecurityContext>,
     legacy_fs_group: Option<i64>,
 ) -> Option<PodSecurityContext> {
-    match ctx {
-        None => legacy_fs_group.map(|fsg| PodSecurityContext {
-            fs_group: Some(fsg),
+    let mut k = match ctx {
+        // No structured context ⇒ the legacy `fsGroup` alone, or nothing at all.
+        None => PodSecurityContext {
+            fs_group: Some(legacy_fs_group?),
             ..Default::default()
-        }),
+        },
         Some(c) => {
             let mut k = c.to_k8s();
             k.fs_group = k.fs_group.or(legacy_fs_group);
-            Some(k)
+            k
         }
+    };
+    // No fsGroup ⇒ the kubelet never chowns, so a policy would be dead weight on
+    // the PodSpec (and a needless diff for every hardening-only CR).
+    if k.fs_group.is_some() && k.fs_group_change_policy.is_none() {
+        let skip_the_walk = crate::crd_types::FsGroupChangePolicy::OnRootMismatch;
+        k.fs_group_change_policy = Some(skip_the_walk.as_str().to_string());
     }
+    Some(k)
 }
 
 /// Build a StatefulSet.
@@ -1705,18 +1739,87 @@ mod tests {
         assert!(pod_security_context(None, None).is_none());
     }
 
-    /// ONLY the legacy top-level fsGroup ⇒ exactly `{fsGroup: N}` — byte-identical
-    /// to the pre-passthrough behavior (the console/esign fsGroup CRs).
+    /// ONLY the legacy top-level fsGroup ⇒ exactly `{fsGroup: N,
+    /// fsGroupChangePolicy: OnRootMismatch}` — the fsGroup as before, plus the
+    /// default that keeps the kubelet from re-walking the whole volume.
     #[test]
-    fn pod_security_context_legacy_fs_group_only_is_byte_identical() {
+    fn pod_security_context_legacy_fs_group_only_renders_fs_group_and_the_skip_policy() {
         let got = pod_security_context(None, Some(1001)).expect("fsGroup must render");
         assert_eq!(
             got,
             PodSecurityContext {
                 fs_group: Some(1001),
+                fs_group_change_policy: Some("OnRootMismatch".to_string()),
                 ..Default::default()
             },
-            "legacy fsGroup-only must render exactly securityContext:{{fsGroup:N}}"
+            "a legacy fsGroup must render fsGroup + the OnRootMismatch default and nothing else"
+        );
+    }
+
+    /// THE INCIDENT TEST. `hanzo-git` (git.hanzo.ai) served 503 for minutes with
+    /// its pod stuck in `Init:0/1` while the kubelet logged
+    /// `VolumePermissionChangeInProgress … consider using OnRootMismatch`: with
+    /// `fsGroup: 1000` and no policy, k8s defaults to `Always` and recursively
+    /// chowns every file on the 250Gi PVC (`pvc-47211c5d-3183-4583-8357-3a426d93d91e`,
+    /// a git forge = millions of loose objects) at EVERY pod start, restarting
+    /// the walk on each ReplicaSet roll. `OnRootMismatch` stats the volume root
+    /// instead, so a volume mounted before costs milliseconds.
+    #[test]
+    fn declaring_an_fs_group_defaults_to_skipping_the_recursive_chown() {
+        let structured = CrPodSc {
+            fs_group: Some(1000),
+            ..Default::default()
+        };
+        // The fsGroup may arrive on EITHER field; both must default the policy.
+        for (label, got) in [
+            ("legacy fsGroup", pod_security_context(None, Some(1000))),
+            (
+                "structured securityContext.fsGroup",
+                pod_security_context(Some(&structured), None),
+            ),
+        ] {
+            let got = got.expect("fsGroup must render");
+            assert_eq!(got.fs_group, Some(1000), "{label}");
+            assert_eq!(
+                got.fs_group_change_policy.as_deref(),
+                Some("OnRootMismatch"),
+                "{label}: must default to OnRootMismatch — `Always` re-walks the \
+                 whole volume at every pod start"
+            );
+        }
+    }
+
+    /// The default is a default, not a policy: a CR that says `Always` out loud
+    /// gets `Always` (the volume whose ownership must be re-repaired every boot).
+    #[test]
+    fn pod_security_context_honors_an_explicit_always() {
+        let structured: CrPodSc = serde_json::from_value(serde_json::json!({
+            "fsGroup": 1001,
+            "fsGroupChangePolicy": "Always",
+        }))
+        .expect("deserialize");
+        let got = pod_security_context(Some(&structured), None).expect("must render");
+        assert_eq!(
+            got.fs_group_change_policy.as_deref(),
+            Some("Always"),
+            "an explicit fsGroupChangePolicy must survive the fold, never be overwritten"
+        );
+    }
+
+    /// No fsGroup ⇒ the kubelet never chowns, so a policy would be dead weight.
+    /// A hardening-only context (runAsNonRoot/seccomp) stays byte-identical.
+    #[test]
+    fn pod_security_context_without_an_fs_group_carries_no_policy() {
+        let structured = CrPodSc {
+            run_as_non_root: Some(true),
+            run_as_user: Some(65532),
+            ..Default::default()
+        };
+        let got = pod_security_context(Some(&structured), None).expect("must render");
+        assert_eq!(got.fs_group, None);
+        assert_eq!(
+            got.fs_group_change_policy, None,
+            "with no fsGroup there is no chown to skip — emit no policy"
         );
     }
 

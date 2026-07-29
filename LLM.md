@@ -938,3 +938,92 @@ deterministic rather than hoping it lands.
 - `the_hold_window_closes_before_the_takeover_window_opens` and the `must_yield`
   cases pin the yield rule (standby waits; holder yields on `Foreign`; holder
   rides out a blip then yields at expiry).
+
+## v0.7.18 — an fsGroup no longer re-chowns the whole volume at every restart
+
+`hanzo-git` (git.hanzo.ai, the canonical forge for the estate) served HTTP 503
+for several minutes with its pod in `Init:0/1` while the kubelet logged:
+
+```
+Warning  VolumePermissionChangeInProgress  pod/hanzo-git-...
+  Setting volume ownership for .../pvc-47211c5d-3183-4583-8357-3a426d93d91e/mount
+  is taking longer than expected, consider using OnRootMismatch
+```
+
+The Deployment carries `securityContext: {fsGroup: 1000}` over a 250Gi PVC
+holding a git forge — millions of tiny loose objects. K8s defaults
+`fsGroupChangePolicy` to `Always`, so the kubelet recursively chowned EVERY file
+before the container could start, and each ReplicaSet roll restarted the walk
+from zero. The cost is paid on every restart forever, so any service whose volume
+grows large enough becomes effectively un-restartable.
+
+`OnRootMismatch` makes the kubelet check only the volume ROOT's ownership and
+skip the walk when it already matches — minutes to milliseconds for a volume that
+has been mounted before.
+
+### The field
+
+`crd_types::FsGroupChangePolicy` is a closed enum (`Always` | `OnRootMismatch`)
+on `PodSecurityContext`, so the CRD schema carries `enum: [Always,
+OnRootMismatch]` and a typo is refused at admission rather than stored and later
+rejected by the apiserver on the pod apply. It is a closed enum, unlike the open
+strings used for values WE own (`role`, `strategy`), because the value set is
+defined by Kubernetes and cannot grow under us. It rides `DBSpec` too (same
+type), so the datastore projection carries it without further change.
+
+### The default is `OnRootMismatch`, not the k8s `Always`
+
+An `fsGroup` is declared here for exactly one reason — a non-root image must
+write a persistence PVC — so the population that sets it IS the population of
+long-lived volumes `Always` degrades without bound, and it degrades silently
+until it takes an outage. Opt-in would mean every such service pays one outage
+first. 14 of 79 live App CRs declare an fsGroup; every one of them mounts a PVC.
+The changeover is cheap, not a slow roll: `Always` has already left the volume
+root owned by the fsGroup, so the first roll under `OnRootMismatch` matches on
+the root check and skips the walk.
+
+What it gives up: `Always` also repairs files DEEP in a volume whose ownership
+drifted (a restore that dropped root-owned files in). That is not a property a
+workload should depend on, and it stays one explicit field away.
+
+Applied in the ONE fold both workload paths share
+(`manifests::pod_security_context` — Deployment via `service.rs`, StatefulSet via
+`datastore.rs`), gated on an fsGroup actually being in effect: with no fsGroup
+the kubelet never chowns, so no policy is emitted and the PodSpec is
+byte-identical. 65 of 79 App CRs render unchanged.
+
+Test count: 351 → 359 lib tests (+3 manifests fold/default/explicit-override,
++2 crd_types conversion + closed-set, +1 service Deployment incident shape,
++1 datastore StatefulSet, +1 app end-to-end from the CR wire shape; 3 existing
+exact-shape assertions updated to the new shape). Zero new fmt/clippy warnings.
+
+### Also in this release
+
+- **The App CRD generator emits what the fleet runs.** f722cd8 declared the eight
+  role-specific App spec fields and dropped `x-kubernetes-preserve-unknown-fields`
+  BY HAND on `k8s/crds/all-hanzo.ai.yaml` — the generator still emitted the flag
+  and none of the declarations, so the next `generate-crd-yaml` would silently
+  revert a fleet-down fix. Moved into `harden_app_crd`. Verified against the live
+  fleet first: 80 App CRs, 34 distinct spec keys, 7 undeclared by the derived
+  schema — all covered by the eight, so dropping the flag prunes nothing. The
+  regenerated `all-hanzo.ai.yaml` is semantically identical to the hand-edited
+  file it replaces; lux/zoo/osage get the same shape.
+- **`env_is_carried_to_main_container` is green again.** The gateway-503
+  regression test asserted `env.len() == 1` and went red when `build_container`
+  began deriving `HANZO_VERSION` (6a237ee). The count was never the invariant; it
+  asserts the declared var by name now. No workflow runs `cargo test`, which is
+  why it sat red on main.
+
+### Not fixed here — the deployed CRD is a different artifact
+
+`k8s/crds/all-*.yaml` is NOT what the cluster runs. The live `apps.hanzo.ai` CRD
+is labelled `app.kubernetes.io/managed-by: universe` and comes from
+`hanzoai/universe` `infra/k8s/operator/crds.yaml`, which models 31 spec
+properties, still carries `x-kubernetes-preserve-unknown-fields: true`, and
+declares NO `securityContext` at all. So on the live cluster today a CR author
+cannot express `fsGroupChangePolicy` — or `securityContext`,
+`containerSecurityContext`, `enableServiceLinks`, `nodeSelector`, `tolerations`,
+`priorityClassName`, `upgradePolicy` — and gets NO error, because an unmodeled
+field is silently pruned on write. Shipping this operator version is necessary
+but not sufficient: the universe CRD must be refreshed from this generator for
+the field to reach a pod.

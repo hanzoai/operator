@@ -785,6 +785,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -1754,6 +1768,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -4162,6 +4190,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -4887,6 +4929,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -5612,6 +5668,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -6759,6 +6829,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -8146,6 +8230,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -9533,6 +9631,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -10498,6 +10610,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -11237,6 +11363,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -12753,6 +12893,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -14140,6 +14294,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -16091,6 +16259,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -17478,6 +17660,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -18865,6 +19061,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true
@@ -21310,6 +21520,20 @@ spec:
                     format: int64
                     nullable: true
                     type: integer
+                  fsGroupChangePolicy:
+                    description: |-
+                      WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+                      defines exactly two values, so this is a closed enum rather than the open
+                      strings used for values WE own (`role`, `strategy`): the set cannot grow
+                      under us, there is no forward-compat story a typo could be serving, and the
+                      CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+                      at admission instead of stored and later rejected by the apiserver on the pod
+                      apply (which wedges the reconcile in a requeue loop).
+                    enum:
+                    - Always
+                    - OnRootMismatch
+                    nullable: true
+                    type: string
                   runAsGroup:
                     format: int64
                     nullable: true

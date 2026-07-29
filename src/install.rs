@@ -715,6 +715,18 @@ mod tests {
                 schema.contains("readOnlyRootFilesystem") && schema.contains("seccompProfile"),
                 "{kind}: nested container/pod security fields must be modeled"
             );
+            // A field the schema does not model is SILENTLY DROPPED on write, so
+            // the CR author gets no error telling them why it never applied —
+            // which is exactly why `hanzo-git` could not express the fix for its
+            // own outage. Schema-modeled is the whole point of the field.
+            assert!(
+                schema.contains("fsGroupChangePolicy"),
+                "{kind}: spec.securityContext.fsGroupChangePolicy must be in the schema"
+            );
+            assert!(
+                schema.contains("OnRootMismatch"),
+                "{kind}: the policy is a closed enum — a typo must be refused at admission"
+            );
         }
     }
 

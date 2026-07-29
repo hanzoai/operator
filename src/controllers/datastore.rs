@@ -620,11 +620,42 @@ mod tests {
             sc,
             k8s_openapi::api::core::v1::PodSecurityContext {
                 fs_group: Some(1000),
+                fs_group_change_policy: Some("OnRootMismatch".to_string()),
                 ..Default::default()
             },
-            "legacy fsGroup must render EXACTLY securityContext:{{fsGroup:1000}}"
+            "legacy fsGroup must render EXACTLY fsGroup:1000 + the OnRootMismatch default"
         );
         assert!(pod.enable_service_links.is_none());
+    }
+
+    /// A datastore's PVC is the one that grows without bound, so the StatefulSet
+    /// path needs the chown-skip as much as the Deployment path does — both fold
+    /// through the SAME `manifests::pod_security_context`. (The `hanzo-git`
+    /// outage was a Deployment, but a 250Gi Postgres/S3 volume walks just as slowly.)
+    #[test]
+    fn structured_fs_group_also_skips_the_recursive_chown() {
+        let mut sts = empty_sts();
+        apply_pod_security(
+            &mut sts,
+            Some(&crd_types::PodSecurityContext {
+                run_as_non_root: Some(true),
+                fs_group: Some(65532),
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+        let psc = sts
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .expect("fsGroup must render");
+        assert_eq!(psc.fs_group, Some(65532));
+        let policy = psc.fs_group_change_policy.as_deref();
+        assert_eq!(policy, Some("OnRootMismatch"));
     }
 
     // A root/self-chowning engine (Hanzo Datastore) leaves fsGroup None →

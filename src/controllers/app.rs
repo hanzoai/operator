@@ -1169,6 +1169,64 @@ spec:
         assert_eq!(psc_b.run_as_non_root, Some(true));
     }
 
+    /// End-to-end from the CR wire shape: an App that declares
+    /// `securityContext.fsGroupChangePolicy` must reach the rendered PodSpec, and
+    /// an App that declares only `fsGroup` must still get the OnRootMismatch
+    /// default. This is the path `hanzo-git` needed and did not have — the CRD
+    /// modeled no `securityContext` fields at all, so the apiserver pruned the
+    /// declaration on write and the author saw no error.
+    #[test]
+    fn an_app_can_declare_the_fs_group_change_policy_and_defaults_to_skipping_the_chown() {
+        let explicit = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: docdb, namespace: hanzo }
+spec:
+  role: docdb
+  image: { repository: ghcr.io/hanzoai/docdb, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 5Gi, volumeName: docdb-data }
+  securityContext:
+    fsGroup: 1000
+    fsGroupChangePolicy: Always
+"#;
+        let psc = datastore_pod_security(&app_from_yaml(explicit));
+        assert_eq!(
+            psc.fs_group_change_policy.as_deref(),
+            Some("Always"),
+            "an explicitly declared policy must survive the App→DBSpec projection"
+        );
+
+        let defaulted = r#"
+apiVersion: hanzo.ai/v1
+kind: App
+metadata: { name: docdb, namespace: hanzo }
+spec:
+  role: docdb
+  image: { repository: ghcr.io/hanzoai/docdb, tag: latest }
+  storage: { storageClassName: do-block-storage, size: 5Gi, volumeName: docdb-data }
+  fsGroup: 1000
+"#;
+        let psc = datastore_pod_security(&app_from_yaml(defaulted));
+        assert_eq!(psc.fs_group, Some(1000));
+        assert_eq!(
+            psc.fs_group_change_policy.as_deref(),
+            Some("OnRootMismatch"),
+            "an fsGroup App must default to skipping the recursive chown"
+        );
+    }
+
+    /// The rendered pod-level securityContext of a datastore-role App.
+    fn datastore_pod_security(app: &App) -> k8s_openapi::api::core::v1::PodSecurityContext {
+        datastore_sts(app, Engine::Docdb)
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .security_context
+            .expect("pod securityContext must render")
+    }
+
     /// The boundary guard reads `spec.securityContext.seccompProfile` (the
     /// flattened ServiceSpec field, shared by both pod-rendering paths) and
     /// degrades when it is invalid. This asserts the exact value the guard

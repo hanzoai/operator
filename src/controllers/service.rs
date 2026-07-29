@@ -2047,12 +2047,36 @@ mod tests {
             pod.security_context,
             Some(k8s_openapi::api::core::v1::PodSecurityContext {
                 fs_group: Some(1001),
+                fs_group_change_policy: Some("OnRootMismatch".to_string()),
                 ..Default::default()
             }),
-            "legacy fsGroup must render exactly securityContext:{{fsGroup:1001}}"
+            "legacy fsGroup must render fsGroup + the OnRootMismatch default, nothing else"
         );
         assert!(pod.enable_service_links.is_none());
         assert!(pod.containers[0].security_context.is_none());
+    }
+
+    /// THE INCIDENT, at the Deployment the operator actually renders. `hanzo-git`
+    /// carries `securityContext: {fsGroup: 1000}` and a 250Gi git-forge PVC; under
+    /// the k8s-default `Always` the kubelet recursively chowned every loose object
+    /// at pod start, holding the pod in `Init:0/1` and git.hanzo.ai at 503 for
+    /// minutes — restarting the walk on each ReplicaSet roll. The rendered PodSpec
+    /// must pin `OnRootMismatch` so a re-mounted volume costs a stat, not a walk.
+    #[test]
+    fn an_fs_group_deployment_skips_the_recursive_chown_on_restart() {
+        let spec = ServiceSpec {
+            fs_group: Some(1000),
+            ..base_spec()
+        };
+        let dep = build_persisted_deployment("hanzo-git", &spec);
+        let pod = dep.spec.unwrap().template.spec.unwrap();
+        let psc = pod.security_context.expect("fsGroup must render");
+        assert_eq!(psc.fs_group, Some(1000));
+        assert_eq!(
+            psc.fs_group_change_policy.as_deref(),
+            Some("OnRootMismatch"),
+            "an fsGroup workload must not re-chown its whole volume at every start"
+        );
     }
 
     fn build_persisted_deployment(

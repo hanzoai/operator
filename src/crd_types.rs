@@ -472,6 +472,33 @@ impl Toleration {
 // the boundary. Every field is optional, so an omitting CR renders NO
 // securityContext at all (byte-identical to a CR that predates these fields).
 
+/// WHEN the kubelet applies `fsGroup` ownership to a mounted volume. Kubernetes
+/// defines exactly two values, so this is a closed enum rather than the open
+/// strings used for values WE own (`role`, `strategy`): the set cannot grow
+/// under us, there is no forward-compat story a typo could be serving, and the
+/// CRD schema then carries `enum: [Always, OnRootMismatch]` so a typo is refused
+/// at admission instead of stored and later rejected by the apiserver on the pod
+/// apply (which wedges the reconcile in a requeue loop).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, PartialEq, Eq)]
+pub enum FsGroupChangePolicy {
+    /// Recursively `chown` EVERY file on the volume at EVERY pod start. The k8s
+    /// default, and O(files-on-volume) forever — the behavior that took
+    /// git.hanzo.ai down (see `manifests::pod_security_context`).
+    Always,
+    /// `chown` only when the volume's ROOT directory ownership does not already
+    /// match — a `stat` instead of a full walk for a volume mounted before.
+    OnRootMismatch,
+}
+
+impl FsGroupChangePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Always => "Always",
+            Self::OnRootMismatch => "OnRootMismatch",
+        }
+    }
+}
+
 /// Pod-level `securityContext` (the k8s `PodSecurityContext` subset the fleet
 /// sets). Rendered onto `PodSpec.securityContext`.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
@@ -485,6 +512,11 @@ pub struct PodSecurityContext {
     pub run_as_group: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_group: Option<i64>,
+    /// Whether the kubelet re-chowns the whole volume at pod start. Omit it and
+    /// the operator picks `OnRootMismatch` (see `manifests::pod_security_context`
+    /// for why); set it to override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_group_change_policy: Option<FsGroupChangePolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seccomp_profile: Option<SeccompProfile>,
 }
@@ -496,6 +528,7 @@ impl PodSecurityContext {
             run_as_user: self.run_as_user,
             run_as_group: self.run_as_group,
             fs_group: self.fs_group,
+            fs_group_change_policy: self.fs_group_change_policy.map(|p| p.as_str().to_string()),
             seccomp_profile: self.seccomp_profile.as_ref().map(SeccompProfile::to_k8s),
             ..Default::default()
         }
@@ -803,6 +836,43 @@ mod tests {
         );
         // Unset field stays None.
         assert_eq!(k.run_as_group, None);
+    }
+
+    /// `fsGroupChangePolicy` must survive the mirror → k8s conversion verbatim.
+    /// It is the field that decides whether the kubelet stats the volume root or
+    /// recursively chowns every file on it at pod start (see the `hanzo-git`
+    /// incident in `manifests::pod_security_context`).
+    #[test]
+    fn pod_security_context_to_k8s_carries_fs_group_change_policy() {
+        for want in ["OnRootMismatch", "Always"] {
+            let cr = serde_json::json!({ "fsGroup": 1000, "fsGroupChangePolicy": want });
+            let sc: PodSecurityContext = serde_json::from_value(cr).expect("deserialize");
+            assert_eq!(
+                sc.to_k8s().fs_group_change_policy.as_deref(),
+                Some(want),
+                "fsGroupChangePolicy must reach the PodSpec"
+            );
+        }
+        // Omitted ⇒ None on the mirror; the OnRootMismatch default is applied by
+        // `manifests::pod_security_context`, not by this dumb conversion.
+        let bare: PodSecurityContext =
+            serde_json::from_value(serde_json::json!({ "fsGroup": 1000 })).expect("deserialize");
+        assert_eq!(bare.to_k8s().fs_group_change_policy, None);
+    }
+
+    /// The value set is closed by KUBERNETES, so it is modeled as an enum: the
+    /// CRD schema carries `enum: [Always, OnRootMismatch]` and a typo is refused
+    /// at admission rather than stored and later rejected by the apiserver on the
+    /// pod apply (which would wedge the reconcile in a requeue loop).
+    #[test]
+    fn fs_group_change_policy_is_a_closed_set() {
+        assert!(
+            serde_json::from_value::<PodSecurityContext>(
+                serde_json::json!({ "fsGroupChangePolicy": "onrootmismatch" })
+            )
+            .is_err(),
+            "a mis-cased/typo'd policy must be refused, never silently stored"
+        );
     }
 
     /// Container-level securityContext must carry the hardening baseline the
