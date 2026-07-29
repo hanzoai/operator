@@ -1703,9 +1703,15 @@ mod tests {
             None,
         );
         let env = main.env.expect("env must be set");
-        assert_eq!(env.len(), 1);
-        assert_eq!(env[0].name, "FOO");
-        assert_eq!(env[0].value.as_deref(), Some("bar"));
+        // The CR's own env must be present. `build_container` also derives
+        // HANZO_VERSION from the image tag, so assert on the declared var by NAME
+        // rather than on the length — the invariant is "spec.env is carried",
+        // not "spec.env is the only env".
+        let foo = env
+            .iter()
+            .find(|e| e.name == "FOO")
+            .expect("spec.env FOO must reach the main container");
+        assert_eq!(foo.value.as_deref(), Some("bar"));
     }
 
     #[test]
