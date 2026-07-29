@@ -1027,3 +1027,86 @@ cannot express `fsGroupChangePolicy` — or `securityContext`,
 field is silently pruned on write. Shipping this operator version is necessary
 but not sufficient: the universe CRD must be refreshed from this generator for
 the field to reach a pod.
+
+## v0.7.19 — `replicate.yml` is marshalled, not formatted
+
+The config that took hanzo.chat to 503 was assembled with `format!` and
+hand-counted `\x20` column prefixes. Two commits on 2026-07-28 fixed the
+indentation (246bcdc) and made the test a parse rather than a substring
+(1bbe9a8), and both were right — but the emitter was still text, so the bug
+class was intact. MEASURED on that tree: a CR whose `s3Path` is `chat: prod`
+(or whose `dataDir` contains ` #`, or whose `pattern` is an unquoted glob)
+renders
+
+```
+mapping values are not allowed in this context at line 8 column 19
+```
+
+— the SAME error, from the SAME file, that killed the `replicate-restore` init
+container. Nothing about the age stanza was special; it was the first value to
+hit a YAML indicator.
+
+`replicate.yml` is now a `mod replicate_yml` of `Serialize` structs
+(`Config`/`Db`/`Replica`/`Age`) handed to `serde_yaml::to_string`. Indentation
+and quoting belong to the emitter. `age` is `Option<Age>` on `Replica`, so
+identities/recipients are children of `age` by TYPE — there is no arrangement of
+whitespace that can un-nest them, and a plaintext bucket still gets no stanza
+(the field is skipped when `None`, which is what keeps a plaintext replica
+writable). The one hand-written line left is the `#` header comment, which
+serde_yaml cannot emit; it is prepended and is not structure.
+
+Semantically identical to what is running: the rendered document for chat's live
+`spec.persistence` parses to exactly the same value as the live
+`chat-replicate-config` ConfigMap (compared as parsed YAML, not as bytes). The
+BYTES differ — serde_yaml writes block sequences at the parent's indentation —
+which is the point: nobody counts columns anymore.
+
+### The tests
+
+- `hostile_values_survive_as_strings` / `..._in_dir_mode` — the bug class. A
+  `: ` in an s3 path, a ` #` in a data dir, a bucket literally named `yes`, and
+  the `**/*.db` glob all round-trip as the strings they are. Both were RED on the
+  previous tree with the verbatim production error; that is the negative control
+  for the emitter change.
+- `the_config_parses_and_the_age_keys_resolve_under_the_replica` (from 1bbe9a8)
+  is the nesting contract and still guards the new representation. Negative
+  control run: adding `#[serde(flatten)]` to `Replica::age` makes
+  identities/recipients escape up to the replica — a document that parses and is
+  still the broken config — and turns 3 tests red, naming the shape. Reverted.
+- The remaining exact-column substring assertions were deleted, not adjusted.
+  They pinned a fiction once the emitter owned indentation, and two ways to read
+  one document is one too many. Every assertion about `replicate.yml` now goes
+  through a parse, the way `replicate` reads it.
+
+`resolved_persistence` lost its dead `name` parameter (unused since age
+defaulting was removed in 51c1b32) — the only `unused variable` warning on main.
+
+328 lib tests, 0 failed. fmt clean. Clippy: identical to main minus that one
+warning; zero new.
+
+### Exposure — who else has a `replicate:` block
+
+The CR field is `spec.persistence`; the operator emits `<name>-replicate-config`
+only when `enabled: true`. Live on do-sfo3-hanzo-k8s:
+
+| service | enabled | ageSecret | operator-emitted |
+|---|---|---|---|
+| `hanzo/chat` | true | `chat-replicate-age` | yes — the only one carrying an age stanza |
+| `hanzo/dataroom` | true | none | yes — plaintext replica |
+| `hanzo/hanzo-app` | **false** | `hanzo-app-replicate-age` | no — its ConfigMap is STALE residue |
+| `hanzo/playground` | *(no CR)* | — | no — hand-written, a different schema |
+
+Two follow-ons this does not touch:
+
+- `hanzo-app-replicate-config` and `playground-replicate-config` are ConfigMaps
+  the operator does not own and will never reconcile or prune. `hanzo-app`'s was
+  written by an older operator (its header still says "age-encrypted", a string
+  this code has not emitted since 51c1b32); `playground`'s is a hand-authored
+  document with keys the operator has never generated (`sync-interval`,
+  `retention`, `on-restore`, age identities as FILE PATHS). Either they are dead
+  and should be deleted, or something reads them and it is not declared anywhere.
+- The cold-start gate named in the chat/hanzo-app CR comments is still open:
+  the snapshots in these buckets are PLAINTEXT while `Replica.OpenLTXFile`
+  decrypts unconditionally whenever identities are set. Restore onto an EMPTY
+  PVC still fails on `age decrypt: unexpected intro "LTX1"`. Correct YAML does
+  not fix that; it is a `hanzoai/replicate` change or a bucket cleanup.

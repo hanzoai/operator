@@ -75,8 +75,8 @@ const REPLICATE_CONFIG_MOUNT: &str = "/etc/replicate";
 /// Apply sane defaults to a user-supplied `PersistenceSpec`. The user only
 /// has to set `enabled` + `data_dir` (+ `db_path` or `dir_mode`); everything
 /// else (endpoint, region, secrets, image) defaults to the in-cluster
-/// SeaweedFS convention. `<service-name>` substitutions are resolved here.
-fn resolved_persistence(name: &str, p: &PersistenceSpec) -> PersistenceSpec {
+/// SeaweedFS convention.
+fn resolved_persistence(p: &PersistenceSpec) -> PersistenceSpec {
     let mut r = p.clone();
     if r.pattern.is_empty() {
         r.pattern = "**/*.db".to_string();
@@ -114,44 +114,98 @@ fn app_db_pvc_name(name: &str) -> String {
     format!("{}-app-db", name)
 }
 
-/// Render `replicate.yml`. Single-DB mode emits a `path:`; `dir_mode` emits
-/// `dir:` + `pattern:` + `watch: true` (replicate appends each DB's relative
-/// path to the S3 `path` prefix automatically). Creds + age material are
-/// injected as `${...}` env so the ConfigMap stays secret-free.
+/// `replicate.yml` as a VALUE — the document `hanzoai/replicate` reads, modelled
+/// as data instead of assembled as text.
+///
+/// The whole point of these types is that nothing here counts columns or quotes
+/// scalars. Both were hand-done, and both took production down: a Rust
+/// line-continuation ate the indentation off the `age:` stanza (chat + dataroom,
+/// `replicate-restore` dead on "mapping values are not allowed in this context"),
+/// and every interpolated field is a free-form CR string that reaches the same
+/// error the moment it contains `: ` or ` #`. Marshalling makes both defects
+/// unrepresentable rather than retested.
+mod replicate_yml {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    pub struct Config {
+        pub dbs: Vec<Db>,
+    }
+
+    /// One managed DB: a single file (`path`) or a watched tree
+    /// (`dir` + `pattern` + `watch`). Exactly one shape is populated; the other
+    /// keys are absent, which is what `replicate` uses to pick the mode.
+    #[derive(Serialize)]
+    pub struct Db {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub dir: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub pattern: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub watch: Option<bool>,
+        pub replicas: Vec<Replica>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub struct Replica {
+        #[serde(rename = "type")]
+        pub kind: String,
+        pub bucket: String,
+        pub path: String,
+        pub endpoint: String,
+        pub region: String,
+        pub force_path_style: bool,
+        pub access_key_id: String,
+        pub secret_access_key: String,
+        /// Absent on a plaintext bucket. Present, its keys are children of
+        /// `age` — a nesting the type system now holds, not indentation.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub age: Option<Age>,
+    }
+
+    #[derive(Serialize)]
+    pub struct Age {
+        pub identities: Vec<String>,
+        pub recipients: Vec<String>,
+    }
+}
+
+/// Names the producer of a file an operator reads in a cluster. serde_yaml emits
+/// no comments, so it is prepended — a header line, never structure.
+const REPLICATE_YML_HEADER: &str = "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS).\n";
+
+/// Render `replicate.yml`. Single-DB mode sets `path`; `dir_mode` sets
+/// `dir` + `pattern` + `watch` (replicate appends each DB's relative path to the
+/// S3 `path` prefix automatically). Creds + age material are injected as `${...}`
+/// env so the ConfigMap stays secret-free.
 fn render_replicate_yml(p: &PersistenceSpec) -> String {
-    let target = if p.dir_mode {
-        // The glob MUST be quoted — a bare YAML scalar starting with `*`
-        // (e.g. `**/*.db`) is parsed as an alias reference and is invalid.
-        format!(
-            "    dir: {}\n    pattern: \"{}\"\n    watch: true\n",
-            p.data_dir, p.pattern
-        )
-    } else {
-        format!("    path: {}/{}\n", p.data_dir, p.db_path)
+    let db = replicate_yml::Db {
+        path: (!p.dir_mode).then(|| format!("{}/{}", p.data_dir, p.db_path)),
+        dir: p.dir_mode.then(|| p.data_dir.clone()),
+        pattern: p.dir_mode.then(|| p.pattern.clone()),
+        watch: p.dir_mode.then_some(true),
+        replicas: vec![replicate_yml::Replica {
+            kind: "s3".to_string(),
+            bucket: p.bucket.clone(),
+            path: p.s3_path.clone(),
+            endpoint: p.s3_endpoint.clone(),
+            region: p.s3_region.clone(),
+            force_path_style: p.force_path_style,
+            access_key_id: "${S3_ACCESS_KEY_ID}".to_string(),
+            secret_access_key: "${S3_SECRET_ACCESS_KEY}".to_string(),
+            age: age_block(p),
+        }],
     };
-    format!(
-        "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS).\n\
-         dbs:\n\
-         \x20 - \n\
-{target}\
-         \x20   replicas:\n\
-         \x20     - type: s3\n\
-         \x20       bucket: {bucket}\n\
-         \x20       path: {s3_path}\n\
-         \x20       endpoint: {endpoint}\n\
-         \x20       region: {region}\n\
-         \x20       force-path-style: {fps}\n\
-         \x20       access-key-id: ${{S3_ACCESS_KEY_ID}}\n\
-         \x20       secret-access-key: ${{S3_SECRET_ACCESS_KEY}}\n\
-{age}",
-        target = target,
-        age = age_block(p),
-        bucket = p.bucket,
-        s3_path = p.s3_path,
-        endpoint = p.s3_endpoint,
-        region = p.s3_region,
-        fps = p.force_path_style,
-    )
+    // Total for this type: serde_yaml fails only on a value it cannot represent
+    // (a non-string map key, a NaN) and this document is strings, bools and
+    // vectors of strings. There is no error to degrade to, so there is none to
+    // model.
+    let body = serde_yaml::to_string(&replicate_yml::Config { dbs: vec![db] })
+        .expect("replicate.yml is strings and bools — serde_yaml cannot fail on it");
+    format!("{REPLICATE_YML_HEADER}{body}")
 }
 
 /// The pod volume for the live DB file: PVC if `storage` is set, else
@@ -239,30 +293,16 @@ fn replicate_env(p: &PersistenceSpec) -> Vec<crd_types::EnvVar> {
     .collect()
 }
 
-/// The replica's `age:` stanza, or nothing.
+/// The replica's `age` stanza, or nothing.
 ///
 /// Empty `age_secret` means the bucket is plaintext, and emitting the stanza
 /// anyway is what breaks BOTH directions: the sidecar cannot append to a
 /// plaintext replica, and restore cannot decrypt one.
-fn age_block(p: &PersistenceSpec) -> String {
-    if p.age_secret.is_empty() {
-        return String::new();
-    }
-    // Indentation is the contract here: these keys sit BESIDE access-key-id (8
-    // spaces) with their lists nested under them. Getting it wrong does not
-    // produce a subtly different config, it produces "yaml: line 14: mapping
-    // values are not allowed in this context" and the init container dies —
-    // which is exactly what a line-continuation in the first version of this
-    // function did, because Rust's `\` strips the leading whitespace it was
-    // meant to keep.
-    concat!(
-        "        age:\n",
-        "          identities:\n",
-        "            - ${AGE_IDENTITY}\n",
-        "          recipients:\n",
-        "            - ${AGE_RECIPIENT}\n",
-    )
-    .to_string()
+fn age_block(p: &PersistenceSpec) -> Option<replicate_yml::Age> {
+    (!p.age_secret.is_empty()).then(|| replicate_yml::Age {
+        identities: vec!["${AGE_IDENTITY}".to_string()],
+        recipients: vec!["${AGE_RECIPIENT}".to_string()],
+    })
 }
 
 /// The age credentials, present only when the replica is encrypted.
@@ -677,7 +717,7 @@ async fn reconcile_service_inner(
         .persistence
         .as_ref()
         .filter(|p| p.enabled)
-        .map(|p| resolved_persistence(name, p));
+        .map(resolved_persistence);
 
     // 1. Build the main container honoring spec.env/volumes/volumeMounts.
     let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
@@ -2132,7 +2172,7 @@ mod tests {
             .persistence
             .as_ref()
             .filter(|p| p.enabled)
-            .map(|p| resolved_persistence(name, p));
+            .map(resolved_persistence);
 
         let mut main_vms: Vec<crd_types::VolumeMount> = spec.volume_mounts.clone();
         if let Some(p) = &p {
@@ -2303,19 +2343,25 @@ mod tests {
 
     #[test]
     fn persistence_configmap_has_bucket_and_endpoint() {
-        let p = resolved_persistence("console", &persistence_spec());
+        let p = resolved_persistence(&persistence_spec());
         let yml = render_replicate_yml(&p);
-        assert!(yml.contains("bucket: console-db"), "must carry the bucket");
-        assert!(
-            yml.contains("endpoint: http://s3.hanzo.svc:9000"),
-            "must carry the http:// endpoint (scheme is load-bearing)"
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yml)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{yml}"));
+        let r = &doc["dbs"][0]["replicas"][0];
+        assert_eq!(r["bucket"].as_str(), Some("console-db"));
+        assert_eq!(
+            r["endpoint"].as_str(),
+            Some("http://s3.hanzo.svc:9000"),
+            "the http:// scheme is load-bearing — replicate prepends https:// to a scheme-less endpoint"
         );
-        assert!(
-            yml.contains("force-path-style: true"),
-            "must carry force-path-style for SeaweedFS"
+        assert_eq!(
+            r["force-path-style"].as_bool(),
+            Some(true),
+            "SeaweedFS needs path-style addressing"
         );
-        assert!(
-            yml.contains("path: /var/lib/hanzo/console/app.db"),
+        assert_eq!(
+            doc["dbs"][0]["path"].as_str(),
+            Some("/var/lib/hanzo/console/app.db"),
             "single-DB mode must point at the data_dir/db_path file"
         );
     }
@@ -2325,22 +2371,25 @@ mod tests {
         let mut pspec = persistence_spec();
         pspec.dir_mode = true;
         pspec.db_path = String::new();
-        let p = resolved_persistence("console", &pspec);
+        let p = resolved_persistence(&pspec);
 
-        // ConfigMap uses dir: + watch: true, NOT a single path:.
+        // ConfigMap uses dir + watch, NOT a single path.
         let yml = render_replicate_yml(&p);
-        assert!(
-            yml.contains("dir: /var/lib/hanzo/console"),
-            "dir_mode emits dir:"
+        let doc: serde_yaml::Value = serde_yaml::from_str(&yml)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{yml}"));
+        assert_eq!(
+            doc["dbs"][0]["dir"].as_str(),
+            Some("/var/lib/hanzo/console")
         );
-        assert!(yml.contains("watch: true"), "dir_mode emits watch: true");
-        assert!(
-            yml.contains("pattern: \"**/*.db\""),
-            "dir_mode emits the glob, quoted (a bare `*` scalar is invalid YAML)"
+        assert_eq!(doc["dbs"][0]["watch"].as_bool(), Some(true));
+        assert_eq!(
+            doc["dbs"][0]["pattern"].as_str(),
+            Some("**/*.db"),
+            "the glob must survive as a STRING — unquoted it is an alias reference"
         );
         assert!(
-            !yml.contains("\n    path:"),
-            "dir_mode must NOT emit a single path:"
+            doc["dbs"][0]["path"].is_null(),
+            "dir_mode must NOT emit a single path:\n{yml}"
         );
 
         // No restore init in dir_mode.
@@ -2690,38 +2739,19 @@ mod age_optional_tests {
         assert_eq!(names, vec!["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"]);
     }
 
-    /// Naming a secret is what asks for encryption, and it still works.
+    /// Naming a secret is what asks for encryption, and it still works: the
+    /// stanza is present and the env that fills its `${...}` is wired.
+    ///
+    /// The stanza's SHAPE is not asserted here — `the_config_parses_and_the_age_
+    /// keys_resolve_under_the_replica` owns that, through a parse. There is one
+    /// way to read this document and it is the way `replicate` reads it.
     #[test]
     fn age_secret_means_age_stanza_and_age_env() {
         let p = spec("my-age");
         let cfg = render_replicate_yml(&p);
         assert!(
-            cfg.contains("age:"),
+            replica(&cfg)["age"].is_mapping(),
             "encrypted replica lost its age stanza:\n{cfg}"
-        );
-        assert!(cfg.contains("${AGE_IDENTITY}") && cfg.contains("${AGE_RECIPIENT}"));
-        // INDENTATION IS THE CONTRACT. The first version of age_block used a
-        // Rust line-continuation, which strips the leading whitespace it was
-        // meant to keep: `age:` landed at 9 spaces with identities/recipients
-        // un-nested beside it. That is not a subtly different config, it is
-        // "yaml: line 14: mapping values are not allowed in this context" and a
-        // dead init container. Asserting the exact block is what turns a silent
-        // whitespace bug into a failing test.
-        assert!(
-            cfg.contains(concat!(
-                "        age:\n",
-                "          identities:\n",
-                "            - ${AGE_IDENTITY}\n",
-                "          recipients:\n",
-                "            - ${AGE_RECIPIENT}\n",
-            )),
-            "age stanza is misindented — replicate will refuse the config:\n{cfg}"
-        );
-        // And the whole document must still be a mapping of the shape replicate
-        // reads: `dbs:` at column 0 with the age keys BESIDE access-key-id.
-        assert!(
-            cfg.contains("        access-key-id:"),
-            "indent baseline moved:\n{cfg}"
         );
         let names: Vec<_> = replicate_env(&p).into_iter().map(|e| e.name).collect();
         assert_eq!(
@@ -2807,13 +2837,56 @@ mod age_optional_tests {
         );
     }
 
+    /// Every field on the wire is a free-form string a CR author picks, and YAML
+    /// reserves characters inside scalars. `path: chat: prod` is not a path with
+    /// a colon in it — it is a parse error, the same class of break as the
+    /// misindented age stanza and with the same blast radius (a dead
+    /// `replicate-restore` init container and a service that will not boot).
+    ///
+    /// A marshalling emitter quotes what needs quoting; a `format!` emitter
+    /// cannot, because it never sees a value, only bytes.
+    #[test]
+    fn hostile_values_survive_as_strings() {
+        let mut p = spec("my-age");
+        p.s3_path = "chat: prod".into(); // `: ` ends a plain scalar
+        p.data_dir = "/data #1".into(); // ` #` starts a comment
+        p.bucket = "yes".into(); // a YAML 1.1 boolean
+        let cfg = render_replicate_yml(&p);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&cfg)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{cfg}"));
+
+        assert_eq!(doc["dbs"][0]["path"].as_str(), Some("/data #1/app.db"));
+        let r = &doc["dbs"][0]["replicas"][0];
+        assert_eq!(r["path"].as_str(), Some("chat: prod"));
+        assert_eq!(
+            r["bucket"].as_str(),
+            Some("yes"),
+            "a bucket named `yes` came back as a bool:\n{cfg}"
+        );
+    }
+
+    /// Same property on the other document shape: the fan-out glob is a string,
+    /// and unquoted `**/*.db` is an ALIAS REFERENCE, not a pattern.
+    #[test]
+    fn hostile_values_survive_as_strings_in_dir_mode() {
+        let mut p = spec("my-age");
+        p.dir_mode = true;
+        p.pattern = "**/*.db".into();
+        p.data_dir = "/data: shard".into();
+        let cfg = render_replicate_yml(&p);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&cfg)
+            .unwrap_or_else(|e| panic!("replicate.yml does not parse — {e}:\n{cfg}"));
+        assert_eq!(doc["dbs"][0]["dir"].as_str(), Some("/data: shard"));
+        assert_eq!(doc["dbs"][0]["pattern"].as_str(), Some("**/*.db"));
+    }
+
     /// Defaulting the secret name is what made encryption unconditional. It must
     /// stay absent, or every CR silently opts in again.
     #[test]
     fn defaults_do_not_reintroduce_an_age_secret() {
         let mut p = PersistenceSpec::default();
         p.bucket = "b".into();
-        let d = resolved_persistence("svc", &p);
+        let d = resolved_persistence(&p);
         assert!(
             d.age_secret.is_empty(),
             "age_secret was defaulted to {:?}",
