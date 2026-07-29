@@ -1,5 +1,5 @@
 //! IAM reconciler — newtype facade over Service. The Hanzo IAM identity
-//! provider (Casdoor) runs as an ordinary Service-shaped workload; the IAM
+//! provider runs as an ordinary Service-shaped workload; the IAM
 //! CRD is the semantic marker for "this is the identity provider", letting
 //! platform-side tooling key off the Kind without inspecting the inner spec.
 

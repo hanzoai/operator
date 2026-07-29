@@ -133,7 +133,7 @@ pub async fn read_service_token_from(
 
 /// Returns true when an application identified by `<organization>/<name>`
 /// already exists in IAM. Used by reconcilers to skip a redundant upsert
-/// (which on the current Casdoor fork ALWAYS regenerates the
+/// (IAM's `BootstrapApplicationUpsert` ALWAYS regenerates the
 /// clientSecret regardless of submitted value), and only upsert on
 /// create. Errors propagate; treat 404 as "does not exist".
 pub async fn application_exists(
@@ -170,7 +170,7 @@ pub async fn application_exists(
         .text()
         .await
         .map_err(|e| OperatorError::Iam(format!("application_exists read body: {e}")))?;
-    // Casdoor returns 200 with `{"status":"ok","data":null}` for not-found
+    // IAM returns 200 with `{"status":"ok","data":null}` for not-found
     // on get-application — there is no 404. Trust the data field.
     #[derive(Deserialize)]
     struct GetResp {

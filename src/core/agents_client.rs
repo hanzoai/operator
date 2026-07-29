@@ -81,7 +81,7 @@ fn require_token(config: &AgentsClientConfig) -> Result<()> {
 }
 
 /// Fetch one agent by name, or `Ok(None)` if it does not exist. A 404 (or the
-/// Casdoor-style `status=ok data=null`) maps to `None`; other non-2xx surface
+/// `status=ok data=null` envelope) maps to `None`; other non-2xx surface
 /// as an error so an auth failure never masquerades as "does not exist" (the
 /// same trap `iam_admin::application_exists` guards).
 pub async fn get_agent(config: &AgentsClientConfig, name: &str) -> Result<Option<AgentView>> {
