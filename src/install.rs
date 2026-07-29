@@ -145,11 +145,66 @@ const APP_ROLE_ENUM: &[&str] = &[
     "agentDeployment",
 ];
 
-/// Post-process the generated `App` CRD to match the merged universe
-/// `apps.hanzo.ai` shape — the two things schemars cannot express:
-/// (1) `x-kubernetes-preserve-unknown-fields: true` on `spec`, so the
-///     role-specific fields (`AppSpec.extra`, `#[schemars(skip)]`) are carried
-///     and never pruned — the exact data-loss bug that sank the reduced fork;
+/// The role-specific `AppSpec` fields that live on the wire but not in the Rust
+/// struct: they ride in `AppSpec.extra` (`#[serde(flatten)]` + `#[schemars(skip)]`)
+/// and so are invisible to schemars. They MUST be declared here — see
+/// `harden_app_crd` for what happens when they are not.
+///
+/// Modelled from the live objects: `domains` carries domain/routes/tls/annotations
+/// with an integer `servicePort`; `storage` carries
+/// size/storageClassName/volumeName/retentionPolicy.
+fn app_role_specific_properties() -> serde_json::Value {
+    serde_json::json!({
+        "clusterIssuer":     { "type": "string" },
+        "credentialsSecret": { "type": "string" },
+        "ingressClassName":  { "type": "string" },
+        "tag":               { "type": "string" },
+        "type":              { "type": "string" },
+        "serviceAliases":    { "type": "array", "items": { "type": "string" } },
+        "storage": { "type": "object", "properties": {
+            "retentionPolicy":  { "type": "string" },
+            "size":             { "type": "string" },
+            "storageClassName": { "type": "string" },
+            "volumeName":       { "type": "string" },
+        }},
+        "domains": { "type": "array", "items": { "type": "object", "properties": {
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "domain":      { "type": "string" },
+            "tls":         { "type": "boolean" },
+            "routes": { "type": "array", "items": { "type": "object", "properties": {
+                "path":        { "type": "string" },
+                "pathType":    { "type": "string" },
+                "serviceName": { "type": "string" },
+                "servicePort": { "type": "integer" },
+            }}},
+        }}},
+    })
+}
+
+/// Post-process the generated `App` CRD to match the `apps.hanzo.ai` shape the
+/// fleet actually runs — the two things schemars cannot express:
+///
+/// (1) the role-specific spec fields, DECLARED rather than preserved-as-unknown.
+///     `x-kubernetes-preserve-unknown-fields: true` on `spec` looks like the
+///     obvious way to carry `AppSpec.extra`, and it does carry it — but it also
+///     collapses the PUBLISHED OpenAPI model to ZERO spec properties. Hanzo CD
+///     builds its structured-merge diff from that published model, not from the
+///     CRD, so every comparison died on `.spec.image: field not declared in
+///     schema`, sync went Unknown, and reconciliation silently stopped for EVERY
+///     App CR in the fleet while the Application still reported Healthy at the
+///     right revision. The flag was load-bearing only because eight fields were
+///     in live use and undeclared, so dropping it alone would have PRUNED them
+///     off 80 CRs. Declaring them first (`app_role_specific_properties`) and only
+///     then dropping the flag is what makes the model complete AND lossless.
+///     `AppSpec.extra` still collects them at the serde layer — that is
+///     independent of the schema, so a DECLARED field is stored and projected
+///     exactly as before.
+///
+///     This ran as a hand-edit on `k8s/crds/all-hanzo.ai.yaml` (f722cd8) that the
+///     generator could not reproduce, so the next `generate-crd-yaml` would have
+///     silently reverted a fleet-down fix. It lives in the generator now: the
+///     bundles are generated output again, and regeneration is faithful.
+///
 /// (2) the `spec.role` enum, so the emitted schema agrees with universe while the
 ///     Rust type stays an open string (so `classify` — not the schema — is the
 ///     runtime authority and an operator newer than the CRD still fails safe on
@@ -168,8 +223,24 @@ fn harden_app_crd(crd: &mut CustomResourceDefinition) {
         let Some(spec) = props.get_mut("spec") else {
             continue;
         };
-        // (1) never prune the role-specific unknowns.
-        spec.x_kubernetes_preserve_unknown_fields = Some(true);
+        // (1) declare the role-specific fields, and DO NOT set preserve-unknown:
+        // a declared model is what the published OpenAPI model — and therefore
+        // the control plane's diff — is built from.
+        spec.x_kubernetes_preserve_unknown_fields = None;
+        if let (Some(target), serde_json::Value::Object(extra)) =
+            (spec.properties.as_mut(), app_role_specific_properties())
+        {
+            for (name, schema) in extra {
+                match serde_json::from_value(schema) {
+                    Ok(props) => {
+                        target.insert(name, props);
+                    }
+                    // Unreachable for the literal above; a malformed declaration
+                    // must never silently drop the field it was meant to protect.
+                    Err(e) => panic!("App role-specific property {name} is not a schema: {e}"),
+                }
+            }
+        }
         // (2) constrain role to the known profiles.
         if let Some(role) = spec.properties.as_mut().and_then(|p| p.get_mut("role")) {
             role.enum_ = Some(
@@ -686,6 +757,52 @@ mod tests {
         );
         assert!(app.spec.versions[0].served);
         assert!(app.spec.versions[0].storage);
+    }
+
+    /// The App spec must be DECLARED, not preserved-as-unknown.
+    /// `x-kubernetes-preserve-unknown-fields` on `spec` collapses the published
+    /// OpenAPI model to zero properties, which is what made Hanzo CD's diff die on
+    /// `.spec.image: field not declared in schema` and stop reconciling every App
+    /// CR in the fleet. The eight role-specific fields must be declared so that
+    /// dropping the flag prunes nothing off the live CRs.
+    #[test]
+    fn app_crd_declares_the_role_specific_fields_instead_of_preserving_unknowns() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        let app = crds.iter().find(|c| c.spec.names.kind == "App").unwrap();
+        let spec = app.spec.versions[0]
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .and_then(|r| r.properties.as_ref())
+            .and_then(|p| p.get("spec"))
+            .expect("App spec schema");
+
+        assert_eq!(
+            spec.x_kubernetes_preserve_unknown_fields, None,
+            "preserve-unknown on spec zeroes the PUBLISHED model — the control \
+             plane diffs against that, not the CRD"
+        );
+        let props = spec.properties.as_ref().expect("spec properties");
+        // The field the CD comparison actually died on.
+        assert!(props.contains_key("image"), "spec.image must be declared");
+        // Every role-specific field that rides in `AppSpec.extra`. Undeclared +
+        // no preserve-unknown would PRUNE these off the live CRs.
+        for field in [
+            "tag",
+            "clusterIssuer",
+            "domains",
+            "ingressClassName",
+            "credentialsSecret",
+            "serviceAliases",
+            "storage",
+            "type",
+        ] {
+            assert!(
+                props.contains_key(field),
+                "spec.{field} is in live use — declaring it is what makes dropping \
+                 preserve-unknown lossless"
+            );
+        }
     }
 
     // ---- operator manifests ----

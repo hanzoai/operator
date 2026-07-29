@@ -20515,6 +20515,8 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              clusterIssuer:
+                type: string
               command:
                 items:
                   type: string
@@ -20562,6 +20564,34 @@ spec:
                     nullable: true
                     type: integer
                 type: object
+              credentialsSecret:
+                type: string
+              domains:
+                items:
+                  properties:
+                    annotations:
+                      additionalProperties:
+                        type: string
+                      type: object
+                    domain:
+                      type: string
+                    routes:
+                      items:
+                        properties:
+                          path:
+                            type: string
+                          pathType:
+                            type: string
+                          serviceName:
+                            type: string
+                          servicePort:
+                            type: integer
+                        type: object
+                      type: array
+                    tls:
+                      type: boolean
+                  type: object
+                type: array
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
@@ -20759,6 +20789,8 @@ spec:
                         type: string
                     type: object
                 type: object
+              ingressClassName:
+                type: string
               initContainers:
                 items:
                   properties:
@@ -21306,6 +21338,10 @@ spec:
                 type: object
               serviceAccountName:
                 type: string
+              serviceAliases:
+                items:
+                  type: string
+                type: array
               serviceMonitor:
                 nullable: true
                 properties:
@@ -21442,6 +21478,17 @@ spec:
                   - name
                   type: object
                 type: array
+              storage:
+                properties:
+                  retentionPolicy:
+                    type: string
+                  size:
+                    type: string
+                  storageClassName:
+                    type: string
+                  volumeName:
+                    type: string
+                type: object
               strategy:
                 type: string
               surgeColocation:
@@ -21456,6 +21503,8 @@ spec:
                   single-open engine (Badger/LMDB/Meili, Qdrant) must use `strategy: Recreate`
                   instead — leave this false. Default false (untouched).
                 type: boolean
+              tag:
+                type: string
               tolerations:
                 description: |-
                   `PodSpec.tolerations` — lets this workload onto tainted nodes. The
@@ -21491,6 +21540,8 @@ spec:
                       type: string
                   type: object
                 type: array
+              type:
+                type: string
               upgradePolicy:
                 description: |-
                   Managed-upgrade policy. OPT-IN: when absent, `spec.image` is applied
@@ -21739,7 +21790,6 @@ spec:
                   type: object
                 type: array
             type: object
-            x-kubernetes-preserve-unknown-fields: true
           status:
             nullable: true
             properties:
