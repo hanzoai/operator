@@ -15,15 +15,15 @@
 images:
   - name: operator
     # ghcr for the OSS artifact other orgs pull; the fleet registry is where the
-    # deploy lane reads from. Both are the same build.
+    # deploy lane reads from. Both are the same build — hanzoai/ci pushes here
+    # and server-side-copies the same tags to our registry, so this stays ghcr.
     #
-    # The key is `repo:`, not `image:`. build.yml reads `jq -r .repo` on every
-    # entry and has no fallback, so `image:` parsed to the string "null" and the
-    # lane would have tagged `null:sha-<short>-amd64` and failed at push. It was
-    # never caught because this repo had produced ZERO runs — the caller existed
-    # and nothing had ever triggered it, so the typo sat in a file no build read.
-    # (`image:` IS a real key, but it belongs to `deploy.services[]`, where it
-    # names which entry here to roll out. Same word, different object.)
+    # The key is `repo:`, not `image:`. The reusable reads `.repo` off each
+    # images[] entry — the enqueue fan-out, the buildx tag list and the deploy
+    # resolver all select it, with no fallback — so an entry keyed `image:`
+    # resolves to a null repo and tags `null:sha-<short>-amd64`. `image:` IS a
+    # real key, but it belongs to `deploy.services[]`, where it names a LOCAL
+    # images[] entry rather than a registry ref. Same word, different object.
     repo: ghcr.io/hanzoai/operator
     dockerfile: Dockerfile
     context: .
