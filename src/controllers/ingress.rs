@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(build(&kms), build(&d("kms.hanzo.ai")));
         // Distinct hosts still get distinct names — collapsing them would be the
         // opposite failure.
-        assert_ne!(build(&kms), build(&d("kms.lux.network")));
+        assert_ne!(build(&kms), build(&d("kms.lux.cloud")));
         // And no index survives anywhere in the name.
         assert!(!build(&kms).contains("-0-"));
     }
