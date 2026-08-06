@@ -7,6 +7,24 @@
 # (stabilized in 1.85); pinned to the toolchain that builds the workspace.
 FROM rust:1.95-bookworm AS builder
 
+# Bound rustc parallelism, because nothing else here does.
+#
+# cargo sizes -j from the CPUs it can SEE. Inside a buildx step that is the
+# NODE's core count (8), not the runner pod's 6-CPU / 26Gi cgroup — a build
+# container gets a clean environment, so the `CARGO_BUILD_JOBS: "4"` the
+# git-runner fleet sets for its own test gates (universe:
+# infra/k8s/git-runner/config.yaml) never reaches this compile. Eight
+# concurrent rustc, each peaking in LLVM codegen, against a 26Gi ceiling that
+# up to ten runners on one 62.8Gi node are already sharing.
+#
+# The failure does NOT look like memory. The kubelet sees nothing, because the
+# process that dies is inside the pod's own dockerd: the log just stops, and
+# the only tell is `(signal: 9, SIGKILL: kill)` followed by
+# `error: could not compile <crate>` — where the crate named is whichever one
+# happened to be resident, not one with anything wrong with it. Measured here
+# on run 36785, which died on `jiff` after 181s.
+ENV CARGO_BUILD_JOBS=4
+
 WORKDIR /build
 
 # Copy Cargo manifest and lock first for layer caching.
