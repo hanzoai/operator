@@ -16,7 +16,15 @@ images:
   - name: operator
     # ghcr for the OSS artifact other orgs pull; the fleet registry is where the
     # deploy lane reads from. Both are the same build.
-    image: ghcr.io/hanzoai/operator
+    #
+    # The key is `repo:`, not `image:`. build.yml reads `jq -r .repo` on every
+    # entry and has no fallback, so `image:` parsed to the string "null" and the
+    # lane would have tagged `null:sha-<short>-amd64` and failed at push. It was
+    # never caught because this repo had produced ZERO runs — the caller existed
+    # and nothing had ever triggered it, so the typo sat in a file no build read.
+    # (`image:` IS a real key, but it belongs to `deploy.services[]`, where it
+    # names which entry here to roll out. Same word, different object.)
+    repo: ghcr.io/hanzoai/operator
     dockerfile: Dockerfile
     context: .
     # amd64 only, deliberately. DOKS (do-sfo3-hanzo-k8s, lux-k8s, zoo-k8s) is
@@ -27,9 +35,16 @@ images:
     platforms: [linux/amd64]
 
 test:
-  # cargo test is the gate. One test (env_is_carried_to_main_container) fails on
-  # a clean tree today and is tracked separately; it is NOT excluded here,
-  # because a gate that skips the failing test is not a gate.
+  # cargo test is the gate, and the whole lib — no filter. A filter is how a
+  # gate quietly stops testing: `cargo test --lib <name>` with a stale name
+  # prints "running 0 tests" and exits 0, which is why build.yml separately
+  # refuses a gate that reported success without running one.
+  #
+  # This comment used to say env_is_carried_to_main_container fails on a clean
+  # tree. It does not, and has not for some time: 328 passed / 0 failed, and
+  # that test passes by name. The note outlived the bug because nothing ever
+  # ran this gate — the repo had produced zero runs, so no result was ever
+  # published to contradict it.
   - name: cargo test
     run: cargo test --lib
 
