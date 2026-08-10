@@ -53,7 +53,7 @@ repos link here, they never re-document the reconcile logic. Full model in
 | SQL     | sql   | Datastore (type=postgresql) |
 | KV      | kv    | Datastore (type=valkey) |
 | DocDB   | docdb | Datastore (type=docdb) |
-| S3      | s3    | Datastore (type=minio) |
+| S3      | s3    | Datastore (engine=s3, SeaweedFS) |
 | IAM     | iam   | Service |
 | KMS     | kms   | Service |
 | LLM     | llm   | Service |
@@ -179,10 +179,10 @@ controller per Kind under `src/controllers/`:
   `service::reconcile_service_inner_pub`.
 - Datastore-backed facades (`sql.rs`, `kv.rs`, `docdb.rs`, `s3.rs`)
   unwrap the inner `DatastoreSpec` and **force** `spec.type` to the
-  canonical value (`postgresql` / `valkey` / `docdb` / `minio`) before
+  canonical value (`postgresql` / `valkey` / `docdb` / `s3`) before
   delegating to `datastore::reconcile_datastore_inner_pub`. This makes
   the facade kind authoritative — a `SQL` CR cannot accidentally
-  materialize as a Valkey or MinIO datastore even if the user sets
+  materialize as a Valkey or S3 datastore even if the user sets
   `spec.type` to something else.
 
 Each controller is ~75 LoC with one smoke test asserting newtype

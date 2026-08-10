@@ -1,7 +1,7 @@
 //! SQL reconciler — newtype facade over the shared datastore machinery.
 //! PostgreSQL workloads (hanzoai/sql) declared as a `SQL` CR materialize with
 //! `Engine::Postgres` pinned by the Kind: a `SQL` CR cannot become a Valkey or
-//! MinIO datastore because the engine is the Kind, not a field.
+//! S3 datastore because the engine is the Kind, not a field.
 
 use std::sync::Arc;
 use std::time::Duration;

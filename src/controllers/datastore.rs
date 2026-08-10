@@ -1,5 +1,5 @@
 //! Datastore reconciler — dispatches by `spec.type` to PostgreSQL, Valkey,
-//! DocDB (FerretDB), MinIO, NATS, or generic datastore engines.
+//! DocDB (FerretDB), S3 (SeaweedFS), or generic datastore engines.
 //!
 //! Each type runs as a StatefulSet with a headless Service for pod DNS plus
 //! a ClusterIP Service for client connections.
@@ -47,7 +47,7 @@ fn default_image_for(engine: Engine) -> ImageSpec {
         Engine::Postgres => ("ghcr.io/hanzoai/sql", "16"),
         Engine::Valkey => ("ghcr.io/hanzoai/kv", "8"),
         Engine::Docdb => ("ghcr.io/hanzoai/docdb", "latest"),
-        Engine::Minio => ("ghcr.io/hanzoai/s3", "latest"),
+        Engine::S3 => ("ghcr.io/hanzoai/s3", "latest"),
         Engine::Datastore => ("ghcr.io/hanzoai/datastore", "latest"),
     };
     ImageSpec {
@@ -367,7 +367,7 @@ fn default_port_for(engine: Engine) -> i32 {
         Engine::Postgres => 5432,
         Engine::Valkey => 6379,
         Engine::Docdb => 27017,
-        Engine::Minio => 9000,
+        Engine::S3 => 9000,
         Engine::Datastore => 8080,
     }
 }
@@ -375,13 +375,13 @@ fn default_port_for(engine: Engine) -> i32 {
 /// Default container mount path for a datastore engine's data volume. Matches
 /// the paths the live fleet already uses so an adopted StatefulSet's pod spec
 /// is byte-identical (no needless rollout): Postgres writes under
-/// `/var/lib/postgresql/data`, Valkey/MinIO/NATS under `/data`, FerretDB
+/// `/var/lib/postgresql/data`, Valkey/S3 under `/data`, FerretDB
 /// (docdb) under `/state`.
 fn default_data_path_for(engine: Engine) -> String {
     match engine {
         Engine::Postgres => "/var/lib/postgresql/data",
         Engine::Docdb => "/state",
-        Engine::Valkey | Engine::Minio | Engine::Datastore => "/data",
+        Engine::Valkey | Engine::S3 | Engine::Datastore => "/data",
     }
     .to_string()
 }
@@ -431,7 +431,7 @@ pub fn connection_string_for(spec: &DBSpec, engine: Engine, name: &str, namespac
         Engine::Postgres => "postgresql",
         Engine::Valkey => "redis",
         Engine::Docdb => "mongodb",
-        Engine::Minio => "http",
+        Engine::S3 => "http",
         Engine::Datastore => "tcp",
     };
     format!("{scheme}://{host}:{port}")

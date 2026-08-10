@@ -625,8 +625,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -6669,8 +6669,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -8070,8 +8070,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -9471,8 +9471,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -11116,7 +11116,7 @@ spec:
                 - postgresql
                 - valkey
                 - docdb
-                - minio
+                - s3
                 - datastore
                 type: string
               env:
@@ -12733,8 +12733,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -14134,8 +14134,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -16099,8 +16099,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -17500,8 +17500,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -18901,8 +18901,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'
@@ -21316,8 +21316,8 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS/MinIO require path-style addressing (subdomain buckets
-                      don't resolve in-cluster). Default `true`.
+                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      resolve in-cluster). Default `true`.
                     type: boolean
                   image:
                     description: '`hanzoai/replicate` image. Default the pinned semver.'

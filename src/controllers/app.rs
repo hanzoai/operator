@@ -15,7 +15,7 @@
 //! | role                                                              | profile                              |
 //! |-------------------------------------------------------------------|--------------------------------------|
 //! | absent / `generic` / `service` / `llm` / `iam` / `kms` / `explorer` / `function` / `indexer` / `observability` / `queue` / `spa` / `static` | `service::reconcile_service_inner_pub` |
-//! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`→minio, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
+//! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
 //! | `ingress`                                                         | `ingress::reconcile_ingress_inner_pub` |
 //! | `gateway` / `base` / `mpc` / `network` / `node` | delegated (dedicated controller; App stands aside) |
 //! | `chain` / `validator`                                             | NoOp stub (Network owns them)        |
@@ -102,7 +102,7 @@ pub fn classify(role: Option<&str>) -> Dispatch {
         "sql" => Dispatch::Datastore(Engine::Postgres),
         "kv" => Dispatch::Datastore(Engine::Valkey),
         "docdb" => Dispatch::Datastore(Engine::Docdb),
-        "s3" => Dispatch::Datastore(Engine::Minio),
+        "s3" => Dispatch::Datastore(Engine::S3),
         "datastore" => Dispatch::Datastore(Engine::Datastore),
         // Infra controllers with an owner-taking inner entrypoint.
         "ingress" => Dispatch::Ingress,
@@ -551,7 +551,7 @@ mod tests {
         assert_eq!(classify(Some("sql")), Dispatch::Datastore(Engine::Postgres));
         assert_eq!(classify(Some("kv")), Dispatch::Datastore(Engine::Valkey));
         assert_eq!(classify(Some("docdb")), Dispatch::Datastore(Engine::Docdb));
-        assert_eq!(classify(Some("s3")), Dispatch::Datastore(Engine::Minio));
+        assert_eq!(classify(Some("s3")), Dispatch::Datastore(Engine::S3));
         assert_eq!(
             classify(Some("datastore")),
             Dispatch::Datastore(Engine::Datastore)
@@ -933,7 +933,7 @@ spec:
         let app = app_from_yaml(s3);
         assert_eq!(
             classify(app.spec.role.as_deref()),
-            Dispatch::Datastore(Engine::Minio)
+            Dispatch::Datastore(Engine::S3)
         );
         // The projection must carry it (this is the DBSpec round-trip fix).
         let db: DBSpec = project(&app.spec).expect("s3 → DBSpec");
@@ -943,7 +943,7 @@ spec:
             "enableServiceLinks must survive the App→DBSpec projection"
         );
         // And the render must place it on the PodSpec.
-        let sts = datastore_sts(&app, Engine::Minio);
+        let sts = datastore_sts(&app, Engine::S3);
         let pod = sts.spec.unwrap().template.spec.unwrap();
         assert_eq!(
             pod.enable_service_links,

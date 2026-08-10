@@ -1,7 +1,7 @@
 //! KV reconciler — newtype facade over the shared datastore machinery. Valkey
 //! workloads (hanzoai/kv) declared as a `KV` CR materialize with
 //! `Engine::Valkey` pinned by the Kind: a `KV` CR cannot become a PostgreSQL or
-//! MinIO datastore because the engine is the Kind, not a field.
+//! S3 datastore because the engine is the Kind, not a field.
 
 use std::sync::Arc;
 use std::time::Duration;

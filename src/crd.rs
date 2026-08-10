@@ -327,8 +327,8 @@ pub struct PersistenceSpec {
     /// S3 region. Default `us-east-1`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub s3_region: String,
-    /// SeaweedFS/MinIO require path-style addressing (subdomain buckets
-    /// don't resolve in-cluster). Default `true`.
+    /// SeaweedFS requires path-style addressing (subdomain buckets don't
+    /// resolve in-cluster). Default `true`.
     #[serde(default = "default_true")]
     pub force_path_style: bool,
     /// K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -755,23 +755,28 @@ pub enum Engine {
     Valkey,
     /// FerretDB over Postgres — MongoDB wire protocol (`hanzoai/docdb`).
     Docdb,
-    /// MinIO S3 (`hanzoai/s3`).
-    Minio,
+    /// SeaweedFS object store (`hanzoai/s3`).
+    S3,
     /// hanzoai/datastore analytics engine (Hanzo Datastore).
     Datastore,
 }
 
 impl Engine {
     /// Canonical identity string — the `app.kubernetes.io/component` label and
-    /// the default service-port name. Preserved 1:1 from the retired
-    /// `spec.type` discriminator so an adopted StatefulSet's pod spec stays
-    /// byte-identical (no needless rollout).
+    /// the default service-port name. Carried over from the retired `spec.type`
+    /// discriminator so an adopted StatefulSet's pod spec stays byte-identical
+    /// (no needless rollout).
+    ///
+    /// The object store is the one that moved. Its component label now reads
+    /// `s3`, naming what actually runs: SeaweedFS, our own `hanzoai/s3`. The
+    /// move was free — no live resource carried the old label. Keep this
+    /// string a description of the engine we run, never of an upstream.
     pub fn as_str(self) -> &'static str {
         match self {
             Engine::Postgres => "postgresql",
             Engine::Valkey => "valkey",
             Engine::Docdb => "docdb",
-            Engine::Minio => "minio",
+            Engine::S3 => "s3",
             Engine::Datastore => "datastore",
         }
     }
