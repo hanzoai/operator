@@ -1,22 +1,22 @@
 # Fast-forward this repo's main from github.com/hanzoai/operator.
 #
 # WHY THIS EXISTS NOW. Until today git.hanzo.ai/hanzoai/operator was a PULL
-# MIRROR, and it had been frozen since 2026-07-29 — the forge fetches mirrors
+# MIRROR, and it had been frozen since 2026-07-29 — Hanzo Git fetches mirrors
 # anonymously, this repo is private on github.com, so every sync answered
 # `remote: Repository not found` while `mirror_updated` kept bumping and the
 # metadata went on looking healthy. A frozen mirror receives no pushes, fires no
 # workflows, and reports `total_count: 0` runs, which is indistinguishable from
 # nobody having pushed. That is why this repo's build lane had never run once.
-# (It is not special: 393 repos on this forge are failing the same way.)
+# (It is not special: 393 repos on Hanzo Git are failing the same way.)
 #
-# The mirror is now converted to a regular repo, so the forge accepts pushes and
+# The mirror is now converted to a regular repo, so Hanzo Git accepts pushes and
 # runs Actions. That fixes the build lane and removes the automatic sync in the
-# same stroke — so without this file a push to github.com would reach the forge
+# same stroke — so without this file a push to github.com would reach Hanzo Git
 # never, build nothing, and look exactly like the failure we just cleared. The
 # sync has to become explicit because it is no longer implicit.
 #
 # FAST-FORWARD ONLY, and it refuses rather than reconciles. A force from here
-# would silently discard whatever is on the forge, and the forge is what CI and
+# would silently discard whatever is on Hanzo Git, and Hanzo Git is what CI and
 # the registry now build from. Divergence is a human decision, so this errors and
 # says so instead of picking a winner.
 #
