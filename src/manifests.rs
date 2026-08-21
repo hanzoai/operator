@@ -48,11 +48,11 @@ pub const MANAGED_BY_VALUE: &str = "hanzo-operator";
 /// `app.kubernetes.io/version`. A label value must be ≤63 chars, contain only
 /// `[A-Za-z0-9._-]`, and start + end alphanumeric.
 ///
-/// Digest-pinned refs are now the canonical deploy pattern (universe#445), so
+/// Digest-pinned refs are the canonical deploy pattern (universe#445), so
 /// `spec.image.tag` can carry `v8.4.118@sha256:9820e153…`. That value blows
 /// BOTH the 63-char limit and the charset (`@`, `:` are illegal), so inserting
-/// it verbatim made the API server reject the whole Deployment
-/// (`metadata.labels: Invalid value`) — the `console` reconcile storm.
+/// it verbatim makes the API server reject the whole Deployment
+/// (`metadata.labels: Invalid value`) and the reconcile retries forever.
 ///
 /// Rule: keep the human tag before any `@` digest, replace remaining illegal
 /// chars with `-`, cap at 63, and trim back to an alphanumeric boundary. A
@@ -233,13 +233,11 @@ pub fn build_http_probe(spec: &ProbeSpec) -> Probe {
 ///
 /// Handler precedence: `exec` → `tcpSocket` → `httpGet` (`port > 0`).
 ///
-/// This is the fix for the reconcile storm where non-HTTP datastores
-/// (`insights-sql` `pg_isready`, `insights-kv` `redis-cli ping`,
-/// `insights-kafka` TCP `9092`) declared `exec`/`tcpSocket` probes that the
-/// old HTTP-only `ProbeSpec` dropped — leaving `port: 0` and emitting an
-/// `httpGet` the API server rejected (`port: Invalid value: 0: must be between
-/// 1 and 65535`). We now honor the real handler and NEVER emit a port-0
-/// `httpGet`.
+/// A non-HTTP datastore probe — `pg_isready`, `redis-cli ping`, a bare TCP
+/// port — carries no HTTP port, so an HTTP-only renderer emits `httpGet{port: 0}`.
+/// The API server rejects that (`port: Invalid value: 0: must be between 1 and
+/// 65535`) and the reconcile retries in a hot loop. Honor the declared handler,
+/// and never emit a port-0 `httpGet`.
 pub fn build_probe(spec: &ProbeSpec) -> Option<Probe> {
     let timing = |mut p: Probe| -> Probe {
         p.initial_delay_seconds = Some(if spec.initial_delay_seconds > 0 {
@@ -583,24 +581,21 @@ pub fn colocation_affinity(selector_labels_map: &BTreeMap<String, String>) -> Af
 /// Whenever an `fsGroup` ends up in effect, `fsGroupChangePolicy` defaults to
 /// `OnRootMismatch` unless the CR states one. WHY, and why here:
 ///
-/// `hanzo-git` (git.hanzo.ai, the canonical forge for the whole estate) served
-/// 503 for several minutes with its pod in `Init:0/1` while the kubelet logged
-/// `VolumePermissionChangeInProgress … is taking longer than expected, consider
-/// using OnRootMismatch`. It carries `securityContext: {fsGroup: 1000}` over a
-/// 250Gi PVC holding a git forge — millions of tiny loose objects — and k8s
-/// defaults `fsGroupChangePolicy` to `Always`, so the kubelet recursively
-/// chowned EVERY file before the container could start, restarting the walk from
-/// zero on each ReplicaSet roll. The cost is paid on every restart forever, so
-/// any service whose volume grows large enough becomes un-restartable.
+/// Under `Always` — the k8s default — the kubelet recursively chowns EVERY file
+/// on the volume before the container starts, and it starts the walk over on
+/// each ReplicaSet roll. The cost scales with file count and is paid at every
+/// pod start forever, so a volume that grows large enough (a git forge is
+/// millions of tiny loose objects) holds its pod in `Init:0/1` long enough to
+/// read as down. `OnRootMismatch` stats the volume root instead.
 ///
-/// `Always` is the k8s default, but it is the wrong default HERE: an `fsGroup`
-/// is declared in this operator for exactly one reason — a non-root image must
-/// write a persistence PVC — so the population that sets it IS the population of
-/// long-lived volumes that `Always` degrades without bound, and it degrades
-/// silently until it takes an outage. Opt-in would mean every such service pays
-/// one outage before someone thinks to set the field. The changeover is cheap:
-/// `Always` has already left the volume root owned by the fsGroup, so the first
-/// roll under `OnRootMismatch` matches on the root check and skips the walk.
+/// `Always` is the wrong default HERE: an `fsGroup` is declared in this operator
+/// for exactly one reason — a non-root image must write a persistence PVC — so
+/// the population that sets it IS the population of long-lived volumes that
+/// `Always` degrades without bound, silently, until a restart takes too long.
+/// Opting in would mean every such service pays that once first. The changeover
+/// costs nothing: `Always` has already left the volume root owned by the
+/// fsGroup, so the first roll under `OnRootMismatch` matches on the root check
+/// and skips the walk.
 ///
 /// What this gives up: `Always` also repairs files DEEP in a volume whose
 /// ownership drifted (a restore that dropped root-owned files in). That is not a
@@ -768,12 +763,11 @@ pub fn build_ingress(
     // precedence over the annotation and then fails the IngressClass controller
     // check, so hanzoai/ingress (Traefik fork) serves nothing and drops spec.tls.
     //
-    // And always present. This used to be emitted only when a CR set
-    // `ingressClassName`, but that field defaults to "", so every App that just
-    // said `ingress: {enabled: true}` got an Ingress with no class at all — which
-    // matches no provider either. That is how hanzo-devnet/{cloud-api,commerce,
-    // console2,iam} and hanzo-testnet/{cloud-api,iam} sat dark for a month,
-    // 404ing with router "-" while their Services had ready endpoints.
+    // And ALWAYS present. `ingressClassName` defaults to "", so emitting the
+    // class only when a CR sets that field leaves every App that merely said
+    // `ingress: {enabled: true}` with no class at all — which matches no
+    // provider either, and the host then 404s with router "-" while its Service
+    // has ready endpoints. Nothing about that looks like a missing class.
     //
     // Precedence: the explicit field, else an operator-supplied annotation, else
     // the default. The one thing that cannot happen is no class.
@@ -1140,8 +1134,7 @@ pub fn build_configmap(
 /// are absent or empty. Such a ConfigMap must NEVER be force-applied: SSA
 /// would strip every key the operator's field manager owns, blanking a
 /// mounted config file and crashlooping the workload. `apply::apply_configmap`
-/// enforces this gate (root cause of the hanzo.id auth outage: `iam-conf`
-/// regenerated empty → `panic: unable to open database file`).
+/// is the enforcement point.
 pub fn configmap_is_empty(cm: &ConfigMap) -> bool {
     let data_empty = cm.data.as_ref().map_or(true, |d| d.is_empty());
     let binary_empty = cm.binary_data.as_ref().map_or(true, |d| d.is_empty());
@@ -1508,8 +1501,8 @@ mod tests {
     // manifest. clusterIP is immutable and apiserver-assigned; a server-side
     // apply that omits it lets the apiserver keep the live value, so adopting a
     // Service across the `Service` CR → `App` handoff preserves its identity
-    // (same clusterIP, no Endpoint/DNS re-propagation gap). Emitting it would
-    // invite an immutable-field conflict → recreate → the ~50s cutover outage.
+    // (same clusterIP, no Endpoint/DNS re-propagation gap). Emitting it invites
+    // an immutable-field conflict → recreate → a fresh IP and a ~50s gap.
     #[test]
     fn build_service_omits_clusterip_so_ssa_preserves_the_live_one() {
         let svc = build_service("chat", "hanzo", BTreeMap::new(), vec![], BTreeMap::new());
@@ -1544,9 +1537,9 @@ mod tests {
         );
     }
 
-    // The regression guard: a probe with NO usable handler (port 0, no
-    // exec/tcpSocket) renders NOTHING rather than an invalid `httpGet{port:0}`
-    // the API server rejects — the root of the 33 err/min reconcile storm.
+    // A probe with NO usable handler (port 0, no exec/tcpSocket) must render
+    // NOTHING rather than an `httpGet{port:0}` the API server rejects — that
+    // rejection is unrecoverable and the reconcile retries in a hot loop.
     #[test]
     fn build_probe_never_emits_port_zero_http() {
         assert!(
@@ -1625,9 +1618,9 @@ mod tests {
         assert!(out2.tcp_socket.is_some() && out2.http_get.is_none());
     }
 
-    // The console regression: a digest-pinned image tag (now canonical per
-    // universe#445) must NOT land verbatim in a label — it exceeds 63 chars and
-    // contains illegal `@`/`:`, which rejected the whole Deployment apply.
+    // A digest-pinned image tag (canonical per universe#445) must NOT land
+    // verbatim in a label — it exceeds 63 chars and contains illegal `@`/`:`,
+    // which rejects the whole Deployment apply, not just the label.
     #[test]
     fn sanitize_label_value_strips_digest_from_pinned_tag() {
         let v = "v8.4.118@sha256:9820e1539f1a51c36179a595fda500c9470461e9b2ea0e42c7166decbc70b77a";
@@ -1668,7 +1661,7 @@ mod tests {
     }
 
     // The end-to-end guard: standard_labels emits a VALID version label for a
-    // digest-pinned image (previously the FieldValueInvalid on console).
+    // digest-pinned image, so the sanitizer is reached on the path that matters.
     #[test]
     fn standard_labels_version_is_a_valid_label_for_pinned_image() {
         let l = standard_labels(
@@ -1756,14 +1749,13 @@ mod tests {
         );
     }
 
-    /// THE INCIDENT TEST. `hanzo-git` (git.hanzo.ai) served 503 for minutes with
-    /// its pod stuck in `Init:0/1` while the kubelet logged
-    /// `VolumePermissionChangeInProgress … consider using OnRootMismatch`: with
-    /// `fsGroup: 1000` and no policy, k8s defaults to `Always` and recursively
-    /// chowns every file on the 250Gi PVC (`pvc-47211c5d-3183-4583-8357-3a426d93d91e`,
-    /// a git forge = millions of loose objects) at EVERY pod start, restarting
-    /// the walk on each ReplicaSet roll. `OnRootMismatch` stats the volume root
-    /// instead, so a volume mounted before costs milliseconds.
+    /// An `fsGroup` with no policy defaults to `Always`, under which the kubelet
+    /// recursively chowns every file on the volume at EVERY pod start and
+    /// restarts the walk on each ReplicaSet roll — the kubelet reports
+    /// `VolumePermissionChangeInProgress … consider using OnRootMismatch` and
+    /// the pod sits in `Init:0/1`. `OnRootMismatch` stats the volume root
+    /// instead, so an already-correct volume costs milliseconds. This pins the
+    /// default.
     #[test]
     fn declaring_an_fs_group_defaults_to_skipping_the_recursive_chown() {
         let structured = CrPodSc {

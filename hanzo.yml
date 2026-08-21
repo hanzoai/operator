@@ -1,16 +1,11 @@
 # Canonical CI config for hanzoai/operator — read by the hanzoai/ci reusable
 # (.hanzo/workflows/cicd.yml) and by platform.hanzo.ai.
 #
-# WHY THIS FILE EXISTS. The operator had no hanzo.yml and its only workflow
-# imported `hanzoai/.github/.github/workflows/docker-build.yml`, a deprecated
-# reusable. Every run since has ended "completed/failure" with GitHub's
-# "this run likely failed because of a workflow file issue" — the workflow never
-# started, so nothing was ever built. The consequence was invisible and real:
-# the deployed operator is still ghcr.io/hanzoai/operator:sha-2cdfdbb, so merged
-# fixes (the replicate age fix among them) sat on main and never reached the
-# cluster. A build lane that fails to START looks the same as no push happening.
-#
 # ONE way to build, in one place: hanzo.yml declares WHAT, hanzoai/ci owns HOW.
+#
+# The lane has to live somewhere it is observed. A build lane that fails to
+# START reports exactly like no push happening — no image, no error anyone
+# reads — so merged fixes sit on main while the branch looks healthy.
 
 images:
   - name: operator
@@ -40,15 +35,10 @@ test:
   # prints "running 0 tests" and exits 0, which is why build.yml separately
   # refuses a gate that reported success without running one.
   #
-  # This comment used to say env_is_carried_to_main_container fails on a clean
-  # tree. It does not, and has not for some time: 328 passed / 0 failed, and
-  # that test passes by name. The note outlived the bug because nothing ever
-  # ran this gate — the repo had produced zero runs, so no result was ever
-  # published to contradict it.
   - name: cargo test
     run: cargo test --lib
 
 # NO deploy: lane. The operator is deployed like everything else — universe
 # records the desired tag and CD reconciles it. A deploy step here would be a
-# second mover for the same object, which is the exact failure this fleet spent
-# today unwinding.
+# second mover for an object that already has one, and two writers for one
+# object is the failure this split exists to prevent.

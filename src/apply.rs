@@ -38,9 +38,8 @@ where
 /// must PRESERVE that value — same name ⇒ SSA merges the new ownerRef/labels
 /// while the apiserver keeps the live clusterIP. A Service is therefore ADOPTED
 /// IN PLACE, never delete+recreated: a recreate mints a fresh clusterIP and
-/// strands every Endpoint/DNS record for ~50s while they re-propagate (the
-/// App-collapse cutover: `Service/chat` clusterIP 10.124.38.86 → 10.124.49.126).
-/// There is deliberately no `apply_or_recreate` counterpart for Services.
+/// strands every Endpoint/DNS record for ~50s while they re-propagate. There is
+/// deliberately no `apply_or_recreate` counterpart for Services.
 ///
 /// Fail-secure: an apiserver-assigned clusterIP present in the DESIRED object is
 /// scrubbed before the apply (see [`scrub_assigned_cluster_ip`]), so SSA never
@@ -80,9 +79,9 @@ pub(crate) fn scrub_assigned_cluster_ip(svc: &mut Service) {
 ///
 /// A ConfigMap whose `data` AND `binaryData` are both empty carries no config.
 /// Force-applying it strips every key the `hanzo-operator` field manager owns,
-/// blanking the workload's mounted config file → CrashLoopBackOff (the hanzo.id
-/// 30-min auth outage: an empty CR config source regenerated `iam-conf` empty →
-/// `panic: unable to open database file`; likewise `otel-collector-config`). The
+/// blanking the workload's mounted config file → CrashLoopBackOff. An empty CR
+/// config source is enough to produce one, and the consumer then dies on a file
+/// it can open but not read. The
 /// operator NEVER emits an empty ConfigMap: we skip the apply and leave any
 /// existing content untouched. Skipping is also correct on first create — an
 /// empty ConfigMap has no legitimate use. Returns `true` when applied, `false`
@@ -295,8 +294,7 @@ mod tests {
 
     // An apiserver-assigned clusterIP in the desired object is stripped, so the
     // SSA patch never carries the immutable field — the apiserver keeps the live
-    // value and adoption is byte-stable (no fresh IP, no endpoint gap). This is
-    // the exact churn that broke the App-collapse cutover.
+    // value and adoption is byte-stable: no fresh IP, no endpoint gap.
     #[test]
     fn scrub_strips_an_assigned_clusterip_for_in_place_adoption() {
         let mut svc = svc_with_cluster_ip(Some("10.124.38.86"), Some(vec!["10.124.38.86"]));

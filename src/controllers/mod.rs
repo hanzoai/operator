@@ -43,8 +43,8 @@ where
 /// briefly behind. Rendering a Deployment's pod-template env from a stale copy
 /// makes it OSCILLATE: one reconcile server-side-applies the OLD env, the next
 /// applies the NEW, and each flip surges a ReplicaSet that `maxUnavailable: 0`
-/// then pins — so the env change never lands (the gateway audience-rollout wedge,
-/// 2026-07). `generation` is monotonic and bumps ONLY on spec changes, so
+/// then pins — so the env change never lands at all. `generation` is monotonic
+/// and bumps ONLY on spec changes, so
 /// preferring the higher generation renders the newest committed spec on EVERY
 /// reconcile regardless of which copy is stale; the SSA then converges to a fixed
 /// point and the surge stops. Falls back to the cached copy when the live read is

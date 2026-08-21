@@ -895,11 +895,11 @@ spec:
     }
 
     // ---- securityContext / containerSecurityContext / enableServiceLinks on the
-    // DATASTORE render path (the HIGH-1 symmetry fix). Each test runs the FULL
-    // path a fleet App CR takes: deserialize → classify → project onto DBSpec
-    // (the serde round-trip that USED to DROP these fields) → render through the
-    // ONE datastore builder the controller uses (`datastore::build_datastore_workload`,
-    // not a re-implementation), then asserts the field reached the workload.
+    // DATASTORE render path. Each test runs the FULL path a fleet App CR takes:
+    // deserialize → classify → project onto DBSpec (the serde round-trip is
+    // where these fields get dropped) → render through the ONE datastore builder
+    // the controller uses (`datastore::build_datastore_workload`, not a
+    // re-implementation), then asserts the field reached the workload.
 
     fn datastore_sts(app: &App, engine: Engine) -> StatefulSet {
         let db: DBSpec = project(&app.spec).expect("datastore App must project to DBSpec");
@@ -1277,17 +1277,16 @@ spec:
         assert_eq!(owner.block_owner_deletion, Some(true));
     }
 
-    // ---- env-change convergence: the gateway audience-rollout wedge ----
+    // ---- env-change convergence ----
     //
-    // The bug: `reconcile` rendered the Deployment pod-template env from the
-    // reflector-CACHED App, which can lag the API server after a spec edit. One
-    // reconcile applied the OLD audience list, the next the NEW — each flip surged
-    // a ReplicaSet that `maxUnavailable: 0` pinned, so the change never landed
-    // (`GATEWAY_ALLOWED_AUDIENCES` oscillated 13↔14). The fix reads the
-    // AUTHORITATIVE copy (higher `metadata.generation`), so every reconcile renders
-    // the newest committed spec — a fixed point. These tests exercise the pure
-    // selection the controller now runs before it hands the spec to the
-    // (already-deterministic) renderer.
+    // Rendering pod-template env from the reflector-CACHED App, which can lag the
+    // API server after a spec edit, makes the env OSCILLATE: one reconcile applies
+    // the OLD value, the next the NEW, and each flip surges a ReplicaSet that
+    // `maxUnavailable: 0` pins — so the change never lands. Selecting the
+    // AUTHORITATIVE copy (higher `metadata.generation`) makes every reconcile
+    // render the newest committed spec, which is what turns repeated reconciles
+    // into a fixed point. These tests exercise that pure selection, which runs
+    // before the spec reaches the (already-deterministic) renderer.
 
     use crate::controllers::authoritative;
     use crate::crd_types::EnvVar;

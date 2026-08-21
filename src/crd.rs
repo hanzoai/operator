@@ -533,8 +533,8 @@ pub struct ServiceSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ports: Vec<ServicePort>,
 
-    // CRITICAL: env/volumes/volumeMounts MUST be honored. Gateway 503
-    // root cause was the legacy Go operator dropping these.
+    // CRITICAL: env/volumes/volumeMounts are contract surface — they must reach
+    // the rendered pod template. Dropping one starts a misconfigured workload.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<EnvVar>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -649,12 +649,11 @@ pub struct ServiceSpec {
     // stated purpose was "force the scheduler to place cloud [on worker-xl] (the
     // App CRD cannot express nodeSelector/tolerations)".
     //
-    // That idiom is not a reservation, it is a RACE, and it lost live on
-    // 2026-07-26: `strategy: Recreate` deletes the pod before its replacement is
-    // scheduled, a 4Gi neighbour took the only 16Gi node during that window, and
-    // the 9Gi writer could then fit NOWHERE — a hard scheduling deadlock that
-    // took billing.hanzo.ai down until the neighbour was moved by hand. A request
-    // reserves nothing while the pod is gone.
+    // That idiom is not a reservation, it is a RACE. `strategy: Recreate`
+    // deletes the pod before its replacement is scheduled, and a request
+    // reserves nothing while the pod is gone: any neighbour may take the only
+    // node large enough, after which the inflated pod fits NOWHERE and the
+    // scheduler is deadlocked until something is moved by hand.
     //
     // So: resources say what it NEEDS, placement says WHERE it goes, and
     // `priorityClassName` is what turns the seat into an actual reservation —
@@ -2522,8 +2521,8 @@ pub struct AppSpec {
     /// apiserver never prunes them. `#[schemars(skip)]` keeps them out of the
     /// structural schema — the preserve-unknown flag is the ONE mechanism that
     /// carries them, matching the merged universe CRD (which models only the
-    /// ServiceSpec field set + `role`). This is the exact bug (HIGH-2) that sank
-    /// the reduced fork: a modeled-but-unpreserved spec prunes the datastore
+    /// ServiceSpec field set + `role`). Modeled-but-unpreserved is the trap: it
+    /// looks correct in the Rust type and the apiserver prunes the datastore
     /// fields. Preserve-unknown + this catch-all keep every field.
     #[serde(flatten)]
     #[schemars(skip)]

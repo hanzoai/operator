@@ -5,11 +5,6 @@ name: CI/CD
 # which platform.hanzo.ai reads too. That split is the point: hanzo.yml says
 # WHAT to build and test, hanzoai/ci owns HOW, and neither is copied per repo.
 #
-# It replaces .github/workflows/publish.yml, which imported the deprecated
-# hanzoai/.github reusable and had been failing to START on every push — GitHub
-# reported "this run likely failed because of a workflow file issue", so no
-# image was produced and merged fixes never reached the cluster while main
-# looked healthy.
 on:
   push:
     branches: [main]

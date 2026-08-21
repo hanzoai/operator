@@ -630,8 +630,7 @@ mod tests {
 
     /// A datastore's PVC is the one that grows without bound, so the StatefulSet
     /// path needs the chown-skip as much as the Deployment path does — both fold
-    /// through the SAME `manifests::pod_security_context`. (The `hanzo-git`
-    /// outage was a Deployment, but a 250Gi Postgres/S3 volume walks just as slowly.)
+    /// through the SAME `manifests::pod_security_context`.
     #[test]
     fn structured_fs_group_also_skips_the_recursive_chown() {
         let mut sts = empty_sts();

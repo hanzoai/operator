@@ -840,8 +840,8 @@ mod tests {
 
     /// `fsGroupChangePolicy` must survive the mirror → k8s conversion verbatim.
     /// It is the field that decides whether the kubelet stats the volume root or
-    /// recursively chowns every file on it at pod start (see the `hanzo-git`
-    /// incident in `manifests::pod_security_context`).
+    /// recursively chowns every file on it at pod start — see
+    /// `manifests::pod_security_context` for why the default is what it is.
     #[test]
     fn pod_security_context_to_k8s_carries_fs_group_change_policy() {
         for want in ["OnRootMismatch", "Always"] {

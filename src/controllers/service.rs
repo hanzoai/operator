@@ -6,10 +6,9 @@
 //!
 //! ## Critical invariant
 //!
-//! `spec.env`, `spec.volumes`, and `spec.volumeMounts` MUST be honored
-//! on the generated Deployment. The gateway 503 root cause (May 2026) was
-//! the legacy Go operator silently dropping these. The Rust port carries
-//! tests asserting the round-trip.
+//! `spec.env`, `spec.volumes`, and `spec.volumeMounts` MUST be honored on the
+//! generated Deployment. Dropping one is silent — the workload starts, and is
+//! misconfigured — so tests here assert the round-trip onto the main container.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -1765,7 +1764,7 @@ mod tests {
     #[test]
     fn env_is_carried_to_main_container() {
         // CRITICAL: spec.env MUST appear on the generated Deployment's main
-        // container. Gateway 503 root cause was this not happening.
+        // container — not on a sidecar, and not nowhere.
         let spec = base_spec();
         let env_k8s: Vec<_> = spec.env.iter().map(crd_types::EnvVar::to_k8s).collect();
         let vm_k8s: Vec<_> = spec
@@ -2141,12 +2140,11 @@ mod tests {
         assert!(pod.containers[0].security_context.is_none());
     }
 
-    /// THE INCIDENT, at the Deployment the operator actually renders. `hanzo-git`
-    /// carries `securityContext: {fsGroup: 1000}` and a 250Gi git-forge PVC; under
-    /// the k8s-default `Always` the kubelet recursively chowned every loose object
-    /// at pod start, holding the pod in `Init:0/1` and git.hanzo.ai at 503 for
-    /// minutes — restarting the walk on each ReplicaSet roll. The rendered PodSpec
-    /// must pin `OnRootMismatch` so a re-mounted volume costs a stat, not a walk.
+    /// The `OnRootMismatch` default must survive all the way to the Deployment
+    /// the controller actually emits, not just to the helper that computes it:
+    /// under the k8s-default `Always` the kubelet recursively chowns every file
+    /// at pod start and holds the pod in `Init:0/1` while it walks. A re-mounted
+    /// volume must cost a stat, not a walk.
     #[test]
     fn an_fs_group_deployment_skips_the_recursive_chown_on_restart() {
         let spec = ServiceSpec {

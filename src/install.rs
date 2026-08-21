@@ -716,9 +716,9 @@ mod tests {
                 "{kind}: nested container/pod security fields must be modeled"
             );
             // A field the schema does not model is SILENTLY DROPPED on write, so
-            // the CR author gets no error telling them why it never applied —
-            // which is exactly why `hanzo-git` could not express the fix for its
-            // own outage. Schema-modeled is the whole point of the field.
+            // the CR author gets no error telling them why it never applied — a
+            // field that exists in the Rust type but not in the structural schema
+            // is unreachable. Modeling it in the schema IS the feature.
             assert!(
                 schema.contains("fsGroupChangePolicy"),
                 "{kind}: spec.securityContext.fsGroupChangePolicy must be in the schema"
