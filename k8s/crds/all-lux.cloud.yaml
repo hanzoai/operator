@@ -22213,7 +22213,7 @@ spec:
                 type: string
               imageRepository:
                 description: |-
-                  Registry repository to watch, e.g. `registry.hanzo.ai/hanzo/cloud`
+                  Registry repository to watch, e.g. `oci.hanzo.ai/hanzo/cloud`
                   (canonical fleet registry) — NOT ghcr.io, which is only for published OSS.
                 type: string
               intervalSeconds:

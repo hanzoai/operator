@@ -2566,7 +2566,7 @@ fn default_git_ref() -> String {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ImageUpdateSpec {
-    /// Registry repository to watch, e.g. `registry.hanzo.ai/hanzo/cloud`
+    /// Registry repository to watch, e.g. `oci.hanzo.ai/hanzo/cloud`
     /// (canonical fleet registry) — NOT ghcr.io, which is only for published OSS.
     pub image_repository: String,
     /// Tag-selection policy: a semver range (`>=1.0.0 <2.0.0`), `semver:*` for

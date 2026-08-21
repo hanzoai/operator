@@ -7,7 +7,7 @@
 //! dependency bloat for no gain — listing tags is not the complex, well-tested
 //! thing worth a framework, image *pulling* would be, and we never pull.
 //!
-//! Targets `registry.hanzo.ai` (the canonical fleet registry) but works against
+//! Targets `oci.hanzo.ai` (the canonical fleet registry) but works against
 //! any v2 registry (ghcr.io, Docker Hub) unchanged.
 
 use base64::Engine;
@@ -22,7 +22,7 @@ pub struct ImageRef {
     pub path: String,
 }
 
-/// Split `registry.hanzo.ai/hanzo/cloud` → host `registry.hanzo.ai`, path
+/// Split `oci.hanzo.ai/hanzo/cloud` → host `oci.hanzo.ai`, path
 /// `hanzo/cloud`. A leading `https://` is tolerated. When the first segment
 /// carries no `.`/`:` (so it isn't a host) we assume the canonical fleet
 /// registry — our CRs always name a host, so this is only a safety net.
@@ -38,7 +38,7 @@ pub fn parse_ref(image_repository: &str) -> ImageRef {
             path: path.trim_matches('/').to_string(),
         },
         _ => ImageRef {
-            host: "registry.hanzo.ai".to_string(),
+            host: "oci.hanzo.ai".to_string(),
             path: s.to_string(),
         },
     }
@@ -235,9 +235,9 @@ mod tests {
     #[test]
     fn parse_ref_splits_host_and_path() {
         assert_eq!(
-            parse_ref("registry.hanzo.ai/hanzo/cloud"),
+            parse_ref("oci.hanzo.ai/hanzo/cloud"),
             ImageRef {
-                host: "registry.hanzo.ai".into(),
+                host: "oci.hanzo.ai".into(),
                 path: "hanzo/cloud".into()
             }
         );
@@ -249,9 +249,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_ref("registry.hanzo.ai:5000/hanzo/cms"),
+            parse_ref("oci.hanzo.ai:5000/hanzo/cms"),
             ImageRef {
-                host: "registry.hanzo.ai:5000".into(),
+                host: "oci.hanzo.ai:5000".into(),
                 path: "hanzo/cms".into()
             }
         );
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(
             parse_ref("hanzo/cloud"),
             ImageRef {
-                host: "registry.hanzo.ai".into(),
+                host: "oci.hanzo.ai".into(),
                 path: "hanzo/cloud".into()
             }
         );
@@ -270,14 +270,14 @@ mod tests {
 
     #[test]
     fn challenge_param_extracts_quoted_values() {
-        let c = r#"realm="https://auth.hanzo.ai/token",service="registry.hanzo.ai",scope="repository:hanzo/cloud:pull""#;
+        let c = r#"realm="https://hanzo.id/v1/iam/registry/token",service="oci.hanzo.ai",scope="repository:hanzo/cloud:pull""#;
         assert_eq!(
             challenge_param(c, "realm").as_deref(),
-            Some("https://auth.hanzo.ai/token")
+            Some("https://hanzo.id/v1/iam/registry/token")
         );
         assert_eq!(
             challenge_param(c, "service").as_deref(),
-            Some("registry.hanzo.ai")
+            Some("oci.hanzo.ai")
         );
         assert_eq!(
             challenge_param(c, "scope").as_deref(),
@@ -288,18 +288,18 @@ mod tests {
 
     #[test]
     fn basic_for_host_reads_auth_or_userpass() {
-        let cfg = r#"{"auths":{"registry.hanzo.ai":{"auth":"YWJjOnh5eg=="}}}"#;
+        let cfg = r#"{"auths":{"oci.hanzo.ai":{"auth":"YWJjOnh5eg=="}}}"#;
         assert_eq!(
-            basic_for_host(cfg, "registry.hanzo.ai").as_deref(),
+            basic_for_host(cfg, "oci.hanzo.ai").as_deref(),
             Some("YWJjOnh5eg==")
         );
         assert_eq!(basic_for_host(cfg, "ghcr.io"), None);
 
         let cfg2 =
-            r#"{"auths":{"https://registry.hanzo.ai/":{"username":"abc","password":"xyz"}}}"#;
+            r#"{"auths":{"https://oci.hanzo.ai/":{"username":"abc","password":"xyz"}}}"#;
         // base64("abc:xyz") == "YWJjOnh5eg=="
         assert_eq!(
-            basic_for_host(cfg2, "registry.hanzo.ai").as_deref(),
+            basic_for_host(cfg2, "oci.hanzo.ai").as_deref(),
             Some("YWJjOnh5eg==")
         );
     }
