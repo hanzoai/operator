@@ -41,8 +41,8 @@ pub async fn reconcile(cr: Arc<KV>, ctx: Arc<Ctx>) -> Result<Action> {
         owner,
     )
     .await?;
-    // Report Ready on the facade CR just like the canonical Datastore does
-    // (the newtype facade previously never wrote status).
+    // Report Ready on the facade CR just like the canonical Datastore does;
+    // without this the `KV` CR carries an empty Ready condition when healthy.
     datastore::write_status::<KV>(
         &ctx.client,
         &name,

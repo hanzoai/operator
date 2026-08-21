@@ -223,10 +223,9 @@ mod tests {
 
     #[test]
     fn bare_agent_containing_data_substring_still_parses() {
-        // Regression: a bare agent whose NAME is `metadata` (contains the
-        // substring "data") must NOT be misread as an envelope not-found. The
-        // old raw-text `body.contains("\"data\"")` sniff broke this and would
-        // spuriously re-create the agent.
+        // A bare agent whose NAME contains the substring "data" must NOT be
+        // misread as an envelope not-found and re-created. Parse the body; a
+        // raw-text `body.contains("\"data\"")` sniff cannot tell the two apart.
         let body = r#"{"name":"metadata","org":"hanzoai","executionMode":"long-running"}"#;
         let a = parse_agent_body(body)
             .unwrap()

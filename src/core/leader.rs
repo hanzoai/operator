@@ -4,9 +4,8 @@
 //! of the lease runs the controllers; all other replicas wait and retry every
 //! 15 seconds.
 //!
-//! Generalized from the byte-identical implementations that previously lived
-//! in the per-universe `operator/src/leader.rs` files. Each operator
-//! configures a unique `lease_name` and `identity_prefix` via `LeaderConfig`.
+//! One implementation for every operator: each configures a unique
+//! `lease_name` and `identity_prefix` via `LeaderConfig`.
 //!
 //! Two properties make the election safe to run at `replicas > 1`:
 //!
@@ -811,9 +810,8 @@ mod tests {
 
     /// A graceful handoff is prompt. The predecessor released the lease — its
     /// holder is gone but the renewTime it last wrote is still fresh — so a
-    /// successor keying takeover on expiry alone would idle for the full lease
-    /// duration, which is exactly the 30s reconciliation gap every operator
-    /// restart used to cost.
+    /// successor keying takeover on expiry alone idles for the full lease
+    /// duration, turning every restart into a reconciliation gap.
     #[tokio::test]
     async fn a_released_lease_is_taken_at_once_not_after_it_expires() {
         let f = fake::Fake::new();
@@ -951,11 +949,10 @@ mod tests {
         }
     }
 
-    /// The regression the whole fix exists to prevent: the JSON-merge patch
-    /// (renew/acquire) and the typed `LeaseSpec` write (create) must produce the
-    /// SAME bytes. Previously these were two independent formatters that merely
-    /// happened to agree; now the patch path delegates to the typed serializer,
-    /// so this holds by construction.
+    /// The JSON-merge patch (renew/acquire) and the typed `LeaseSpec` write
+    /// (create) must produce the SAME bytes. The patch path delegates to the
+    /// typed serializer so this holds by construction — two independent
+    /// formatters would only ever happen to agree.
     #[test]
     fn patch_and_typed_writes_are_byte_identical() {
         for nanos in [457_070_000, 500_000_000, 0, 45_707_000, 1_000, 999_999_000] {

@@ -183,12 +183,10 @@ pub async fn application_exists(
         Ok(p) => p,
         Err(_) => return Ok(false),
     };
-    // Propagate auth/server errors as Err — Ok(false) here used to
-    // fool the existence check into thinking apps didn't exist when
-    // IAM was rejecting a stale admin bearer, which then triggered
-    // an upsert storm (IAM's `BootstrapApplicationUpsert`
-    // regenerates clientSecret on every call regardless of submitted
-    // value). The probe distinguishes:
+    // Propagate auth/server errors as Err. `Ok(false)` conflates "not found"
+    // with "IAM rejected the bearer", and the caller answers both by upserting —
+    // which regenerates clientSecret on every call, so a stale admin bearer
+    // turns the existence check into an upsert storm. The probe distinguishes:
     //   - `status="ok" + data=null`  → not found       → Ok(false)
     //   - `status="ok" + data={...}` → exists          → Ok(true)
     //   - `status="error" + msg=...` → auth/server bug → Err (skip upsert)

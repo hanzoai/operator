@@ -1,5 +1,4 @@
 //! Shared git plumbing for the ImageUpdate controller (registry→git write-back).
-//! ImageUpdate write-back).
 //!
 //! Shells the `git` binary — the SAME mechanism the retired `gitops-reconcile`
 //! cron used (`infra/k8s/gitops-reconcile/reconcile.sh`) — so there is ONE git

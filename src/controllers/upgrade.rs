@@ -2222,10 +2222,9 @@ mod tests {
             storage_size: "10Gi".into(),
             storage_class: "do-block-storage".into(),
             snapshot_class: "do-snap".into(),
-            // The REAL leaky path: `build_preflight_inputs` historically seeded
-            // `labels` from `standard_labels`, which carries the Service-selector
-            // keys `app.kubernetes.io/name` + `.../instance`. Exercise that here so
-            // every builder-shape test proves the selector keys are stripped.
+            // `standard_labels` carries the Service-selector keys
+            // `app.kubernetes.io/name` + `.../instance`, so the fixture must use
+            // it — that is the only input shape that proves the strip happens.
             labels: crate::manifests::standard_labels("cloud", "api", "hanzo", "v2"),
             owner: OwnerReference::default(),
         }

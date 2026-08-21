@@ -42,9 +42,8 @@ pub async fn reconcile(cr: Arc<SQL>, ctx: Arc<Ctx>) -> Result<Action> {
     )
     .await?;
     // Report Ready on the facade CR just like the canonical Datastore does. The
-    // reconcile above materializes the StatefulSet, but the newtype facade
-    // previously never wrote status — leaving `SQL`/`KV` CRs with an empty
-    // Ready condition even when their workload was healthy.
+    // reconcile above materializes the StatefulSet; without this the `SQL` CR
+    // carries an empty Ready condition while its workload is healthy.
     datastore::write_status::<SQL>(
         &ctx.client,
         &name,
