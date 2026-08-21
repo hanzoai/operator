@@ -16,8 +16,8 @@ build: ## Build both binaries the image ships, into target/release.
 	$(CARGO) build --release
 
 # The exact command hanzo.yml declares for CI, so the two cannot drift apart.
-# One test (env_is_carried_to_main_container) is red on a clean tree and is
-# deliberately not excluded there — so it is not excluded here either.
+# The whole lib, no filter: `cargo test --lib <name>` with a stale name prints
+# "running 0 tests" and exits 0, which is a gate that has quietly stopped.
 test: ## Run the unit tests — the same command CI runs.
 	$(CARGO) test --lib
 
