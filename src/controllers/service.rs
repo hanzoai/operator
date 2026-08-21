@@ -117,12 +117,13 @@ fn app_db_pvc_name(name: &str) -> String {
 /// as data instead of assembled as text.
 ///
 /// The whole point of these types is that nothing here counts columns or quotes
-/// scalars. Both were hand-done, and both took production down: a Rust
-/// line-continuation ate the indentation off the `age:` stanza (chat + dataroom,
-/// `replicate-restore` dead on "mapping values are not allowed in this context"),
-/// and every interpolated field is a free-form CR string that reaches the same
-/// error the moment it contains `: ` or ` #`. Marshalling makes both defects
-/// unrepresentable rather than retested.
+/// scalars. Assembled as text, both are hand-done and both fail the same way: a
+/// Rust line-continuation eats the indentation off a stanza, and every
+/// interpolated field is a free-form CR string that breaks the document the
+/// moment it contains `: ` or ` #`. Either yields "mapping values are not
+/// allowed in this context" at the consumer, which reads as a corrupt config
+/// rather than a generator bug. Marshalling makes both unrepresentable rather
+/// than retested.
 mod replicate_yml {
     use serde::Serialize;
 
