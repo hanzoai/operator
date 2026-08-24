@@ -199,7 +199,6 @@ fn app_role_specific_properties() -> serde_json::Value {
 ///     `AppSpec.extra` still collects them at the serde layer — that is
 ///     independent of the schema, so a DECLARED field is stored and projected
 ///     exactly as before.
-///
 ///     This ran as a hand-edit on `k8s/crds/all-hanzo.ai.yaml` (f722cd8) that the
 ///     generator could not reproduce, so the next `generate-crd-yaml` would have
 ///     silently reverted a fleet-down fix. It lives in the generator now: the
