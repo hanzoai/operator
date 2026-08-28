@@ -56,14 +56,4 @@ impl ApiGroup {
         format!("{}/{}", self.group, self.version)
     }
 
-    /// The KMS API group is `secrets.<group>` by convention; for `hanzo.ai`
-    /// this is `kms.hanzo.ai` (legacy). We honor the legacy when group is
-    /// the default, otherwise compute the standard form.
-    pub fn kms_group(&self) -> String {
-        if self.group == DEFAULT_API_GROUP {
-            "kms.hanzo.ai".to_string()
-        } else {
-            format!("kms.{}", self.group)
-        }
-    }
 }

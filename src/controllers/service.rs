@@ -1022,7 +1022,7 @@ async fn reconcile_kms_secret(
     // The family the projector watches (controllers::kms_zap): this universe's
     // group, one version. Writing a different one than the reader watches is how
     // a CR gets created and then reconciled by nobody.
-    let kms_group = format!("kms.{api_group}");
+    let kms_group = crate::install::family_of("KMSSecret").group(api_group);
     let gvk = GroupVersionKind::gvk(&kms_group, crate::api_group::API_VERSION, "KMSSecret");
     let ar = ApiResource::from_gvk(&gvk);
     let kms_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);

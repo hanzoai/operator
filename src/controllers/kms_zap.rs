@@ -48,9 +48,6 @@ pub const KMS_ZAP_MANAGER: &str = "hanzo-operator-kms-zap";
 /// There is ONE version. `v1alpha1` promised a compatibility story nobody was
 /// keeping; `api_group::API_VERSION` is where the answer lives for every other
 /// CRD, and this is not the exception it was written as.
-fn kms_group(api_group: &str) -> String {
-    format!("kms.{api_group}")
-}
 use crate::api_group::API_VERSION as KMS_VERSION;
 const KMS_KIND: &str = "KMSSecret";
 
@@ -251,7 +248,7 @@ pub async fn run_kms_zap_controller(
         info!("KMS ZAP controller disabled (set KMS_ZAP_CONTROLLER=true to enable)");
         return;
     }
-    let group = kms_group(api_group);
+    let group = crate::install::family_of(KMS_KIND).group(api_group);
     let gvk = GroupVersionKind::gvk(&group, KMS_VERSION, KMS_KIND);
     let ar = ApiResource::from_gvk(&gvk);
     let api: Api<DynamicObject> = if namespace.is_empty() {
