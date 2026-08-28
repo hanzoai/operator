@@ -211,6 +211,7 @@ pub async fn reconcile(cr: Arc<App>, ctx: Arc<Ctx>) -> Result<Action> {
                 &ctx.client,
                 &name,
                 &namespace,
+                &ctx.api_group,
                 &cr.spec.service,
                 owner,
             )

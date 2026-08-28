@@ -525,6 +525,7 @@ pub async fn reconcile_service(cr: Arc<ServiceCR>, ctx: Arc<Ctx>) -> Result<Acti
         &ctx.client,
         &name,
         &namespace,
+        &ctx.api_group,
         &cr.spec,
         owner.clone(),
         drive.effective_image.as_deref(),
@@ -684,10 +685,11 @@ pub async fn reconcile_service_inner_pub(
     client: &Client,
     name: &str,
     namespace: &str,
+    api_group: &str,
     spec: &ServiceSpec,
     owner: OwnerReference,
 ) -> Result<()> {
-    reconcile_service_inner(client, name, namespace, spec, owner, None).await
+    reconcile_service_inner(client, name, namespace, api_group, spec, owner, None).await
 }
 
 /// Shared implementation. Materializes Deployment + Service + Ingress +
@@ -701,6 +703,7 @@ async fn reconcile_service_inner(
     client: &Client,
     name: &str,
     namespace: &str,
+    api_group: &str,
     spec: &ServiceSpec,
     owner: OwnerReference,
     effective_image: Option<&str>,
@@ -992,7 +995,8 @@ async fn reconcile_service_inner(
     // 8. KMSSecret children (dynamic — written via DynamicObject so we
     // don't depend on the KMS CRD types being known to this binary).
     for ref_spec in &spec.kms_secrets {
-        if let Err(e) = reconcile_kms_secret(client, namespace, ref_spec, &owner, &all_labels).await
+        if let Err(e) = reconcile_kms_secret(client, namespace, api_group, ref_spec, &owner, &all_labels)
+            .await
         {
             warn!(name = %ref_spec.managed_secret_name, error = %e, "KMSSecret reconcile failed (CRD may not be installed)");
         }
@@ -1003,18 +1007,23 @@ async fn reconcile_service_inner(
 }
 
 /// Write a KMSSecret CR as a DynamicObject. The KMS CRD lives in
-/// `kms.hanzo.ai` and is reconciled by the KMS operator — this controller
+/// `kms.<universe>` and is reconciled by the ZAP projector — this controller
 /// only declares the desired state.
 async fn reconcile_kms_secret(
     client: &Client,
     namespace: &str,
+    api_group: &str,
     ref_spec: &KMSSecretRef,
     owner: &OwnerReference,
     labels: &std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
     use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 
-    let gvk = GroupVersionKind::gvk("kms.hanzo.ai", "v1alpha1", "KMSSecret");
+    // The family the projector watches (controllers::kms_zap): this universe's
+    // group, one version. Writing a different one than the reader watches is how
+    // a CR gets created and then reconciled by nobody.
+    let kms_group = format!("kms.{api_group}");
+    let gvk = GroupVersionKind::gvk(&kms_group, crate::api_group::API_VERSION, "KMSSecret");
     let ar = ApiResource::from_gvk(&gvk);
     let kms_api: Api<DynamicObject> = Api::namespaced_with(client.clone(), namespace, &ar);
 

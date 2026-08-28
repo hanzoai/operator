@@ -348,14 +348,16 @@ async fn run_all_controllers(
         // / AGENT_DEPLOY_VISOR_URL / token it runs READ-ONLY, and even configured
         // it never launches a machine unless AGENT_DEPLOY_MODE=on.
         // Additive ZAP-native KMS secret projector — opt-in (off unless
-        // KMS_ZAP_CONTROLLER=true). Watches the fixed kms.hanzo.ai KMSSecret
-        // family; ignores non-zap-native CRs so the REST projector is untouched.
+        // KMS_ZAP_CONTROLLER=true). Watches this universe's kms.<group>/v1
+        // KMSSecret family; ignores non-zap-native CRs so the REST projector is
+        // untouched.
         controllers::kms_zap::run_kms_zap_controller(
             client.clone(),
             namespace.clone(),
             std::env::var("KMS_ZAP_CONTROLLER")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            &api_group,
         ),
         // Tenant controller — projects the namespace-scoped
         // `cloud-api-platform` RoleBinding + `ghcr-pull` image-pull Secret into

@@ -1,12 +1,12 @@
 //! Additive ZAP-native KMSSecret reconciler.
 //!
 //! Projects KMS secrets into k8s Secrets over the ZAP binary protocol
-//! (`crate::zapclient`) for `kms.hanzo.ai/v1alpha1 KMSSecret` CRs explicitly
+//! (`crate::zapclient`) for `kms.<universe>/v1 KMSSecret` CRs explicitly
 //! marked ZAP-native (`spec.transport == "zap"`). Purely ADDITIVE and OPT-IN
 //! (`KMS_ZAP_CONTROLLER=true`): CRs without that marker are IGNORED, so the
 //! legacy REST projector remains the only secret path until cutover.
 //!
-//! One CRD family — the same `kms.hanzo.ai/v1alpha1 KMSSecret` the operator
+//! One CRD family — the same `kms.<universe>/v1 KMSSecret` the operator
 //! already writes (`controllers::service::reconcile_kms_secret`), watched
 //! group-erased as a DynamicObject so it works under every universe api-group.
 //!
@@ -39,11 +39,19 @@ use crate::zapclient::ZapClient;
 /// projector's so the two never adopt each other's Secrets.
 pub const KMS_ZAP_MANAGER: &str = "hanzo-operator-kms-zap";
 
-/// Canonical, centralized KMS CRD family. KMS is one service for every
-/// universe, so the group is fixed (not api-group-rewritten); we watch it
-/// group-erased as a DynamicObject.
-const KMS_GROUP: &str = "kms.hanzo.ai";
-const KMS_VERSION: &str = "v1alpha1";
+/// The KMS CRD family rides the universe's own API group, prefixed: a hanzo
+/// universe serves `kms.hanzo.ai`, a lux one `kms.lux.cloud`. It was fixed at
+/// `kms.hanzo.ai` on the reasoning that KMS is one service everywhere, but the
+/// cluster grants `kms.lux.cloud` — a fixed group is only correct while every
+/// universe answers to the same name, and they do not. Derive it and both hold.
+///
+/// There is ONE version. `v1alpha1` promised a compatibility story nobody was
+/// keeping; `api_group::API_VERSION` is where the answer lives for every other
+/// CRD, and this is not the exception it was written as.
+fn kms_group(api_group: &str) -> String {
+    format!("kms.{api_group}")
+}
+use crate::api_group::API_VERSION as KMS_VERSION;
 const KMS_KIND: &str = "KMSSecret";
 
 // Input bounds (mirror the proven KMS-bridge limits).
@@ -121,6 +129,8 @@ fn namespace_allowed(s: &ZapKmsSpec, cr_ns: &str, target_ns: &str) -> bool {
 
 struct Ctx {
     client: Client,
+    /// Resolved `kms.<universe>` group, for the ownerRef on projected Secrets.
+    group: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -193,7 +203,7 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
     let mut labels = BTreeMap::new();
     labels.insert(MANAGED_BY_LABEL.to_string(), KMS_ZAP_MANAGER.to_string());
     let owner = owner_ref(
-        &format!("{KMS_GROUP}/{KMS_VERSION}"),
+        &format!("{}/{KMS_VERSION}", ctx.group),
         KMS_KIND,
         &name,
         &cr_uid,
@@ -231,12 +241,18 @@ fn on_error(_obj: Arc<DynamicObject>, err: &ReconcileError, _ctx: Arc<Ctx>) -> A
 /// controller never watches anything, so the REST projector stays the only
 /// secret path until a deliberate cutover. Matches the call shape of the
 /// other controllers so it slots into `run_all_controllers`' `join!`.
-pub async fn run_kms_zap_controller(client: Client, namespace: String, enabled: bool) {
+pub async fn run_kms_zap_controller(
+    client: Client,
+    namespace: String,
+    enabled: bool,
+    api_group: &str,
+) {
     if !enabled {
         info!("KMS ZAP controller disabled (set KMS_ZAP_CONTROLLER=true to enable)");
         return;
     }
-    let gvk = GroupVersionKind::gvk(KMS_GROUP, KMS_VERSION, KMS_KIND);
+    let group = kms_group(api_group);
+    let gvk = GroupVersionKind::gvk(&group, KMS_VERSION, KMS_KIND);
     let ar = ApiResource::from_gvk(&gvk);
     let api: Api<DynamicObject> = if namespace.is_empty() {
         Api::all_with(client.clone(), &ar)
@@ -244,10 +260,10 @@ pub async fn run_kms_zap_controller(client: Client, namespace: String, enabled: 
         Api::namespaced_with(client.clone(), &namespace, &ar)
     };
     info!(
-        group = KMS_GROUP,
+        group = %group,
         "Starting KMS ZAP controller (additive, zap-native CRs only)"
     );
-    let ctx = Arc::new(Ctx { client });
+    let ctx = Arc::new(Ctx { client, group });
     Controller::new_with(api, Config::default(), ar)
         .run(reconcile, on_error, ctx)
         .for_each(|res| async move {
