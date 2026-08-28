@@ -185,30 +185,30 @@ fn app_role_specific_properties() -> serde_json::Value {
 /// fleet actually runs — the two things schemars cannot express:
 ///
 /// (1) the role-specific spec fields, DECLARED rather than preserved-as-unknown.
-///     `x-kubernetes-preserve-unknown-fields: true` on `spec` looks like the
-///     obvious way to carry `AppSpec.extra`, and it does carry it — but it also
-///     collapses the PUBLISHED OpenAPI model to ZERO spec properties. Hanzo CD
-///     builds its structured-merge diff from that published model, not from the
-///     CRD, so every comparison died on `.spec.image: field not declared in
-///     schema`, sync went Unknown, and reconciliation silently stopped for EVERY
-///     App CR in the fleet while the Application still reported Healthy at the
-///     right revision. The flag was load-bearing only because eight fields were
-///     in live use and undeclared, so dropping it alone would have PRUNED them
-///     off 80 CRs. Declaring them first (`app_role_specific_properties`) and only
-///     then dropping the flag is what makes the model complete AND lossless.
-///     `AppSpec.extra` still collects them at the serde layer — that is
-///     independent of the schema, so a DECLARED field is stored and projected
-///     exactly as before.
+///   `x-kubernetes-preserve-unknown-fields: true` on `spec` looks like the
+///   obvious way to carry `AppSpec.extra`, and it does carry it — but it also
+///   collapses the PUBLISHED OpenAPI model to ZERO spec properties. Hanzo CD
+///   builds its structured-merge diff from that published model, not from the
+///   CRD, so every comparison died on `.spec.image: field not declared in
+///   schema`, sync went Unknown, and reconciliation silently stopped for EVERY
+///   App CR in the fleet while the Application still reported Healthy at the
+///   right revision. The flag was load-bearing only because eight fields were
+///   in live use and undeclared, so dropping it alone would have PRUNED them
+///   off 80 CRs. Declaring them first (`app_role_specific_properties`) and only
+///   then dropping the flag is what makes the model complete AND lossless.
+///   `AppSpec.extra` still collects them at the serde layer — that is
+///   independent of the schema, so a DECLARED field is stored and projected
+///   exactly as before.
 ///
-///     This ran as a hand-edit on `k8s/crds/all-hanzo.ai.yaml` (f722cd8) that the
-///     generator could not reproduce, so the next `generate-crd-yaml` would have
-///     silently reverted a fleet-down fix. It lives in the generator now: the
-///     bundles are generated output again, and regeneration is faithful.
+///   This ran as a hand-edit on `k8s/crds/all-hanzo.ai.yaml` (f722cd8) that the
+///   generator could not reproduce, so the next `generate-crd-yaml` would have
+///   silently reverted a fleet-down fix. It lives in the generator now: the
+///   bundles are generated output again, and regeneration is faithful.
 ///
 /// (2) the `spec.role` enum, so the emitted schema agrees with universe while the
-///     Rust type stays an open string (so `classify` — not the schema — is the
-///     runtime authority and an operator newer than the CRD still fails safe on
-///     an unmodeled role).
+///   Rust type stays an open string (so `classify` — not the schema — is the
+///   runtime authority and an operator newer than the CRD still fails safe on
+///   an unmodeled role).
 fn harden_app_crd(crd: &mut CustomResourceDefinition) {
     for version in &mut crd.spec.versions {
         let Some(schema) = version.schema.as_mut() else {
