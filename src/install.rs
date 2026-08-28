@@ -37,8 +37,7 @@ use crate::core::Result;
 use crate::crd::{
     AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, ImageUpdate,
     Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue,
-    Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL,
-};
+    Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL, KMSSecret};
 
 /// Default operator image (pinned semver; the caller overrides at install time).
 pub const DEFAULT_OPERATOR_IMAGE: &str = "ghcr.io/hanzoai/operator";
@@ -89,6 +88,9 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         // automation (ImageUpdate). Appended after App so they extend the tail
         // without disturbing the canonical order the checked-in bundles assert.
         ImageUpdate::crd(),
+        // The KMS family. Prefixed group, so rewrite_crd_group carries the
+        // prefix across universes (kms.hanzo.ai -> kms.lux.cloud).
+        KMSSecret::crd(),
     ];
     if group != DEFAULT_API_GROUP {
         for crd in &mut crds {
@@ -254,10 +256,21 @@ fn harden_app_crd(crd: &mut CustomResourceDefinition) {
 }
 
 /// Rewrite a CRD's group (touches `spec.group` + `metadata.name = <plural>.<group>`).
+///
+/// A group that is the default with something in FRONT of it keeps that prefix:
+/// `kms.hanzo.ai` becomes `kms.lux.cloud`, not `lux.cloud`. The KMS family is
+/// named for the service that owns it and lives beside the universe rather than
+/// inside it, so flattening the prefix here would move those CRDs into a family
+/// nothing watches — and it would do it silently, since a CRD installs happily
+/// under any name.
 pub fn rewrite_crd_group(crd: &mut CustomResourceDefinition, group: &str) {
     let plural = crd.spec.names.plural.clone();
-    crd.spec.group = group.to_string();
-    crd.metadata.name = Some(format!("{plural}.{group}"));
+    let rewritten = match crd.spec.group.strip_suffix(DEFAULT_API_GROUP) {
+        Some(prefix) if !prefix.is_empty() => format!("{prefix}{group}"),
+        _ => group.to_string(),
+    };
+    crd.spec.group = rewritten.clone();
+    crd.metadata.name = Some(format!("{plural}.{rewritten}"));
 }
 
 // ============================================================================
@@ -611,25 +624,69 @@ mod tests {
 
     // ---- CRD bundle (moved from generate_crd_yaml; the one home) ----
 
+    /// The KMS family is named for the service that owns it, so its group sits
+    /// BESIDE the universe rather than inside it: a lux install serves
+    /// `kms.lux.cloud` while that same universe's own Kinds serve `lux.cloud`.
+    /// The operator's internals stay `hanzo.ai` — only the rendered CRDs move.
     #[test]
-    fn bundle_is_the_canonical_30_kind_set() {
+    fn the_kms_group_keeps_its_prefix_across_universes() {
+        for (universe, kms, own) in [
+            ("hanzo.ai", "kms.hanzo.ai", "hanzo.ai"),
+            ("lux.cloud", "kms.lux.cloud", "lux.cloud"),
+            ("zoo.cloud", "kms.zoo.cloud", "zoo.cloud"),
+        ] {
+            let crds = crd_bundle(universe);
+            let secret = crds
+                .iter()
+                .find(|c| c.spec.names.kind == "KMSSecret")
+                .expect("the bundle installs the KMSSecret CRD");
+            assert_eq!(
+                secret.spec.group, kms,
+                "under {universe} the KMS family must be {kms}, not folded into the universe group"
+            );
+            assert_eq!(
+                secret.metadata.name.as_deref(),
+                Some(format!("kmssecrets.{kms}").as_str()),
+                "the CRD name follows its group"
+            );
+            let gateway = crds
+                .iter()
+                .find(|c| c.spec.names.kind == "Gateway")
+                .expect("Gateway is in the bundle");
+            assert_eq!(
+                gateway.spec.group, own,
+                "an ordinary Kind still lands in the universe's own group"
+            );
+        }
+    }
+
+    #[test]
+    fn bundle_is_the_canonical_31_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            30,
-            "managed Kind count is 30 (28 canonical + App + ImageUpdate; GitSource retired — delivery is the cloud deploy engine)"
+            31,
+            "managed Kind count is 31 (28 canonical + App + ImageUpdate + KMSSecret; GitSource retired — delivery is the cloud deploy engine)"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
         assert!(kinds.contains(&"AgentDeployment"));
         assert!(kinds.contains(&"App"));
         assert!(kinds.contains(&"ImageUpdate"));
+        assert!(kinds.contains(&"KMSSecret"));
         for crd in &crds {
-            assert_eq!(crd.spec.group, DEFAULT_API_GROUP);
+            // KMS is named for its service, so its group sits beside the
+            // universe (kms.hanzo.ai) rather than inside it.
+            let expected = if crd.spec.names.kind == "KMSSecret" {
+                format!("kms.{DEFAULT_API_GROUP}")
+            } else {
+                DEFAULT_API_GROUP.to_string()
+            };
+            assert_eq!(crd.spec.group, expected);
             let plural = &crd.spec.names.plural;
             assert_eq!(
                 crd.metadata.name.as_deref(),
-                Some(format!("{plural}.{DEFAULT_API_GROUP}").as_str()),
+                Some(format!("{plural}.{expected}").as_str()),
             );
         }
     }
@@ -638,11 +695,16 @@ mod tests {
     fn bundle_group_rewrite() {
         let crds = crd_bundle("lux.cloud");
         for crd in &crds {
-            assert_eq!(crd.spec.group, "lux.cloud");
+            let expected = if crd.spec.names.kind == "KMSSecret" {
+                "kms.lux.cloud"
+            } else {
+                "lux.cloud"
+            };
+            assert_eq!(crd.spec.group, expected);
             let plural = &crd.spec.names.plural;
             assert_eq!(
                 crd.metadata.name.as_deref(),
-                Some(format!("{plural}.lux.cloud").as_str()),
+                Some(format!("{plural}.{expected}").as_str()),
             );
         }
     }

@@ -963,6 +963,58 @@ pub struct AuthPolicy {
     pub jwks_url: String,
 }
 
+/// A secret this cluster needs, and where in KMS it comes from.
+///
+/// The operator both WRITES these (from a `kmsSecrets` reference on a Service,
+/// App or LuxRuntime) and READS them (`controllers::kms_zap` projects them into
+/// k8s Secrets over ZAP). Owning the definition is what lets those two agree:
+/// while the CRD lived in another repo, the writer and the projector drifted to
+/// different groups and versions and nothing said so.
+///
+/// The group is `kms.<universe>` — prefixed, so it is rewritten to
+/// `kms.lux.cloud` under lux while the universe's own Kinds go to `lux.cloud`.
+/// KMS is named for the service that owns it, not the universe it serves.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "kms.hanzo.ai",
+    version = "v1",
+    kind = "KMSSecret",
+    plural = "kmssecrets",
+    namespaced,
+    shortname = "kmss"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct KMSSecretSpec {
+    /// How the operator reaches KMS. `zap` selects the ZAP-native projector;
+    /// anything else is left to whatever else is watching, so a cluster can be
+    /// migrated one secret at a time rather than all at once.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub transport: String,
+    /// host:port of the KMS ZAP endpoint.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zap_addr: String,
+    /// The KMS coordinate: which project, which environment, which folder.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_slug: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub env_slug: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secrets_path: String,
+    /// The keys to fetch. Empty means none — never "all", because a widening
+    /// secret is not something a reconcile should decide on its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<String>,
+    /// The k8s Secret to write.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub managed_secret_name: String,
+    /// Namespaces the Secret may be projected into besides the CR's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_namespaces: Vec<String>,
+    /// Restricts this CR to one cluster when several watch the same KMS.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cluster_name: String,
+}
+
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
     group = "hanzo.ai",
