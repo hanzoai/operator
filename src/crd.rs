@@ -1088,7 +1088,7 @@ pub struct MPCCacheSpec {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "MPC",
     plural = "mpcs",
@@ -1242,7 +1242,7 @@ pub fn is_primary_network_id(nid: u32) -> bool {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "Network",
     plural = "networks",
@@ -1780,7 +1780,7 @@ pub struct ManagedDatabaseSpec {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "Chain",
     plural = "chains",
@@ -1796,7 +1796,7 @@ pub struct ChainKindSpec {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "Validator",
     plural = "validators",
@@ -1817,7 +1817,7 @@ pub struct ValidatorKindSpec {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "Indexer",
     plural = "indexers",
@@ -1830,7 +1830,7 @@ pub struct IndexerKindSpec(pub ServiceSpec);
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "Explorer",
     plural = "explorers",
@@ -2224,7 +2224,7 @@ pub struct ChainStatus {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "LuxRuntime",
     plural = "luxruntimes",
@@ -2380,7 +2380,7 @@ pub struct FleetChainSpec {
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[kube(
-    group = "hanzo.ai",
+    group = "bootno.de",
     version = "v1",
     kind = "NodeFleet",
     plural = "nodefleets",

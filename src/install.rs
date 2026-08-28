@@ -266,8 +266,15 @@ fn harden_app_crd(crd: &mut CustomResourceDefinition) {
 pub fn rewrite_crd_group(crd: &mut CustomResourceDefinition, group: &str) {
     let plural = crd.spec.names.plural.clone();
     let rewritten = match crd.spec.group.strip_suffix(DEFAULT_API_GROUP) {
-        Some(prefix) if !prefix.is_empty() => format!("{prefix}{group}"),
-        _ => group.to_string(),
+        // Exactly the default: the universe's own Kinds follow the universe.
+        Some("") => group.to_string(),
+        // Prefixed (kms.hanzo.ai): the prefix names the service and survives.
+        Some(prefix) => format!("{prefix}{group}"),
+        // Not the universe's group at all (bootno.de): FIXED, and rewriting it
+        // is what would break it. The blockchain family is one group for every
+        // universe on purpose — lux/operator materializes children there
+        // precisely so a single reader sees one canonical group.
+        None => crd.spec.group.clone(),
     };
     crd.spec.group = rewritten.clone();
     crd.metadata.name = Some(format!("{plural}.{rewritten}"));
@@ -628,6 +635,59 @@ mod tests {
     /// BESIDE the universe rather than inside it: a lux install serves
     /// `kms.lux.cloud` while that same universe's own Kinds serve `lux.cloud`.
     /// The operator's internals stay `hanzo.ai` — only the rendered CRDs move.
+    /// The three families, and which group each Kind belongs to.
+    ///
+    /// A universe's own Kinds follow the universe. KMS is named for its service
+    /// and sits beside it, prefixed. The blockchain family is FIXED at
+    /// `bootno.de` for every universe — lux/operator materializes children there
+    /// precisely so one reader sees one canonical group, and brand-flipping it
+    /// would split that reader per universe.
+    const BLOCKCHAIN_KINDS: [&str; 8] = [
+        "Network", "Chain", "Validator", "Indexer", "Explorer", "LuxRuntime", "NodeFleet", "MPC",
+    ];
+
+    fn expected_group(kind: &str, universe: &str) -> String {
+        if BLOCKCHAIN_KINDS.contains(&kind) {
+            "bootno.de".to_string()
+        } else if kind == "KMSSecret" {
+            format!("kms.{universe}")
+        } else {
+            universe.to_string()
+        }
+    }
+
+    /// The blockchain family does NOT follow the universe, and that is the whole
+    /// point of it: lux/operator materializes child CRs at bootno.de so a single
+    /// reader sees one canonical group no matter which universe wrote them.
+    /// Brand-flipping this would give every universe its own group and leave the
+    /// reader watching one of them — which is how these CRs came to be written
+    /// into a group nothing watched in the first place.
+    #[test]
+    fn the_blockchain_family_is_fixed_across_universes() {
+        let mut seen = Vec::new();
+        for universe in ["hanzo.ai", "lux.cloud", "zoo.cloud", "osage.cloud"] {
+            let crds = crd_bundle(universe);
+            let mut groups: Vec<String> = crds
+                .iter()
+                .filter(|c| BLOCKCHAIN_KINDS.contains(&c.spec.names.kind.as_str()))
+                .map(|c| c.spec.group.clone())
+                .collect();
+            groups.sort();
+            groups.dedup();
+            assert_eq!(
+                groups,
+                vec!["bootno.de".to_string()],
+                "under {universe} the blockchain Kinds must all stay at bootno.de"
+            );
+            let n = crds
+                .iter()
+                .filter(|c| BLOCKCHAIN_KINDS.contains(&c.spec.names.kind.as_str()))
+                .count();
+            seen.push(n);
+        }
+        assert_eq!(seen, vec![8, 8, 8, 8], "the same 8 Kinds in every universe");
+    }
+
     #[test]
     fn the_kms_group_keeps_its_prefix_across_universes() {
         for (universe, kms, own) in [
@@ -675,14 +735,8 @@ mod tests {
         assert!(kinds.contains(&"ImageUpdate"));
         assert!(kinds.contains(&"KMSSecret"));
         for crd in &crds {
-            // KMS is named for its service, so its group sits beside the
-            // universe (kms.hanzo.ai) rather than inside it.
-            let expected = if crd.spec.names.kind == "KMSSecret" {
-                format!("kms.{DEFAULT_API_GROUP}")
-            } else {
-                DEFAULT_API_GROUP.to_string()
-            };
-            assert_eq!(crd.spec.group, expected);
+            let expected = expected_group(&crd.spec.names.kind, DEFAULT_API_GROUP);
+            assert_eq!(crd.spec.group, expected, "{} landed in the wrong family", crd.spec.names.kind);
             let plural = &crd.spec.names.plural;
             assert_eq!(
                 crd.metadata.name.as_deref(),
@@ -695,12 +749,8 @@ mod tests {
     fn bundle_group_rewrite() {
         let crds = crd_bundle("lux.cloud");
         for crd in &crds {
-            let expected = if crd.spec.names.kind == "KMSSecret" {
-                "kms.lux.cloud"
-            } else {
-                "lux.cloud"
-            };
-            assert_eq!(crd.spec.group, expected);
+            let expected = expected_group(&crd.spec.names.kind, "lux.cloud");
+            assert_eq!(crd.spec.group, expected, "{} landed in the wrong family", crd.spec.names.kind);
             let plural = &crd.spec.names.plural;
             assert_eq!(
                 crd.metadata.name.as_deref(),
