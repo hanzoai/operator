@@ -259,6 +259,26 @@ pub struct KMSSecretRef {
     pub managed_secret_name: String,
 }
 
+/// Wires a node's luxd staking identity — TLS cert, BLS signer and ML-DSA-65 —
+/// from KMS rather than from anything checked in. hanzo/cloud's validator
+/// onboarding seals the keys under an org-scoped KMS coordinate; declaring `kms`
+/// here makes the operator reconcile a KMSSecret so the kms-operator materializes
+/// them into `secret_name`, which the pod mounts read-only at /staking-keys.
+/// Omit `kms` when the Secret is provisioned out of band.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StakingSpec {
+    /// The Secret holding the luxd staking artifacts (staker.crt, staker.key,
+    /// signer.key, mldsa.key, mldsa.pub). Defaults to the KMS ref's managed
+    /// secret name when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_name: String,
+    /// The KMS -> Secret sync to reconcile. Without it nothing populates
+    /// `secret_name`, which is why it is separate from the name itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kms: Option<KMSSecretRef>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSpec {
@@ -2209,6 +2229,10 @@ pub struct LuxRuntimeSpec {
     /// Translated to `REPLICATE_*` env on the luxd container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replication: Option<ReplicationSpec>,
+
+    /// Staking identity for this runtime, sourced from KMS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staking: Option<StakingSpec>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
