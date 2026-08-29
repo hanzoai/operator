@@ -361,16 +361,41 @@ const ALL_VERBS: &[&str] = &[
 ];
 const READ_VERBS: &[&str] = &["get", "list", "watch"];
 
+/// Every API group this operator installs CRDs into, for `universe`.
+///
+/// Read off the bundle rather than listed by hand: the ClusterRole has to
+/// cover exactly what the CRDs are published into, and a hand-kept list
+/// silently stops covering it the moment a Kind is added. That already
+/// happened twice — the whole blockchain family sits at the fixed
+/// `bootno.de` group and was never granted, and the KMS grant was pinned to
+/// `kms.hanzo.ai` while the controller reconciles at `kms.<universe>`.
+///
+/// Neither failed loudly. A reconciler with no grant does not crash, it just
+/// never sees the object, and the CR waits forever with nothing in its status
+/// to say why.
+pub fn managed_groups(universe: &str) -> Vec<String> {
+    let mut groups: Vec<String> = crd_bundle(universe)
+        .iter()
+        .map(|c| c.spec.group.clone())
+        .collect();
+    groups.sort();
+    groups.dedup();
+    groups
+}
+
 /// The operator ClusterRole. `group` is the CRD API group it manages (e.g.
 /// `hanzo.ai`). Includes the grants the managed-upgrade FSM needs — pods +
 /// persistentvolumeclaims (create/delete for pre-flight) and
 /// `snapshot.storage.k8s.io` volumesnapshots (the CSI clone source).
 pub fn operator_cluster_role(group: &str) -> ClusterRole {
+    // Every group the bundle publishes into: the universe's own, the KMS group
+    // beside it, and the fixed blockchain group. Derived, so publishing a Kind
+    // and granting it cannot come apart.
+    let owned = managed_groups(group);
+    let owned: Vec<&str> = owned.iter().map(String::as_str).collect();
     let rules = vec![
         // The managed CRDs + their status subresource.
-        rule(&[group], &["*", "*/status"], ALL_VERBS),
-        // KMSSecret children (kms.hanzo.ai).
-        rule(&["kms.hanzo.ai"], &["kmssecrets"], ALL_VERBS),
+        rule(&owned, &["*", "*/status"], ALL_VERBS),
         // Workloads the controllers materialize.
         rule(&["apps"], &["deployments", "statefulsets"], ALL_VERBS),
         rule(&["apps"], &["deployments/status"], READ_VERBS),
@@ -694,6 +719,42 @@ mod tests {
     /// spec describes any chain node — so the engine has to be a value the CR
     /// carries rather than a fact the type asserts, and adding it must not
     /// invalidate a single CR written before it existed.
+    /// A Kind that is published and not granted is invisible to its own
+    /// reconciler, and invisible without an error: the watch simply returns
+    /// nothing. So the ClusterRole must cover every group the bundle installs
+    /// into, in every universe — not the universe's own group plus whatever was
+    /// remembered by hand.
+    #[test]
+    fn every_group_the_bundle_publishes_is_granted() {
+        for universe in ["hanzo.ai", "lux.cloud", "zoo.cloud"] {
+            let role = operator_cluster_role(universe);
+            let granted: Vec<String> = role
+                .rules
+                .unwrap_or_default()
+                .iter()
+                .filter(|r| r.resources.as_ref().is_some_and(|res| res.iter().any(|x| x == "*")))
+                .flat_map(|r| r.api_groups.clone().unwrap_or_default())
+                .collect();
+
+            for crd in crd_bundle(universe) {
+                assert!(
+                    granted.contains(&crd.spec.group),
+                    "{universe}: {} is published into {} and nothing grants it",
+                    crd.spec.names.kind,
+                    crd.spec.group
+                );
+            }
+            // The three families are all really there, so this cannot pass by
+            // granting one group that happens to cover the bundle.
+            for expect in [universe, &format!("kms.{universe}"), "bootno.de"] {
+                assert!(
+                    granted.iter().any(|g| g == expect),
+                    "{universe}: expected a grant on {expect}, got {granted:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_runtime_names_its_engine_and_defaults_to_luxd() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
