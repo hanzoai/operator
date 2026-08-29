@@ -17,7 +17,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, Service as CoreService, Volume, VolumeMount,
+    Container, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, Patch, PatchParams};
@@ -36,8 +36,8 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
-    refuse_live_node,
-    conditions_equivalent, config_volume, local_refs, or_else, secret_volume, tcp_probe,
+    conditions_equivalent, config_volume, local_refs, or_else, refuse_live_node, secret_volume,
+    tcp_probe, Plan,
 };
 use super::owner_ref_for;
 
@@ -163,14 +163,15 @@ pub async fn reconcile(cr: Arc<EthereumRuntime>, ctx: Arc<Ctx>) -> Result<Action
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-async fn reconcile_inner(
-    client: &Client,
+/// What an EthereumRuntime resolves to. Pure — the two layers' arguments,
+/// which is where a misconfigured pair actually goes wrong.
+pub fn build(
     name: &str,
     namespace: &str,
     spec: &EthereumRuntimeSpec,
     owner: OwnerReference,
-) -> Result<()> {
-    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
+) -> Result<Plan> {
+    refuse_live_node(name, namespace)?;
     check(spec)?;
 
     let base = manifests::standard_labels(name, "ethereum", "ethereum", &spec.execution.image.tag);
@@ -184,8 +185,10 @@ async fn reconcile_inner(
         render_config(name, namespace, spec, auth),
     );
     cm.metadata.owner_references = Some(vec![owner.clone()]);
-    let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    apply::apply_configmap(&cms, &cm).await?;
+    let mut plan = Plan {
+        configs: vec![cm],
+        ..Default::default()
+    };
 
     // --- execution ---
     let el = el_name(name);
@@ -217,8 +220,8 @@ async fn reconcile_inner(
         None,
         Some(tcp_probe(auth, 30, 15)),
     );
-    apply_layer(
-        client,
+    layer(
+        &mut plan,
         &el,
         namespace,
         layer_labels(&base, &el, "execution"),
@@ -231,8 +234,7 @@ async fn reconcile_inner(
         &spec.image_pull_secrets,
         &el_ports,
         &owner,
-    )
-    .await?;
+    );
 
     // --- consensus ---
     let cl = cl_name(name);
@@ -269,8 +271,8 @@ async fn reconcile_inner(
         None,
         Some(tcp_probe(cl_rpc_port(spec), 30, 15)),
     );
-    apply_layer(
-        client,
+    layer(
+        &mut plan,
         &cl,
         namespace,
         layer_labels(&base, &cl, "consensus"),
@@ -283,9 +285,20 @@ async fn reconcile_inner(
         &spec.image_pull_secrets,
         &cl_ports,
         &owner,
-    )
-    .await?;
+    );
 
+    Ok(plan)
+}
+
+async fn reconcile_inner(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &EthereumRuntimeSpec,
+    owner: OwnerReference,
+) -> Result<()> {
+    let plan = build(name, namespace, spec, owner)?;
+    plan.apply(client, namespace).await?;
     info!(name, namespace, network = ?spec.network, "EthereumRuntime reconciled");
     Ok(())
 }
@@ -336,8 +349,8 @@ fn layer_labels(
 /// One layer: a single-replica StatefulSet with its own PVC, plus the headless
 /// and ClusterIP Services. The two layers differ only in what is passed here.
 #[allow(clippy::too_many_arguments)]
-async fn apply_layer(
-    client: &Client,
+fn layer(
+    plan: &mut Plan,
     name: &str,
     namespace: &str,
     labels: BTreeMap<String, String>,
@@ -347,7 +360,7 @@ async fn apply_layer(
     pull: &[String],
     ports: &[CrServicePort],
     owner: &OwnerReference,
-) -> Result<()> {
+) {
     let sel = manifests::selector_labels(name);
     let pvc = manifests::build_pvc_template("data", &storage.storage_class_name, &storage.size);
     let headless = format!("{name}-headless");
@@ -364,11 +377,8 @@ async fn apply_layer(
         &headless,
     );
     sts.metadata.owner_references = Some(vec![owner.clone()]);
-    let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&stss, &sts).await?;
 
     let svc_ports = manifests::service_ports(ports);
-    let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
     let mut hs = manifests::build_headless_service(
         &headless,
         namespace,
@@ -377,12 +387,13 @@ async fn apply_layer(
         sel.clone(),
     );
     hs.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply_service(&svcs, &hs).await?;
 
     let mut clip = manifests::build_service(name, namespace, labels, svc_ports, sel);
     clip.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply_service(&svcs, &clip).await?;
-    Ok(())
+
+    plan.sets.push(sts);
+    plan.services.push(hs);
+    plan.services.push(clip);
 }
 
 async fn ready(client: &Client, name: &str, namespace: &str) -> bool {
@@ -483,7 +494,7 @@ mod tests {
         ExecutionKind, ImageSpec, SecretRef,
     };
 
-    fn spec() -> EthereumRuntimeSpec {
+    pub(super) fn spec() -> EthereumRuntimeSpec {
         EthereumRuntimeSpec {
             network: EthereumNetwork::Mainnet,
             execution: EthereumExecutionSpec {
@@ -589,5 +600,126 @@ mod tests {
         assert_eq!(el_name("mainnet"), "mainnet-el");
         assert_eq!(cl_name("mainnet"), "mainnet-cl");
         assert_ne!(el_name("mainnet"), cl_name("mainnet"));
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::tests::spec;
+    use super::*;
+
+    fn owner() -> OwnerReference {
+        OwnerReference {
+            api_version: "bootno.de/v1".to_string(),
+            kind: "EthereumRuntime".to_string(),
+            name: "eth".to_string(),
+            uid: "uid-1".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }
+    }
+
+    /// Two StatefulSets, because post-merge neither half is a node. One CR
+    /// producing one workload would be half an Ethereum node — an execution
+    /// client with nothing telling it what to build on.
+    #[test]
+    fn a_node_is_two_workloads() {
+        let plan = build("eth", "chains", &spec(), owner()).expect("builds");
+        assert_eq!(plan.sets.len(), 2, "execution and consensus");
+        let names: Vec<_> = plan
+            .sets
+            .iter()
+            .filter_map(|s| s.metadata.name.clone())
+            .collect();
+        assert!(names.contains(&"eth-el".to_string()), "{names:?}");
+        assert!(names.contains(&"eth-cl".to_string()), "{names:?}");
+        // Each layer gets both services, so four in total.
+        assert_eq!(plan.services.len(), 4);
+        for n in ["eth-el", "eth-el-headless", "eth-cl", "eth-cl-headless"] {
+            assert!(plan.has_service(n), "missing {n}");
+        }
+    }
+
+    /// The two authenticate over one JWT, mounted at the same path in both, and
+    /// the consensus client dials the execution client at the port the
+    /// execution client was told to listen on. If those disagree the pair comes
+    /// up healthy and never talks.
+    #[test]
+    fn the_pair_agrees_on_the_jwt_and_the_port() {
+        let plan = build("eth", "chains", &spec(), owner()).expect("builds");
+        let el = plan.container("execution").expect("el");
+        let cl = plan.container("consensus").expect("cl");
+
+        let jwt = format!("{JWT_DIR}/{JWT_FILE}");
+        assert!(el.args.clone().unwrap().contains(&format!("--authrpc.jwtsecret={jwt}")));
+        assert!(cl.args.clone().unwrap().contains(&format!("--execution-jwt={jwt}")));
+        for c in [el, cl] {
+            let m = c.volume_mounts.clone().unwrap_or_default();
+            let j = m.iter().find(|m| m.name == "jwt").expect("jwt mounted");
+            assert_eq!(j.mount_path, JWT_DIR);
+            assert_eq!(j.read_only, Some(true));
+        }
+
+        let port = auth_rpc_port(&spec());
+        assert!(el.args.clone().unwrap().contains(&format!("--authrpc.port={port}")));
+        assert!(cl
+            .args
+            .clone()
+            .unwrap()
+            .contains(&format!("--execution-endpoint={}", engine_url("eth", "chains", port))));
+    }
+
+    /// Each layer keeps its own chain data. Sharing one volume would have two
+    /// processes writing one directory.
+    #[test]
+    fn each_layer_has_its_own_volume() {
+        let plan = build("eth", "chains", &spec(), owner()).expect("builds");
+        for sts in &plan.sets {
+            let pvcs = sts
+                .spec
+                .as_ref()
+                .unwrap()
+                .volume_claim_templates
+                .clone()
+                .unwrap_or_default();
+            assert_eq!(pvcs.len(), 1, "one claim per layer");
+            assert_eq!(pvcs[0].metadata.name.as_deref(), Some("data"));
+            assert_eq!(sts.spec.as_ref().unwrap().replicas, Some(1));
+        }
+        let el = plan.container("execution").unwrap();
+        let cl = plan.container("consensus").unwrap();
+        assert!(el.args.clone().unwrap().contains(&format!("--datadir={EL_DATA_DIR}")));
+        assert!(cl.args.clone().unwrap().contains(&format!("--datadir={CL_DATA_DIR}")));
+        assert_ne!(EL_DATA_DIR, CL_DATA_DIR);
+    }
+
+    /// Optional settings appear only when asked for — an empty checkpoint URL
+    /// passed as a flag would be a flag with no value.
+    #[test]
+    fn optional_flags_are_absent_when_unset() {
+        let plan = build("eth", "chains", &spec(), owner()).expect("builds");
+        let cl = plan.container("consensus").unwrap();
+        let args = cl.args.clone().unwrap();
+        assert!(!args.iter().any(|a| a.starts_with("--checkpoint-sync-url")), "{args:?}");
+        assert!(!args.iter().any(|a| a.starts_with("--suggested-fee-recipient")), "{args:?}");
+
+        let mut s = spec();
+        s.consensus.checkpoint_sync = "https://checkpoint.example".into();
+        s.fee_recipient = "0xabc".into();
+        let plan = build("eth", "chains", &s, owner()).expect("builds");
+        let args = plan.container("consensus").unwrap().args.clone().unwrap();
+        assert!(args.contains(&"--checkpoint-sync-url=https://checkpoint.example".to_string()));
+        assert!(args.contains(&"--suggested-fee-recipient=0xabc".to_string()));
+    }
+
+    /// A pair with no shared secret, or one aimed at the live validators, is
+    /// refused before any object exists.
+    #[test]
+    fn a_refused_cr_produces_no_plan() {
+        let mut s = spec();
+        s.jwt_secret.name = String::new();
+        assert!(build("eth", "chains", &s, owner()).is_err());
+        assert!(build("luxd-0", "chains", &spec(), owner()).is_err());
+        assert!(build("eth", "lux-mainnet", &spec(), owner()).is_err());
     }
 }

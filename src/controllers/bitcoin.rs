@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{ConfigMap, EnvVar, Service as CoreService, VolumeMount};
+use k8s_openapi::api::core::v1::{EnvVar, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -30,8 +30,8 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
-    refuse_live_node,
-    conditions_equivalent, config_volume, local_refs, one_file, or_else, secret_key_ref, tcp_probe,
+    conditions_equivalent, config_volume, local_refs, one_file, or_else, refuse_live_node,
+    secret_key_ref, tcp_probe, Plan,
 };
 use super::owner_ref_for;
 
@@ -139,14 +139,15 @@ pub async fn reconcile(cr: Arc<BitcoinRuntime>, ctx: Arc<Ctx>) -> Result<Action>
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-async fn reconcile_inner(
-    client: &Client,
+/// What a BitcoinRuntime resolves to. Pure — nothing is sent from here, so a
+/// test can read the arguments bitcoind will actually be started with.
+pub fn build(
     name: &str,
     namespace: &str,
     spec: &BitcoinRuntimeSpec,
     owner: OwnerReference,
-) -> Result<()> {
-    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
+) -> Result<Plan> {
+    refuse_live_node(name, namespace)?;
     check(spec)?;
 
     let labels = manifests::standard_labels(name, "bitcoind", "bitcoin", &spec.node_image.tag);
@@ -162,8 +163,6 @@ async fn reconcile_inner(
         one_file("bitcoin.conf", render_conf(spec)),
     );
     cm.metadata.owner_references = Some(vec![owner.clone()]);
-    let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    apply::apply_configmap(&cms, &cm).await?;
 
     let mut ports = vec![
         CrServicePort {
@@ -288,11 +287,8 @@ async fn reconcile_inner(
         &headless,
     );
     sts.metadata.owner_references = Some(vec![owner.clone()]);
-    let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&stss, &sts).await?;
 
     let svc_ports = manifests::service_ports(&ports);
-    let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
     let mut hs = manifests::build_headless_service(
         &headless,
         namespace,
@@ -301,12 +297,26 @@ async fn reconcile_inner(
         sel.clone(),
     );
     hs.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply_service(&svcs, &hs).await?;
 
     let mut clip = manifests::build_service(name, namespace, labels, svc_ports, sel);
     clip.metadata.owner_references = Some(vec![owner]);
-    apply::apply_service(&svcs, &clip).await?;
 
+    Ok(Plan {
+        configs: vec![cm],
+        sets: vec![sts],
+        services: vec![hs, clip],
+    })
+}
+
+async fn reconcile_inner(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &BitcoinRuntimeSpec,
+    owner: OwnerReference,
+) -> Result<()> {
+    let plan = build(name, namespace, spec, owner)?;
+    plan.apply(client, namespace).await?;
     info!(name, namespace, network = ?spec.network, "BitcoinRuntime reconciled");
     Ok(())
 }
@@ -405,7 +415,7 @@ mod tests {
     use super::*;
     use crate::crd::{BitcoinP2PSpec, ImageSpec, StorageSpec};
 
-    fn spec() -> BitcoinRuntimeSpec {
+    pub(super) fn spec() -> BitcoinRuntimeSpec {
         BitcoinRuntimeSpec {
             node_image: ImageSpec {
                 repository: "ghcr.io/hanzoai/bitcoind".to_string(),
@@ -522,5 +532,118 @@ mod tests {
         assert_eq!(s.block_height, -1);
         assert_eq!(s.peer_count, -1);
         assert!(s.sync_progress.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::tests::spec;
+    use super::*;
+
+    fn owner() -> OwnerReference {
+        OwnerReference {
+            api_version: "bootno.de/v1".to_string(),
+            kind: "BitcoinRuntime".to_string(),
+            name: "btc".to_string(),
+            uid: "uid-1".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }
+    }
+
+    /// A node is its arguments. The config file is mounted read-only and passed
+    /// explicitly, so bitcoind reads what the CR said and not whatever was left
+    /// on the data volume by a previous image.
+    #[test]
+    fn bitcoind_is_started_against_the_rendered_config() {
+        let plan = build("btc", "chains", &spec(), owner()).expect("builds");
+        let c = plan.container("bitcoind").expect("main container");
+        let args = c.args.clone().unwrap_or_default();
+        assert!(args.contains(&format!("-conf={CONF_DIR}/bitcoin.conf")), "{args:?}");
+        assert!(args.contains(&format!("-datadir={DATA_DIR}")), "{args:?}");
+
+        let mounts = c.volume_mounts.clone().unwrap_or_default();
+        let conf = mounts.iter().find(|m| m.name == "config").expect("config mount");
+        assert_eq!(conf.read_only, Some(true), "the operator owns the config");
+        assert!(mounts.iter().any(|m| m.name == "data" && m.mount_path == DATA_DIR));
+
+        assert_eq!(plan.config("btc-config"), Some(render_conf(&spec()).as_str()));
+    }
+
+    /// One node per CR, and a PVC that outlives the pod. Bitcoin peers are not
+    /// replicas — a second pod would be a second node with its own chainstate.
+    #[test]
+    fn there_is_one_node_and_it_keeps_its_data() {
+        let plan = build("btc", "chains", &spec(), owner()).expect("builds");
+        let sts = &plan.sets[0];
+        let spec_ = sts.spec.as_ref().expect("statefulset spec");
+        assert_eq!(spec_.replicas, Some(1));
+        let pvcs = spec_.volume_claim_templates.clone().unwrap_or_default();
+        assert_eq!(pvcs.len(), 1);
+        assert_eq!(pvcs[0].metadata.name.as_deref(), Some("data"));
+        assert_eq!(spec_.service_name.as_deref(), Some("btc-headless"));
+    }
+
+    /// Both services: the headless one gives the pod stable DNS, the ClusterIP
+    /// one is what clients dial. A node with only one of them is reachable by
+    /// nobody or has no stable identity.
+    #[test]
+    fn both_services_are_planned_and_owned() {
+        let plan = build("btc", "chains", &spec(), owner()).expect("builds");
+        assert!(plan.has_service("btc"), "clusterip");
+        assert!(plan.has_service("btc-headless"), "headless");
+        for o in plan
+            .services
+            .iter()
+            .map(|s| s.metadata.owner_references.clone())
+            .chain(plan.sets.iter().map(|s| s.metadata.owner_references.clone()))
+            .chain(plan.configs.iter().map(|c| c.metadata.owner_references.clone()))
+        {
+            let refs = o.expect("every object carries an owner");
+            assert_eq!(refs[0].kind, "BitcoinRuntime");
+            assert_eq!(refs[0].controller, Some(true));
+        }
+    }
+
+    /// The indexer reads the blocks the node wrote, so it shares the volume
+    /// read-only rather than syncing a second copy. Writable, two processes
+    /// would be writing one chainstate.
+    #[test]
+    fn the_indexer_shares_the_data_volume_read_only() {
+        let plan = build("btc", "chains", &spec(), owner()).expect("builds");
+        assert!(plan.container("indexer").is_none(), "absent by default");
+
+        let mut s = spec();
+        s.indexer = Some(crate::crd::BitcoinIndexerSpec {
+            kind: crate::crd::BitcoinIndexerKind::Electrs,
+            image: crate::crd::ImageSpec {
+                repository: "ghcr.io/hanzoai/electrs".into(),
+                tag: "0.10".into(),
+                pull_policy: "IfNotPresent".into(),
+            },
+            rpc_port: 0,
+            extra_args: vec!["--jsonrpc-import".into()],
+        });
+        let plan = build("btc", "chains", &s, owner()).expect("builds");
+        let idx = plan.container("indexer").expect("indexer container");
+        let m = idx.volume_mounts.clone().unwrap_or_default();
+        let data = m.iter().find(|m| m.name == "data").expect("shares data");
+        assert_eq!(data.read_only, Some(true));
+        assert!(idx.args.clone().unwrap_or_default().contains(&"--jsonrpc-import".to_string()));
+        // and the electrum port reaches the services
+        assert!(plan.services.iter().any(|s| s.spec.as_ref().unwrap().ports.as_ref().unwrap()
+            .iter().any(|p| p.name.as_deref() == Some("electrum"))));
+    }
+
+    /// A refused CR builds nothing at all — the guard runs before any object is
+    /// constructed, so there is no half-built plan to accidentally apply.
+    #[test]
+    fn a_refused_cr_produces_no_plan() {
+        assert!(build("luxd", "chains", &spec(), owner()).is_err());
+        assert!(build("btc", "lux-mainnet", &spec(), owner()).is_err());
+        let mut bad = spec();
+        bad.tx_index = true;
+        bad.pruning = 100;
+        assert!(build("btc", "chains", &bad, owner()).is_err());
     }
 }

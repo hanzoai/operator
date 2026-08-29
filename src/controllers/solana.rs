@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{ConfigMap, Probe, Service as CoreService, VolumeMount};
+use k8s_openapi::api::core::v1::{Probe, VolumeMount};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::api::{Api, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
@@ -30,8 +30,8 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
-    refuse_live_node,
-    conditions_equivalent, config_volume, local_refs, one_file, secret_volume, tcp_probe,
+    conditions_equivalent, config_volume, local_refs, one_file, refuse_live_node, secret_volume,
+    tcp_probe, Plan,
 };
 use super::owner_ref_for;
 
@@ -194,14 +194,15 @@ pub async fn reconcile(cr: Arc<SolanaRuntime>, ctx: Arc<Ctx>) -> Result<Action> 
     Ok(Action::requeue(Duration::from_secs(60)))
 }
 
-async fn reconcile_inner(
-    client: &Client,
+/// What a SolanaRuntime resolves to. Pure — the startup script and the
+/// volumes, which is the whole of what the validator is told to do.
+pub fn build(
     name: &str,
     namespace: &str,
     spec: &SolanaRuntimeSpec,
     owner: OwnerReference,
-) -> Result<()> {
-    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
+) -> Result<Plan> {
+    refuse_live_node(name, namespace)?;
     check(spec)?;
 
     let labels =
@@ -216,8 +217,6 @@ async fn reconcile_inner(
         one_file(SCRIPT, render_startup(spec)),
     );
     cm.metadata.owner_references = Some(vec![owner.clone()]);
-    let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
-    apply::apply_configmap(&cms, &cm).await?;
 
     let mut ports = vec![CrServicePort {
         name: "gossip".to_string(),
@@ -301,11 +300,8 @@ async fn reconcile_inner(
         &headless,
     );
     sts.metadata.owner_references = Some(vec![owner.clone()]);
-    let stss: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
-    apply::apply(&stss, &sts).await?;
 
     let svc_ports = manifests::service_ports(&ports);
-    let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
     let mut hs = manifests::build_headless_service(
         &headless,
         namespace,
@@ -314,12 +310,26 @@ async fn reconcile_inner(
         sel.clone(),
     );
     hs.metadata.owner_references = Some(vec![owner.clone()]);
-    apply::apply_service(&svcs, &hs).await?;
 
     let mut clip = manifests::build_service(name, namespace, labels, svc_ports, sel);
     clip.metadata.owner_references = Some(vec![owner]);
-    apply::apply_service(&svcs, &clip).await?;
 
+    Ok(Plan {
+        configs: vec![cm],
+        sets: vec![sts],
+        services: vec![hs, clip],
+    })
+}
+
+async fn reconcile_inner(
+    client: &Client,
+    name: &str,
+    namespace: &str,
+    spec: &SolanaRuntimeSpec,
+    owner: OwnerReference,
+) -> Result<()> {
+    let plan = build(name, namespace, spec, owner)?;
+    plan.apply(client, namespace).await?;
     info!(name, namespace, cluster = ?spec.cluster, voting = votes(spec), "SolanaRuntime reconciled");
     Ok(())
 }
@@ -416,7 +426,7 @@ mod tests {
     use super::*;
     use crate::crd::{ImageSpec, SecretRef, SolanaSnapshotSpec, StorageSpec};
 
-    fn spec() -> SolanaRuntimeSpec {
+    pub(super) fn spec() -> SolanaRuntimeSpec {
         SolanaRuntimeSpec {
             node_image: ImageSpec {
                 repository: "ghcr.io/hanzoai/agave".to_string(),
@@ -542,5 +552,119 @@ mod tests {
         assert!(script.contains("--rpc-port 8899"), "{script}");
         assert!(script.contains("--limit-ledger-size"), "{script}");
         assert_eq!(script, render_startup(&s), "stable for a stable spec");
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::tests::spec;
+    use super::*;
+
+    fn owner() -> OwnerReference {
+        OwnerReference {
+            api_version: "bootno.de/v1".to_string(),
+            kind: "SolanaRuntime".to_string(),
+            name: "sol".to_string(),
+            uid: "uid-1".to_string(),
+            controller: Some(true),
+            block_owner_deletion: Some(true),
+        }
+    }
+
+    /// The validator runs the rendered script and nothing else. agave takes no
+    /// config file, so the script IS the configuration — it has to be mounted
+    /// read-only and invoked explicitly.
+    #[test]
+    fn the_validator_runs_the_rendered_script() {
+        let plan = build("sol", "chains", &spec(), owner()).expect("builds");
+        let c = plan.container("validator").expect("validator");
+        assert_eq!(
+            c.command.clone().unwrap_or_default(),
+            vec!["/bin/sh".to_string(), format!("{SCRIPT_DIR}/{SCRIPT}")]
+        );
+        let m = c.volume_mounts.clone().unwrap_or_default();
+        let script = m.iter().find(|m| m.name == "script").expect("script mount");
+        assert_eq!(script.read_only, Some(true));
+        assert_eq!(plan.config("sol-startup"), Some(render_startup(&spec()).as_str()));
+    }
+
+    /// The identity is mounted read-only; the vote account only appears when
+    /// the validator actually votes, so a non-voting node carries no key it
+    /// does not use.
+    #[test]
+    fn keys_are_mounted_only_when_used() {
+        let plan = build("sol", "chains", &spec(), owner()).expect("builds");
+        let m = plan.container("validator").unwrap().volume_mounts.clone().unwrap();
+        let id = m.iter().find(|m| m.name == "identity").expect("identity");
+        assert_eq!(id.read_only, Some(true));
+        assert!(m.iter().all(|m| m.name != "vote"), "not voting, no vote key");
+
+        let mut v = spec();
+        v.vote_account = Some(crate::crd::SecretRef {
+            name: "vote".into(),
+            key: String::new(),
+        });
+        let plan = build("sol", "chains", &v, owner()).expect("builds");
+        let m = plan.container("validator").unwrap().volume_mounts.clone().unwrap();
+        let vote = m.iter().find(|m| m.name == "vote").expect("vote mounted");
+        assert_eq!(vote.read_only, Some(true));
+    }
+
+    /// RPC is opt-in and the port only reaches a Service when it is on. A port
+    /// published for a listener that is not running is a health check that
+    /// never passes.
+    #[test]
+    fn the_rpc_port_is_published_only_when_rpc_is_on() {
+        let plan = build("sol", "chains", &spec(), owner()).expect("builds");
+        let ports: Vec<_> = plan.services[0]
+            .spec
+            .as_ref()
+            .unwrap()
+            .ports
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|p| p.name.clone())
+            .collect();
+        assert!(ports.contains(&"gossip".to_string()), "{ports:?}");
+        assert!(!ports.contains(&"rpc".to_string()), "{ports:?}");
+
+        let mut s = spec();
+        s.rpc_enabled = true;
+        let plan = build("sol", "chains", &s, owner()).expect("builds");
+        let ports: Vec<_> = plan.services[0]
+            .spec
+            .as_ref()
+            .unwrap()
+            .ports
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|p| p.name.clone())
+            .collect();
+        assert!(ports.contains(&"rpc".to_string()), "{ports:?}");
+    }
+
+    /// The ledger is the chain data and outlives the pod.
+    #[test]
+    fn the_ledger_is_a_claim_not_a_scratch_dir() {
+        let plan = build("sol", "chains", &spec(), owner()).expect("builds");
+        let sts = &plan.sets[0];
+        let pvcs = sts.spec.as_ref().unwrap().volume_claim_templates.clone().unwrap();
+        assert_eq!(pvcs.len(), 1);
+        assert_eq!(pvcs[0].metadata.name.as_deref(), Some("ledger"));
+        let m = plan.container("validator").unwrap().volume_mounts.clone().unwrap();
+        assert!(m.iter().any(|m| m.name == "ledger" && m.mount_path == LEDGER_DIR));
+    }
+
+    /// A validator with nowhere to start, or one aimed at the live nodes,
+    /// builds nothing.
+    #[test]
+    fn a_refused_cr_produces_no_plan() {
+        let mut s = spec();
+        s.cluster = SolanaCluster::Custom;
+        assert!(build("sol", "chains", &s, owner()).is_err());
+        assert!(build("luxd", "chains", &spec(), owner()).is_err());
+        assert!(build("sol", "zoo-mainnet", &spec(), owner()).is_err());
     }
 }

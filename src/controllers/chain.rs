@@ -8,10 +8,15 @@
 
 use std::collections::BTreeMap;
 
+use k8s_openapi::api::apps::v1::StatefulSet;
 use k8s_openapi::api::core::v1::{
-    EnvVarSource, LocalObjectReference, Probe, SecretKeySelector, SecretVolumeSource,
-    TCPSocketAction, Volume,
+    ConfigMap, Container, EnvVarSource, LocalObjectReference, Probe, SecretKeySelector,
+    SecretVolumeSource, Service as CoreService, TCPSocketAction, Volume,
 };
+use kube::api::Api;
+use kube::Client;
+
+use crate::core::{OperatorError, Result};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 
 use crate::crd_types::Condition;
@@ -109,6 +114,76 @@ pub fn one_file(name: &str, body: String) -> BTreeMap<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// What a CR resolves to, before anything is sent
+// ---------------------------------------------------------------------------
+
+/// The objects one chain CR becomes.
+///
+/// Building and applying were one function, which meant the only way to ask
+/// what a CR produces was to have a cluster take it. Deciding is pure and
+/// sending is not, so they are separate: a test can now assert the arguments a
+/// node will actually be started with, and that is the part that is wrong when
+/// a node comes up misconfigured.
+#[derive(Default, Debug)]
+pub struct Plan {
+    pub configs: Vec<ConfigMap>,
+    pub sets: Vec<StatefulSet>,
+    pub services: Vec<CoreService>,
+}
+
+impl Plan {
+    /// Send it. The order matters: config before the workload that mounts it,
+    /// so a pod is never scheduled against a ConfigMap that is not there yet.
+    pub async fn apply(&self, client: &Client, namespace: &str) -> Result<()> {
+        let cms: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+        for cm in &self.configs {
+            crate::apply::apply_configmap(&cms, cm).await?;
+        }
+        let sets: Api<StatefulSet> = Api::namespaced(client.clone(), namespace);
+        for sts in &self.sets {
+            crate::apply::apply(&sets, sts).await?;
+        }
+        let svcs: Api<CoreService> = Api::namespaced(client.clone(), namespace);
+        for svc in &self.services {
+            crate::apply::apply_service(&svcs, svc).await?;
+        }
+        Ok(())
+    }
+
+    /// The container by name, across every set in the plan. Tests reach for
+    /// this constantly; a chain node IS its container arguments.
+    pub fn container(&self, name: &str) -> Option<&Container> {
+        self.sets.iter().find_map(|sts| {
+            sts.spec
+                .as_ref()?
+                .template
+                .spec
+                .as_ref()?
+                .containers
+                .iter()
+                .find(|c| c.name == name)
+        })
+    }
+
+    /// Whether a service of this name is in the plan.
+    pub fn has_service(&self, name: &str) -> bool {
+        self.services
+            .iter()
+            .any(|s| s.metadata.name.as_deref() == Some(name))
+    }
+
+    /// The rendered body of a single-file ConfigMap.
+    pub fn config(&self, name: &str) -> Option<&str> {
+        self.configs
+            .iter()
+            .find(|c| c.metadata.name.as_deref() == Some(name))
+            .and_then(|c| c.data.as_ref())
+            .and_then(|d| d.values().next())
+            .map(String::as_str)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Refusing to touch hand-managed node workloads
 // ---------------------------------------------------------------------------
 
@@ -147,16 +222,16 @@ const RESERVED_NAMESPACES: [&str; 13] = [
 /// matter of how it happens to be scoped. It costs one comparison and rejects
 /// nothing legitimate — nodes this operator manages are named for their org and
 /// slot and live in their own namespace.
-pub fn refuse_live_node(name: &str, namespace: &str) -> Result<(), String> {
+pub fn refuse_live_node(name: &str, namespace: &str) -> Result<()> {
     if name == "luxd" || name.starts_with("luxd-") {
-        return Err(format!(
+        return Err(OperatorError::Config(format!(
             "refusing the name {name:?}: it is the live hand-managed luxd StatefulSet, and an apply here would take its volumes"
-        ));
+        )));
     }
     if RESERVED_NAMESPACES.contains(&namespace) {
-        return Err(format!(
+        return Err(OperatorError::Config(format!(
             "refusing the namespace {namespace:?}: node and validator workloads there are managed outside this operator"
-        ));
+        )));
     }
     Ok(())
 }
