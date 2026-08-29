@@ -1,8 +1,8 @@
 //! Shared reconciler primitives for the Hanzo operator family.
 //!
 //! Absorbed from `hanzoai/operator-core` on the Go → Rust port, and this is the
-//! canonical home for THIS operator — the copy here has since gained
-//! `agents_client`, `health` and `visor_client`, so the two have diverged.
+//! canonical home for THIS operator — the copy here has since gained `health`,
+//! so the two have diverged.
 //!
 //! operator-core itself is not retired, whatever an earlier note here said:
 //! `zooai/operator` still depends on it (pinned at v0.1.0, while the crate is
@@ -21,22 +21,16 @@
 //! |----------------|-------------------------------------------------------------------------|
 //! | [`error`]      | `OperatorError` — single canonical error type for the operator.         |
 //! | [`leader`]     | `LeaderElection` — `coordination.k8s.io/v1` lease loop.                 |
-//! | [`iam_admin`]  | IAM admin client (`POST /v1/iam/admin/applications/upsert`).            |
-//! | [`agents_client`]| Cloud Agent registry client (`GET/POST /v1/agents`).                  |
-//! | [`visor_client`]| Visor machine + agent-binding client (`/v1/machines`).                |
 //! | [`secret`]     | Strict hijack guard + `\0` rejection for KMS-projected K8s Secrets.     |
 //! | [`status`]     | Standard `status.conditions` mint helpers.                              |
 //! | [`reconciler`] | `Action` requeue cadence + `clamp_resync`.                             |
 
-pub mod agents_client;
 pub mod error;
 pub mod health;
-pub mod iam_admin;
 pub mod leader;
 pub mod reconciler;
 pub mod secret;
 pub mod status;
-pub mod visor_client;
 
 pub use error::{OperatorError, Result};
 pub use leader::{LeaderConfig, LeaderElection};

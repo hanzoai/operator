@@ -1,11 +1,5 @@
 //! Hanzo Operator library entrypoint.
 
-// Exported APIs (core::iam_admin, secret, status helpers) intentionally
-// outpace current call sites so external integration tests + future
-// reconcilers can consume them. Suppress the dead-code lint at crate root
-// rather than scatter `#[allow]` on each item.
-#![allow(dead_code)]
-
 pub mod api_group;
 pub mod apply;
 pub mod controllers;
