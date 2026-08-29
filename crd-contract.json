@@ -11,13 +11,7 @@
     "whoever operates it."
   ],
   "version": 1,
-  "goSchemaPending": [
-    "AgentDeployment",
-    "App",
-    "ImageUpdate",
-    "KMSSecret",
-    "ManagedDatabase"
-  ],
+  "goSchemaPending": [],
   "kinds": {
     "AgentDeployment": {
       "family": "universe",
