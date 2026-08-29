@@ -708,6 +708,47 @@ mod tests {
     /// `luxRuntime` and `nodeFleet` were accepted at admission and then reached
     /// no arm, so those Apps requeued forever with nothing built and nothing
     /// said; `node` had an arm the schema rejected outright.
+    /// kubectl resolves a short name across every group it knows, so a CRD that
+    /// claims `svc` makes `kubectl get svc` ambiguous with core Services and
+    /// the winner depends on discovery order. The Go operator claimed `svc`,
+    /// `ing` and `ds` until it was brought into line with this set; the guard
+    /// exists on both sides so neither drifts back.
+    ///
+    /// The same test refuses two Kinds claiming one short name, and two Kinds
+    /// resolving to one CRD name — plural.group is the API server's key, so a
+    /// collision there is one CRD quietly overwriting another.
+    #[test]
+    fn short_names_and_crd_names_are_unambiguous() {
+        const BUILTIN: [(&str, &str); 14] = [
+            ("svc", "Service"), ("ing", "Ingress"), ("ds", "DaemonSet"),
+            ("no", "Node"), ("po", "Pod"), ("deploy", "Deployment"),
+            ("sts", "StatefulSet"), ("cm", "ConfigMap"), ("pvc", "PersistentVolumeClaim"),
+            ("ns", "Namespace"), ("sa", "ServiceAccount"), ("rs", "ReplicaSet"),
+            ("netpol", "NetworkPolicy"), ("pv", "PersistentVolume"),
+        ];
+        for universe in ["hanzo.ai", "lux.cloud"] {
+            let crds = crd_bundle(universe);
+            let mut short: std::collections::BTreeMap<String, String> = Default::default();
+            let mut names: std::collections::BTreeMap<String, String> = Default::default();
+            for crd in &crds {
+                let kind = crd.spec.names.kind.clone();
+                for s in crd.spec.names.short_names.clone().unwrap_or_default() {
+                    if let Some((_, core)) = BUILTIN.iter().find(|(b, _)| *b == s) {
+                        panic!("{kind} claims short name {s:?}, which is core {core}");
+                    }
+                    if let Some(prev) = short.insert(s.clone(), kind.clone()) {
+                        panic!("{prev} and {kind} both claim short name {s:?}");
+                    }
+                }
+                let full = format!("{}.{}", crd.spec.names.plural, crd.spec.group);
+                if let Some(prev) = names.insert(full.clone(), kind.clone()) {
+                    panic!("{prev} and {kind} both resolve to {full}");
+                }
+            }
+            assert_eq!(names.len(), crds.len(), "{universe}: every CRD name is distinct");
+        }
+    }
+
     #[test]
     fn every_advertised_role_reaches_a_profile() {
         use crate::controllers::app::{classify, Dispatch, ROLES};
