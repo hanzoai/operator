@@ -80,6 +80,10 @@ pub mod sql;
 // adopts and re-parents the existing workloads (Service→App) with no downtime.
 // (Distinct from `apps` above, which is the platform-`apps`-table image driver.)
 pub mod app;
+pub mod bitcoin;
+pub mod chain;
+pub mod ethereum;
+pub mod solana;
 
 // AgentDeployment — the autonomous-bot lifecycle (cloud Agent + visor-bound
 // @hanzo/bot machine). Reconcile ACTIONS reach cloud /v1/agents + visor

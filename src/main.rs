@@ -333,7 +333,25 @@ async fn run_all_controllers(
         // v0.3.3: facade Kinds.
         controllers::sql::run_sql_controller(client.clone(), namespace.clone(), api_group.clone()),
         controllers::kv::run_kv_controller(client.clone(), namespace.clone(), api_group.clone()),
-        // v0.3.4: union with go/ — blockchain Kinds.
+        // The chain surface at bootno.de. Each is its own Kind because each is
+        // its own shape; they are started here because a published CRD whose
+        // reconciler never runs accepts CRs and then does nothing about them,
+        // which is indistinguishable from a cluster that is merely slow.
+        controllers::bitcoin::run_bitcoin_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::ethereum::run_ethereum_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
+        controllers::solana::run_solana_controller(
+            client.clone(),
+            namespace.clone(),
+            api_group.clone()
+        ),
         // ManagedDatabase facade — per-tenant isolated Datastore workload.
         // App Kind — the role-dispatch super-facade. The App-collapse: the fleet's
         // workload CRs are `kind: App`; this controller dispatches on `spec.role`

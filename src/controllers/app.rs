@@ -52,7 +52,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::apply;
 use crate::core::{OperatorError, Result};
-use crate::crd::{App, AppSpec, DBSpec, DNSSpec, Engine, IngressKindSpec, Phase, ServiceStatus};
+use crate::crd::{App, AppSpec, DBSpec, Engine, IngressKindSpec, Phase, ServiceStatus};
 use crate::crd_types::{build_condition, carry_transition_time, status_changed, Condition};
 
 use super::{datastore, ingress, owner_ref_for, service};
@@ -548,6 +548,7 @@ pub async fn run_app_controller(client: Client, namespace: String, api_group: St
 
 #[cfg(test)]
 mod tests {
+    use crate::crd::DNSSpec;
     use super::*;
     use crate::crd::{App, Engine};
 

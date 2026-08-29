@@ -2744,7 +2744,7 @@ pub struct SecretRef {
 
 // ---------------------------------------------------------------- bitcoin ---
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BitcoinNetwork {
     #[default]
@@ -2754,7 +2754,7 @@ pub enum BitcoinNetwork {
     Signet,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BitcoinIndexerKind {
     #[default]
@@ -2848,7 +2848,7 @@ pub struct BitcoinRuntimeStatus {
 
 // --------------------------------------------------------------- ethereum ---
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EthereumNetwork {
     #[default]
@@ -2858,7 +2858,7 @@ pub enum EthereumNetwork {
     Custom,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionKind {
     #[default]
@@ -2869,7 +2869,7 @@ pub enum ExecutionKind {
     Besu,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConsensusKind {
     #[default]
@@ -2965,7 +2965,7 @@ pub struct EthereumRuntimeStatus {
 
 // ----------------------------------------------------------------- solana ---
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SolanaCluster {
     #[default]
