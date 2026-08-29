@@ -551,10 +551,16 @@
       "specFields": [
         "allowedNamespaces",
         "clusterName",
+        "creationPolicy",
         "envSlug",
         "keys",
+        "literals",
         "managedSecretName",
         "projectSlug",
+        "rename",
+        "resyncInterval",
+        "secretNamespace",
+        "secretType",
         "secretsPath",
         "transport",
         "zapAddr"

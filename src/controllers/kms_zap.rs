@@ -80,6 +80,85 @@ struct ZapKmsSpec {
     allowed_namespaces: Vec<String>,
     #[serde(default, rename = "clusterName")]
     cluster_name: String,
+    #[serde(default, rename = "secretType")]
+    secret_type: String,
+    #[serde(default, rename = "creationPolicy")]
+    creation_policy: String,
+    #[serde(default, rename = "secretNamespace")]
+    secret_namespace: String,
+    #[serde(default)]
+    rename: BTreeMap<String, String>,
+    #[serde(default)]
+    literals: BTreeMap<String, String>,
+    #[serde(default, rename = "resyncInterval")]
+    resync_interval: i64,
+}
+
+/// How often to refetch. Zero means the projector's own cadence; anything under
+/// a floor would be a tight loop against KMS rather than a refresh.
+fn resync(s: &ZapKmsSpec) -> Duration {
+    const DEFAULT: u64 = 300;
+    const FLOOR: u64 = 30;
+    if s.resync_interval <= 0 {
+        return Duration::from_secs(DEFAULT);
+    }
+    Duration::from_secs((s.resync_interval as u64).max(FLOOR))
+}
+
+/// The Secret's type. Empty means Opaque, which is also what the kubelet
+/// assumes — but a pull secret it type-checks and SKIPS without logging, so the
+/// declared value has to reach the object.
+fn secret_type(s: &ZapKmsSpec) -> Option<String> {
+    if s.secret_type.is_empty() || s.secret_type == "Opaque" {
+        None
+    } else {
+        Some(s.secret_type.clone())
+    }
+}
+
+/// Whether the projected Secret is collected with the CR.
+///
+/// Orphan is the default: deleting a reference must not pull env out from under
+/// a running pod. An owner reference also cannot cross a namespace, so a
+/// cross-namespace projection is Orphan whatever it asked for — the alternative
+/// is a Secret the garbage collector removes the moment it appears.
+fn owned(s: &ZapKmsSpec, cr_ns: &str, target_ns: &str) -> bool {
+    s.creation_policy == "Owner" && cr_ns == target_ns
+}
+
+/// Where the Secret is written: the CR's own namespace unless it names another.
+fn target_namespace(s: &ZapKmsSpec, cr_ns: &str) -> String {
+    if s.secret_namespace.is_empty() {
+        cr_ns.to_string()
+    } else {
+        s.secret_namespace.clone()
+    }
+}
+
+/// Apply the rename map: Secret key <- KMS key. A rename naming a key that was
+/// not fetched is refused rather than dropped, because a Secret missing a key
+/// fails at the next pod creation, not here where the reason is legible.
+fn apply_rename(
+    s: &ZapKmsSpec,
+    fetched: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, String> {
+    if s.rename.is_empty() {
+        return Ok(fetched);
+    }
+    let mut out = BTreeMap::new();
+    for (to, from) in &s.rename {
+        let v = fetched
+            .get(from)
+            .ok_or_else(|| format!("rename {to} <- {from}: {from} is not among the fetched keys"))?;
+        out.insert(to.clone(), v.clone());
+    }
+    // Anything not renamed keeps its own name.
+    for (k, v) in fetched {
+        if !s.rename.values().any(|from| *from == k) {
+            out.insert(k, v);
+        }
+    }
+    Ok(out)
 }
 
 /// True iff this CR opts into the ZAP-native path.
@@ -160,7 +239,7 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
     validate_spec(&spec)?;
 
     // The managed Secret lives in the CR's namespace.
-    let target_ns = cr_ns.clone();
+    let target_ns = target_namespace(&spec, &cr_ns);
     if !namespace_allowed(&spec, &cr_ns, &target_ns) {
         return Err(format!("namespace {target_ns} not allowed").into());
     }
@@ -180,6 +259,17 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
     }
 
     // Strict hijack guard: never overwrite a Secret we don't own.
+    let mut data = apply_rename(&spec, data)?;
+    for (k, v) in &spec.literals {
+        if data.contains_key(k) {
+            return Err(format!(
+                "literal {k} collides with a fetched key; one of them would win silently"
+            )
+            .into());
+        }
+        data.insert(k.clone(), v.clone());
+    }
+
     let secrets: Api<Secret> = Api::namespaced(ctx.client.clone(), &target_ns);
     let cr_uid = obj.metadata.uid.clone().unwrap_or_default();
     if let Some(existing) = secrets
@@ -210,9 +300,14 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
             name: Some(spec.managed_secret_name.clone()),
             namespace: Some(target_ns.clone()),
             labels: Some(labels),
-            owner_references: Some(vec![owner]),
+            owner_references: if owned(&spec, &cr_ns, &target_ns) {
+                Some(vec![owner])
+            } else {
+                None
+            },
             ..Default::default()
         },
+        type_: secret_type(&spec),
         string_data: Some(data),
         ..Default::default()
     };
@@ -226,7 +321,7 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
         keys = spec.keys.len(),
         "KMSSecret (zap) reconciled"
     );
-    Ok(Action::requeue(Duration::from_secs(300)))
+    Ok(Action::requeue(resync(&spec)))
 }
 
 fn on_error(_obj: Arc<DynamicObject>, err: &ReconcileError, _ctx: Arc<Ctx>) -> Action {
@@ -286,6 +381,7 @@ mod tests {
             managed_secret_name: "goproxy-secrets".into(),
             allowed_namespaces: vec![],
             cluster_name: "hanzo".into(),
+            ..Default::default()
         }
     }
 
@@ -366,5 +462,165 @@ mod tests {
         s.allowed_namespaces = vec!["lux".into()];
         assert!(namespace_allowed(&s, "hanzo", "lux"));
         assert!(!namespace_allowed(&s, "hanzo", "zoo"));
+    }
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::*;
+
+    fn spec() -> ZapKmsSpec {
+        ZapKmsSpec {
+            transport: "zap".into(),
+            zap_addr: "cloud.hanzo.svc:9653".into(),
+            project_slug: "hanzo".into(),
+            env_slug: "prod".into(),
+            secrets_path: "/deploy".into(),
+            keys: vec!["FORGE_TOKEN".into()],
+            managed_secret_name: "forge-token".into(),
+            ..Default::default()
+        }
+    }
+
+    /// The kubelet type-checks a pull secret and skips an Opaque one without
+    /// logging a word, which reads back as a bad credential when the credential
+    /// was never consulted. So a declared type has to reach the object, and
+    /// Opaque stays absent because that is already the default.
+    #[test]
+    fn a_declared_secret_type_reaches_the_object() {
+        assert_eq!(secret_type(&spec()), None);
+        let mut s = spec();
+        s.secret_type = "Opaque".into();
+        assert_eq!(secret_type(&s), None, "Opaque is the default, not a value to set");
+        s.secret_type = "kubernetes.io/dockerconfigjson".into();
+        assert_eq!(secret_type(&s).as_deref(), Some("kubernetes.io/dockerconfigjson"));
+    }
+
+    /// Orphan is the default because deleting a reference must not pull env out
+    /// from under a running pod. An owner reference cannot cross a namespace
+    /// either, so a cross-namespace projection is Orphan whatever it asked for —
+    /// the alternative is a Secret collected the moment it appears.
+    #[test]
+    fn ownership_defaults_to_orphan_and_never_crosses_a_namespace() {
+        assert!(!owned(&spec(), "hanzo", "hanzo"), "unset means Orphan");
+        let mut s = spec();
+        s.creation_policy = "Orphan".into();
+        assert!(!owned(&s, "hanzo", "hanzo"));
+        s.creation_policy = "Owner".into();
+        assert!(owned(&s, "hanzo", "hanzo"));
+        assert!(
+            !owned(&s, "hanzo", "other"),
+            "Owner across namespaces would be collected immediately"
+        );
+    }
+
+    #[test]
+    fn the_secret_lands_where_the_cr_says() {
+        assert_eq!(target_namespace(&spec(), "hanzo"), "hanzo");
+        let mut s = spec();
+        s.secret_namespace = "hanzo-build".into();
+        assert_eq!(target_namespace(&s, "hanzo"), "hanzo-build");
+    }
+
+    /// KMS names a value one thing and the consumer reads another. Renaming is
+    /// the whole of what the old Go template did, so it is spelled as a map.
+    #[test]
+    fn renaming_maps_the_secret_key_to_the_kms_key() {
+        let mut s = spec();
+        s.rename.insert("token".into(), "FORGE_TOKEN".into());
+        let fetched = BTreeMap::from([("FORGE_TOKEN".to_string(), "abc".to_string())]);
+        let out = apply_rename(&s, fetched).expect("renames");
+        assert_eq!(out.get("token").map(String::as_str), Some("abc"));
+        assert!(!out.contains_key("FORGE_TOKEN"), "the source name is consumed");
+    }
+
+    /// A key the rename does not mention keeps its own name, so naming one
+    /// remapping does not silently drop the rest.
+    #[test]
+    fn unrenamed_keys_are_kept() {
+        let mut s = spec();
+        s.rename.insert("token".into(), "FORGE_TOKEN".into());
+        let fetched = BTreeMap::from([
+            ("FORGE_TOKEN".to_string(), "abc".to_string()),
+            ("OTHER".to_string(), "xyz".to_string()),
+        ]);
+        let out = apply_rename(&s, fetched).expect("renames");
+        assert_eq!(out.get("token").map(String::as_str), Some("abc"));
+        assert_eq!(out.get("OTHER").map(String::as_str), Some("xyz"));
+    }
+
+    /// A rename pointing at a key that was never fetched is refused here, where
+    /// the reason is legible, rather than producing a Secret missing a key —
+    /// which fails at the next pod creation instead.
+    #[test]
+    fn a_rename_from_a_key_that_was_not_fetched_is_refused() {
+        let mut s = spec();
+        s.rename.insert("token".into(), "TYPO".into());
+        let fetched = BTreeMap::from([("FORGE_TOKEN".to_string(), "abc".to_string())]);
+        let err = apply_rename(&s, fetched).expect_err("refuses");
+        assert!(err.contains("TYPO"), "{err}");
+    }
+
+    /// No rename is the common case and must not disturb anything.
+    #[test]
+    fn without_a_rename_the_keys_are_untouched() {
+        let fetched = BTreeMap::from([("A".to_string(), "1".to_string())]);
+        let out = apply_rename(&spec(), fetched.clone()).expect("passes through");
+        assert_eq!(out, fetched);
+    }
+}
+
+#[cfg(test)]
+mod literal_tests {
+    use super::*;
+
+    fn spec() -> ZapKmsSpec {
+        ZapKmsSpec {
+            transport: "zap".into(),
+            zap_addr: "cloud.hanzo.svc:9653".into(),
+            project_slug: "hanzo".into(),
+            env_slug: "prod".into(),
+            secrets_path: "/cd".into(),
+            keys: vec!["forge-token".into()],
+            managed_secret_name: "repo-creds".into(),
+            ..Default::default()
+        }
+    }
+
+    /// A repository credential is a KMS token plus the host, the user and the
+    /// kind of repo — facts that are not secret and have nowhere else to live.
+    /// Dropping them leaves a Secret the consumer cannot use.
+    #[test]
+    fn literals_land_beside_the_fetched_values() {
+        let mut s = spec();
+        s.rename.insert("password".into(), "forge-token".into());
+        s.literals.insert("url".into(), "https://git.hanzo.ai/".into());
+        s.literals.insert("username".into(), "cd".into());
+        s.literals.insert("type".into(), "git".into());
+
+        let fetched = BTreeMap::from([("forge-token".to_string(), "tok".to_string())]);
+        let mut data = apply_rename(&s, fetched).expect("renames");
+        for (k, v) in &s.literals {
+            assert!(!data.contains_key(k));
+            data.insert(k.clone(), v.clone());
+        }
+        assert_eq!(data.get("password").map(String::as_str), Some("tok"));
+        assert_eq!(data.get("url").map(String::as_str), Some("https://git.hanzo.ai/"));
+        assert_eq!(data.get("username").map(String::as_str), Some("cd"));
+        assert_eq!(data.get("type").map(String::as_str), Some("git"));
+    }
+
+    /// Refetch cadence: the projector's own unless asked, and never so fast that
+    /// a refresh becomes a tight loop against KMS.
+    #[test]
+    fn the_resync_cadence_has_a_default_and_a_floor() {
+        assert_eq!(resync(&spec()), Duration::from_secs(300));
+        let mut s = spec();
+        s.resync_interval = 60;
+        assert_eq!(resync(&s), Duration::from_secs(60));
+        s.resync_interval = 1;
+        assert_eq!(resync(&s), Duration::from_secs(30), "floored");
+        s.resync_interval = -5;
+        assert_eq!(resync(&s), Duration::from_secs(300), "nonsense falls back");
     }
 }

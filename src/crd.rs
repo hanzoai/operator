@@ -1013,6 +1013,54 @@ pub struct KMSSecretSpec {
     /// Restricts this CR to one cluster when several watch the same KMS.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cluster_name: String,
+    /// The Secret's `type`. Empty means `Opaque`.
+    ///
+    /// It has to be declared because the kubelet TYPE-CHECKS a pull secret: it
+    /// skips an Opaque one without logging a word, which reads back as a bad
+    /// credential when the credential was never consulted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_type: String,
+    /// `Orphan` (the default) leaves the Secret when the CR goes; `Owner`
+    /// garbage-collects it.
+    ///
+    /// Orphan is the default because deleting a reference must not pull env out
+    /// from under a running pod. Owner is the right choice only where the
+    /// consumer re-reads on restart and a stale value is worse than a missing
+    /// one.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub creation_policy: String,
+    /// Project into this namespace instead of the CR's own.
+    ///
+    /// For a namespace isolated on purpose, which therefore holds no KMS
+    /// identity of its own: the CR lives with its credential and writes the
+    /// result across. Requires `Orphan` — an owner reference cannot cross a
+    /// namespace, so an owned Secret there would be collected immediately.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub secret_namespace: String,
+    /// Rename on the way out: Secret key ← KMS key.
+    ///
+    /// KMS names a value one thing and the consumer reads another, and this is
+    /// where the two spellings meet. It was a Go template doing nothing but a
+    /// rename, so it is spelled as one — a template engine here would be a
+    /// language to learn, a way to fail at runtime, and no more expressive than
+    /// the map for anything anyone actually wrote.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rename: BTreeMap<String, String>,
+    /// Constants written into the Secret beside the fetched values.
+    ///
+    /// A repository credential is a KMS token plus the host, the user and the
+    /// kind of repo it is — facts that are not secret and have nowhere else to
+    /// live. Kept separate from `rename` because they are different things: one
+    /// says where a value comes from, the other IS the value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub literals: BTreeMap<String, String>,
+    /// Seconds between refetches. Zero means the projector's own cadence.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub resync_interval: i64,
+}
+
+fn is_zero_i64(v: &i64) -> bool {
+    *v == 0
 }
 
 #[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
