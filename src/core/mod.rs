@@ -1,8 +1,19 @@
 //! Shared reconciler primitives for the Hanzo operator family.
 //!
-//! Absorbed from `~/work/hanzo/operator-core` on the Go → Rust port. This
-//! crate is now the canonical home; the standalone operator-core repo is a
-//! tombstone pointing here.
+//! Absorbed from `hanzoai/operator-core` on the Go → Rust port, and this is the
+//! canonical home for THIS operator — the copy here has since gained
+//! `agents_client`, `health` and `visor_client`, so the two have diverged.
+//!
+//! operator-core itself is not retired, whatever an earlier note here said:
+//! `zooai/operator` still depends on it (pinned at v0.1.0, while the crate is
+//! at v0.2.0) and is deployed to zoo-mainnet, zoo-testnet, zoo-devnet and
+//! zoo-system. So the primitives exist twice, and will until Zoo's four
+//! `zoo.network` Kinds — ZooNetwork, ZooChain, ZooExplorer, ZooGateway — move
+//! onto the shared ones. They are the same shapes the fleet already has, with
+//! the brand welded into both the group and the Kind name; under the Family
+//! split the chain three belong at `bootno.de` and Gateway at `zoo.cloud`,
+//! which is what serving Zoo from this operator would mean. That is a
+//! migration of live CRs, not a refactor.
 //!
 //! ## Modules
 //!
