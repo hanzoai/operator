@@ -717,6 +717,77 @@ mod tests {
     /// The same test refuses two Kinds claiming one short name, and two Kinds
     /// resolving to one CRD name — plural.group is the API server's key, so a
     /// collision there is one CRD quietly overwriting another.
+    /// The CRD contract, checked.
+    ///
+    /// Both operators publish CRDs for the same Kinds into the same cluster, so
+    /// a Kind, group, plural, short name or spec field that moves on one side
+    /// alone means two CRDs for one concept — and the API server takes both,
+    /// last write winning, without saying anything. crd-contract.json is the
+    /// agreed shape and each side asserts its own output against its own copy,
+    /// so neither can drift without a test going red in its own repo.
+    #[test]
+    fn the_published_crds_match_the_contract() {
+        let raw = include_str!("../crd-contract.json");
+        let contract: serde_json::Value =
+            serde_json::from_str(raw).expect("crd-contract.json parses");
+        let expected = contract["kinds"].as_object().expect("kinds is an object");
+
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        assert_eq!(
+            crds.len(),
+            expected.len(),
+            "the bundle publishes {} Kinds, the contract names {}",
+            crds.len(),
+            expected.len()
+        );
+
+        for crd in &crds {
+            let kind = &crd.spec.names.kind;
+            let want = expected
+                .get(kind)
+                .unwrap_or_else(|| panic!("{kind} is published and not in the contract"));
+
+            let family = match family_of(kind) {
+                Family::Universe => "universe",
+                Family::Beside(_) => "kms",
+                Family::Fixed(_) => "chain",
+            };
+            assert_eq!(want["family"], family, "{kind} family");
+            assert_eq!(want["plural"], crd.spec.names.plural, "{kind} plural");
+
+            let mut short = crd.spec.names.short_names.clone().unwrap_or_default();
+            short.sort();
+            let want_short: Vec<String> = want["shortNames"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(short, want_short, "{kind} short names");
+
+            let mut fields: Vec<String> = crd.spec.versions[0]
+                .schema
+                .as_ref()
+                .and_then(|s| s.open_api_v3_schema.as_ref())
+                .and_then(|s| s.properties.as_ref())
+                .and_then(|p| p.get("spec"))
+                .and_then(|s| s.properties.as_ref())
+                .map(|p| p.keys().cloned().collect())
+                .unwrap_or_default();
+            fields.sort();
+            let want_fields: Vec<String> = want["specFields"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(
+                fields, want_fields,
+                "{kind} spec fields drifted from the contract"
+            );
+        }
+    }
+
     #[test]
     fn short_names_and_crd_names_are_unambiguous() {
         const BUILTIN: [(&str, &str); 14] = [

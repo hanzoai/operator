@@ -1,0 +1,1058 @@
+{
+  "note": [
+    "The CRD contract both operators publish.",
+    "hanzo-rs/operator and hanzo-go/operator each assert their generated output",
+    "against their own copy of this file, so a Kind, group, plural, short name or",
+    "spec field cannot move on one side alone. The copies must be identical; change",
+    "them together or the two operators install different CRDs for the same Kind and",
+    "the API server accepts both, last write winning.",
+    "family: universe = the deployment's own group; kms = kms.<universe>;",
+    "chain = bootno.de for every universe, because a chain is the same chain",
+    "whoever operates it."
+  ],
+  "version": 1,
+  "goSchemaPending": [
+    "AgentDeployment",
+    "App",
+    "ImageUpdate",
+    "KMSSecret",
+    "ManagedDatabase"
+  ],
+  "kinds": {
+    "AgentDeployment": {
+      "family": "universe",
+      "plural": "agentdeployments",
+      "singular": "agentdeployment",
+      "shortNames": [
+        "agentdeploy",
+        "bot"
+      ],
+      "specFields": [
+        "agentName",
+        "botVersion",
+        "executionMode",
+        "machineId",
+        "org",
+        "provider",
+        "replicas",
+        "schedule"
+      ]
+    },
+    "App": {
+      "family": "universe",
+      "plural": "apps",
+      "singular": "app",
+      "shortNames": [
+        "app"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "clusterIssuer",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "domains",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "ingressClassName",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "role",
+        "securityContext",
+        "serviceAccountName",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "strategy",
+        "surgeColocation",
+        "tag",
+        "tolerations",
+        "type",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Base": {
+      "family": "universe",
+      "plural": "bases",
+      "singular": "base",
+      "shortNames": [
+        "bapp"
+      ],
+      "specFields": [
+        "consensus",
+        "env",
+        "envFrom",
+        "gateway",
+        "iamApp",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "port",
+        "replicas",
+        "resources",
+        "schema",
+        "serviceAccountName",
+        "serviceMonitor",
+        "storage"
+      ]
+    },
+    "BitcoinRuntime": {
+      "family": "chain",
+      "plural": "bitcoinruntimes",
+      "singular": "bitcoinruntime",
+      "shortNames": [
+        "btcrt"
+      ],
+      "specFields": [
+        "imagePullSecrets",
+        "indexer",
+        "network",
+        "nodeImage",
+        "p2p",
+        "pruning",
+        "resources",
+        "rpcAuth",
+        "rpcPort",
+        "storage",
+        "txIndex"
+      ]
+    },
+    "Chain": {
+      "family": "chain",
+      "plural": "chains",
+      "singular": "chain",
+      "shortNames": [
+        "chain"
+      ],
+      "specFields": [
+        "chain",
+        "network"
+      ]
+    },
+    "DNS": {
+      "family": "universe",
+      "plural": "dns",
+      "singular": "dns",
+      "shortNames": [
+        "hdns"
+      ],
+      "specFields": [
+        "annotations",
+        "cloudflare",
+        "coredns",
+        "database",
+        "ingress",
+        "labels",
+        "oidc",
+        "zones"
+      ]
+    },
+    "Datastore": {
+      "family": "universe",
+      "plural": "datastores",
+      "singular": "datastore",
+      "shortNames": [
+        "hds"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "DocDB": {
+      "family": "universe",
+      "plural": "docdbs",
+      "singular": "docdb",
+      "shortNames": [
+        "docdb"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "EthereumRuntime": {
+      "family": "chain",
+      "plural": "ethereumruntimes",
+      "singular": "ethereumruntime",
+      "shortNames": [
+        "ethrt"
+      ],
+      "specFields": [
+        "authRpcPort",
+        "clRpcPort",
+        "consensus",
+        "elRpcPort",
+        "execution",
+        "feeRecipient",
+        "imagePullSecrets",
+        "jwtSecret",
+        "network",
+        "resources"
+      ]
+    },
+    "Explorer": {
+      "family": "chain",
+      "plural": "explorers",
+      "singular": "explorer",
+      "shortNames": [
+        "exp"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Function": {
+      "family": "universe",
+      "plural": "functions",
+      "singular": "function",
+      "shortNames": [
+        "fn"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Gateway": {
+      "family": "universe",
+      "plural": "gateways",
+      "singular": "gateway",
+      "shortNames": [
+        "hgw"
+      ],
+      "specFields": [
+        "authPolicies",
+        "image",
+        "ingress",
+        "rateLimits",
+        "replicas",
+        "resources",
+        "routes",
+        "serviceMonitor"
+      ]
+    },
+    "IAM": {
+      "family": "universe",
+      "plural": "iams",
+      "singular": "iam",
+      "shortNames": [
+        "iam"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "ImageUpdate": {
+      "family": "universe",
+      "plural": "imageupdates",
+      "singular": "imageupdate",
+      "shortNames": [
+        "imgup"
+      ],
+      "specFields": [
+        "credentialsSecret",
+        "imageRepository",
+        "intervalSeconds",
+        "policy",
+        "registrySecret",
+        "writebackPath",
+        "writebackRef",
+        "writebackRepo"
+      ]
+    },
+    "Indexer": {
+      "family": "chain",
+      "plural": "indexers",
+      "singular": "indexer",
+      "shortNames": [
+        "idx"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Ingress": {
+      "family": "universe",
+      "plural": "ingresses",
+      "singular": "ingress",
+      "shortNames": [
+        "hing"
+      ],
+      "specFields": [
+        "annotations",
+        "clusterIssuer",
+        "domains",
+        "ingressClassName",
+        "ingressDaemonSet",
+        "labels"
+      ]
+    },
+    "KMS": {
+      "family": "universe",
+      "plural": "kmsapps",
+      "singular": "kms",
+      "shortNames": [
+        "kms"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "KMSSecret": {
+      "family": "kms",
+      "plural": "kmssecrets",
+      "singular": "kmssecret",
+      "shortNames": [
+        "kmss"
+      ],
+      "specFields": [
+        "allowedNamespaces",
+        "clusterName",
+        "envSlug",
+        "keys",
+        "managedSecretName",
+        "projectSlug",
+        "secretsPath",
+        "transport",
+        "zapAddr"
+      ]
+    },
+    "KV": {
+      "family": "universe",
+      "plural": "kvs",
+      "singular": "kv",
+      "shortNames": [
+        "kv"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "LLM": {
+      "family": "universe",
+      "plural": "llms",
+      "singular": "llm",
+      "shortNames": [
+        "llm"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "LuxRuntime": {
+      "family": "chain",
+      "plural": "luxruntimes",
+      "singular": "luxruntime",
+      "shortNames": [
+        "lrt"
+      ],
+      "specFields": [
+        "annotations",
+        "chains",
+        "engine",
+        "exportSchedules",
+        "genesisConfigMap",
+        "httpPort",
+        "image",
+        "imagePullSecrets",
+        "labels",
+        "networkID",
+        "networkName",
+        "pluginSource",
+        "replication",
+        "resources",
+        "seedRestore",
+        "staking",
+        "stakingPort",
+        "storage",
+        "tenantImports",
+        "tenantNetworks",
+        "validators",
+        "wipeOnRecreate"
+      ]
+    },
+    "MPC": {
+      "family": "chain",
+      "plural": "mpcs",
+      "singular": "mpc",
+      "shortNames": [
+        "hmpc"
+      ],
+      "specFields": [
+        "annotations",
+        "apiPort",
+        "cache",
+        "dashboard",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "labels",
+        "p2pPort",
+        "replicas",
+        "resources",
+        "threshold"
+      ]
+    },
+    "ManagedDatabase": {
+      "family": "universe",
+      "plural": "manageddatabases",
+      "singular": "manageddatabase",
+      "shortNames": [
+        "mdb"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "engine",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Network": {
+      "family": "chain",
+      "plural": "networks",
+      "singular": "network",
+      "shortNames": [
+        "hnet"
+      ],
+      "specFields": [
+        "annotations",
+        "bootnode",
+        "bridge",
+        "chains",
+        "evmChainID",
+        "explorer",
+        "imagePullSecrets",
+        "indexer",
+        "labels",
+        "networkID",
+        "validatorTemplate",
+        "validators"
+      ]
+    },
+    "NodeFleet": {
+      "family": "chain",
+      "plural": "nodefleets",
+      "singular": "nodefleet",
+      "shortNames": [
+        "fleet"
+      ],
+      "specFields": [
+        "annotations",
+        "archive",
+        "chains",
+        "httpPort",
+        "image",
+        "imagePullSecrets",
+        "labels",
+        "networkID",
+        "networkName",
+        "stakingPort",
+        "stateSync"
+      ]
+    },
+    "Observability": {
+      "family": "universe",
+      "plural": "observabilities",
+      "singular": "observability",
+      "shortNames": [
+        "obs"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Queue": {
+      "family": "universe",
+      "plural": "queues",
+      "singular": "queue",
+      "shortNames": [
+        "q"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "S3": {
+      "family": "universe",
+      "plural": "s3s",
+      "singular": "s3",
+      "shortNames": [
+        "s3"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "SPA": {
+      "family": "universe",
+      "plural": "spas",
+      "singular": "spa",
+      "shortNames": [
+        "spa"
+      ],
+      "specFields": [
+        "config",
+        "content",
+        "ingress",
+        "multiApp",
+        "pdb",
+        "replicas",
+        "resources",
+        "runtime"
+      ]
+    },
+    "SQL": {
+      "family": "universe",
+      "plural": "sqls",
+      "singular": "sql",
+      "shortNames": [
+        "sql"
+      ],
+      "specFields": [
+        "args",
+        "backup",
+        "command",
+        "containerSecurityContext",
+        "credentialsSecret",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "kmsSecrets",
+        "networkPolicy",
+        "partOf",
+        "ports",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAliases",
+        "serviceMonitor",
+        "sidecars",
+        "storage",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "Service": {
+      "family": "universe",
+      "plural": "services",
+      "singular": "service",
+      "shortNames": [
+        "hsvc"
+      ],
+      "specFields": [
+        "annotations",
+        "args",
+        "autoscaling",
+        "command",
+        "component",
+        "containerSecurityContext",
+        "enableServiceLinks",
+        "env",
+        "envFrom",
+        "fsGroup",
+        "image",
+        "imagePullSecrets",
+        "ingress",
+        "initContainers",
+        "kmsSecrets",
+        "labels",
+        "livenessProbe",
+        "networkPolicy",
+        "nodeSelector",
+        "partOf",
+        "pdb",
+        "persistence",
+        "ports",
+        "priorityClassName",
+        "readinessProbe",
+        "replicas",
+        "resources",
+        "securityContext",
+        "serviceAccountName",
+        "serviceMonitor",
+        "sidecars",
+        "strategy",
+        "surgeColocation",
+        "tolerations",
+        "upgradePolicy",
+        "volumeMounts",
+        "volumes"
+      ]
+    },
+    "SolanaRuntime": {
+      "family": "chain",
+      "plural": "solanaruntimes",
+      "singular": "solanaruntime",
+      "shortNames": [
+        "solrt"
+      ],
+      "specFields": [
+        "cluster",
+        "entryPoints",
+        "extraArgs",
+        "gossipPort",
+        "identityKeypair",
+        "imagePullSecrets",
+        "ledger",
+        "nodeImage",
+        "resources",
+        "rpcEnabled",
+        "rpcPort",
+        "snapshot",
+        "voteAccount"
+      ]
+    },
+    "Static": {
+      "family": "universe",
+      "plural": "statics",
+      "singular": "static",
+      "shortNames": [
+        "static"
+      ],
+      "specFields": [
+        "configMap",
+        "image",
+        "ingress"
+      ]
+    },
+    "Validator": {
+      "family": "chain",
+      "plural": "validators",
+      "singular": "validator",
+      "shortNames": [
+        "val"
+      ],
+      "specFields": [
+        "network",
+        "spec"
+      ]
+    }
+  }
+}
