@@ -30,6 +30,7 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
+    refuse_live_node,
     conditions_equivalent, config_volume, local_refs, one_file, secret_volume, tcp_probe,
 };
 use super::owner_ref_for;
@@ -200,6 +201,7 @@ async fn reconcile_inner(
     spec: &SolanaRuntimeSpec,
     owner: OwnerReference,
 ) -> Result<()> {
+    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
     check(spec)?;
 
     let labels =

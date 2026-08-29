@@ -30,6 +30,7 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
+    refuse_live_node,
     conditions_equivalent, config_volume, local_refs, one_file, or_else, secret_key_ref, tcp_probe,
 };
 use super::owner_ref_for;
@@ -145,6 +146,7 @@ async fn reconcile_inner(
     spec: &BitcoinRuntimeSpec,
     owner: OwnerReference,
 ) -> Result<()> {
+    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
     check(spec)?;
 
     let labels = manifests::standard_labels(name, "bitcoind", "bitcoin", &spec.node_image.tag);

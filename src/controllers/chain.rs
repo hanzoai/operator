@@ -107,3 +107,89 @@ pub fn one_file(name: &str, body: String) -> BTreeMap<String, String> {
     m.insert(name.to_string(), body);
     m
 }
+
+// ---------------------------------------------------------------------------
+// Refusing to touch hand-managed node workloads
+// ---------------------------------------------------------------------------
+
+/// Namespaces where node, validator and MPC workloads are managed by hand or by
+/// the legacy operator.
+///
+/// `lux-validators` is deliberately absent: it is the intended home for nodes
+/// this operator does manage.
+const RESERVED_NAMESPACES: [&str; 13] = [
+    "lux-mainnet",
+    "lux-testnet",
+    "lux-devnet",
+    "lux-system",
+    "lux-network", // the legacy operator's own namespace
+    "lux-mpc",
+    "lux-mpc-keyset",
+    "lux-mpc-keyset-backup",
+    "lux-nodefleet",
+    "zoo-mainnet",
+    "zoo-testnet",
+    "zoo-devnet",
+    "kube-system",
+];
+
+/// Refuse any CR that could resolve onto a live hand-managed node.
+///
+/// The live Lux validators are one StatefulSet named `luxd`, pods `luxd-0..4`,
+/// with PVCs `data-luxd-*`, managed outside this operator. Every apply here is
+/// server-side with force, and every child is named after its CR — so a CR
+/// named `luxd` in one of those namespaces would produce a StatefulSet that
+/// takes ownership of the live one and binds its volumes. There is no undo for
+/// that: the chain data is the asset.
+///
+/// This operator watches cluster-wide by default, which is the exact condition
+/// that makes the collision reachable, so the refusal is per-CR rather than a
+/// matter of how it happens to be scoped. It costs one comparison and rejects
+/// nothing legitimate — nodes this operator manages are named for their org and
+/// slot and live in their own namespace.
+pub fn refuse_live_node(name: &str, namespace: &str) -> Result<(), String> {
+    if name == "luxd" || name.starts_with("luxd-") {
+        return Err(format!(
+            "refusing the name {name:?}: it is the live hand-managed luxd StatefulSet, and an apply here would take its volumes"
+        ));
+    }
+    if RESERVED_NAMESPACES.contains(&namespace) {
+        return Err(format!(
+            "refusing the namespace {namespace:?}: node and validator workloads there are managed outside this operator"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The live validators are `luxd` / `luxd-0..4` with `data-luxd-*` volumes.
+    /// A CR of any chain Kind carrying that name would build a StatefulSet that
+    /// force-applies over them.
+    #[test]
+    fn the_live_validator_identity_is_refused() {
+        for name in ["luxd", "luxd-0", "luxd-4", "luxd-anything"] {
+            assert!(
+                refuse_live_node(name, "chains").is_err(),
+                "{name} must be refused"
+            );
+        }
+        // A name that merely starts with the same letters is a different node.
+        assert!(refuse_live_node("luxdiamond", "chains").is_ok());
+        assert!(refuse_live_node("val-acme-0", "chains").is_ok());
+    }
+
+    /// Scoping is operator discipline; this backstops a misconfiguration,
+    /// which matters because the default scope is the whole cluster.
+    #[test]
+    fn hand_managed_namespaces_are_refused() {
+        for ns in ["lux-mainnet", "lux-network", "zoo-devnet", "kube-system"] {
+            assert!(refuse_live_node("btc", ns).is_err(), "{ns} must be refused");
+        }
+        // The namespace meant for nodes this operator manages is not reserved.
+        assert!(refuse_live_node("btc", "lux-validators").is_ok());
+        assert!(refuse_live_node("btc", "chains").is_ok());
+    }
+}

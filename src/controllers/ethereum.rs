@@ -36,6 +36,7 @@ use crate::crd_types::build_condition;
 use crate::manifests;
 
 use super::chain::{
+    refuse_live_node,
     conditions_equivalent, config_volume, local_refs, or_else, secret_volume, tcp_probe,
 };
 use super::owner_ref_for;
@@ -169,6 +170,7 @@ async fn reconcile_inner(
     spec: &EthereumRuntimeSpec,
     owner: OwnerReference,
 ) -> Result<()> {
+    refuse_live_node(name, namespace).map_err(OperatorError::Config)?;
     check(spec)?;
 
     let base = manifests::standard_labels(name, "ethereum", "ethereum", &spec.execution.image.tag);
