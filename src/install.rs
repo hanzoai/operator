@@ -36,7 +36,9 @@ use crate::core::Result;
 use crate::crd::{
     AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, ImageUpdate,
     Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue,
-    Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL, KMSSecret};
+    Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL, KMSSecret,
+    BitcoinRuntime, EthereumRuntime, SolanaRuntime,
+};
 
 /// Default operator image (pinned semver; the caller overrides at install time).
 pub const DEFAULT_OPERATOR_IMAGE: &str = "ghcr.io/hanzoai/operator";
@@ -90,6 +92,12 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         // The KMS family. Prefixed group, so rewrite_crd_group carries the
         // prefix across universes (kms.hanzo.ai -> kms.lux.cloud).
         KMSSecret::crd(),
+        // Chains outside the luxd family. Each is its own Kind because each is
+        // its own shape; they answer at the fixed blockchain group like the
+        // rest of the chain surface.
+        BitcoinRuntime::crd(),
+        EthereumRuntime::crd(),
+        SolanaRuntime::crd(),
     ];
     // Unconditionally. The derive bakes a group at compile time and it is not
     // the answer for any universe — including the default one, where it was
@@ -292,8 +300,18 @@ impl Family {
 }
 
 /// The Kinds that answer at the fixed blockchain group.
-pub const BLOCKCHAIN_KINDS: [&str; 8] = [
-    "Network", "Chain", "Validator", "Indexer", "Explorer", "LuxRuntime", "NodeFleet", "MPC",
+pub const BLOCKCHAIN_KINDS: [&str; 11] = [
+    "Network",
+    "Chain",
+    "Validator",
+    "Indexer",
+    "Explorer",
+    "LuxRuntime",
+    "NodeFleet",
+    "MPC",
+    "BitcoinRuntime",
+    "EthereumRuntime",
+    "SolanaRuntime",
 ];
 
 /// Which family a Kind belongs to. One place, so the bundle and anything that
@@ -695,21 +713,24 @@ mod tests {
             .expect("spec is described");
         let props = spec.properties.as_ref().expect("spec has properties");
 
-        assert!(props.contains_key("engine"), "a runtime must be able to name its engine");
         assert!(
-            props.contains_key("engineConfig"),
-            "an engine needs somewhere to put settings this type was never taught to name"
+            props.contains_key("engine"),
+            "a runtime must be able to name which fork it runs"
         );
-        // Additive: neither may be required, or every existing CR becomes invalid
-        // the moment the new schema lands.
+        // Additive: requiring it would invalidate every CR written before it.
         if let Some(req) = spec.required.as_ref() {
-            for f in ["engine", "engineConfig"] {
-                assert!(
-                    !req.iter().any(|r| r == f),
-                    "{f} must stay optional — requiring it rejects every CR written before it"
-                );
-            }
+            assert!(
+                !req.iter().any(|r| r == "engine"),
+                "engine must stay optional — requiring it rejects every CR written before it"
+            );
         }
+        // And there is no opaque escape hatch beside it. A chain of a different
+        // shape gets its own Kind with its own real fields; a map the API server
+        // cannot check would make that choice avoidable, and then optional.
+        assert!(
+            !props.contains_key("engineConfig"),
+            "a foreign chain gets a Kind, not a blob"
+        );
     }
 
     #[test]
@@ -735,7 +756,7 @@ mod tests {
                 .count();
             seen.push(n);
         }
-        assert_eq!(seen, vec![8, 8, 8, 8], "the same 8 Kinds in every universe");
+        assert_eq!(seen, vec![11, 11, 11, 11], "the same 11 Kinds in every universe");
     }
 
     #[test]
@@ -771,12 +792,12 @@ mod tests {
     }
 
     #[test]
-    fn bundle_is_the_canonical_31_kind_set() {
+    fn bundle_is_the_canonical_34_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            31,
-            "managed Kind count is 31 (28 canonical + App + ImageUpdate + KMSSecret; GitSource retired — delivery is the cloud deploy engine)"
+            34,
+            "managed Kind count is 34 (28 canonical + App + ImageUpdate + KMSSecret + the three foreign chain runtimes; GitSource retired — delivery is the cloud deploy engine)"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));

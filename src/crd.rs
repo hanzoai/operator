@@ -2237,29 +2237,21 @@ pub struct ChainStatus {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct LuxRuntimeSpec {
-    /// Which node software this runtime runs.
+    /// Which fork of the node binary this runtime runs: `luxd`, `hanzod`,
+    /// `zood`. Empty means `luxd`.
     ///
-    /// The Kind is named for luxd because luxd was the only thing it ran, but
-    /// nothing in this spec is Avalanche-family: networkName, validators,
-    /// image, storage, ports and bootstrap peers describe ANY chain node.
-    /// luxd, hanzod and zood are the same shape under three brands; bitcoind,
-    /// geth and a Solana validator are different shapes that still want a
-    /// network, an image, storage and peers.
+    /// These three are one program under three brands — same flags, same
+    /// ports, same disk layout — so one Kind with the fork as a VALUE is
+    /// right, and three Kinds differing only in an image would be the same
+    /// type written out three times.
     ///
-    /// So the engine is a VALUE the CR carries, not a fact welded into the
-    /// type. A reconciler dispatches on it to pick a pod shape; everything
-    /// above the dispatch stays common. Empty means `luxd`, so every CR
-    /// written before this field keeps its meaning.
+    /// A chain of a different SHAPE does not belong here. bitcoind has no
+    /// networkID and no validator set; an Ethereum node is two processes
+    /// sharing a JWT; a Solana validator votes with a keypair. Each gets its
+    /// own Kind below, with its own real fields. The rule is the honest one:
+    /// same shape, one Kind and a value; different shape, different Kind.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub engine: String,
-    /// Engine-specific configuration, carried whole.
-    ///
-    /// Typed-opaque on purpose: a runtime that can only forward settings it
-    /// was taught to name drops everything a new engine needs, and the set of
-    /// chains is open. bitcoind's `txindex`, geth's `--syncmode`, a Solana
-    /// validator's vote account all live here without this type learning them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub engine_config: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub network_name: String,
     #[serde(rename = "networkID", default)]
@@ -2717,4 +2709,341 @@ pub struct ImageUpdateStatus {
     pub observed_generation: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub message: String,
+}
+
+// ============================================================================
+// Foreign chain runtimes — bitcoind, Ethereum, Solana
+//
+// LuxRuntime covers the luxd family, where one shape serves three brands. A
+// chain outside that family is not a luxd with different flags: bitcoind has
+// no validator set and prunes by megabytes; an Ethereum node is two processes
+// that authenticate to each other over a shared JWT; a Solana validator votes
+// with a keypair and fetches snapshots to catch up. Giving each its own Kind
+// costs three small types and buys a schema that can actually reject a wrong
+// spec — `txIndex` with `pruning`, a consensus client with no JWT — instead of
+// an opaque map the API server waves through and a reconciler discovers at
+// runtime.
+//
+// These mirror github.com/bootnode/operator api/v1 field for field. The
+// reconcilers there read these CRs; if the schemas drift, the API server
+// accepts specs the reconciler cannot honor, and the CR just sits there.
+// ============================================================================
+
+/// A Secret in the CR's namespace, optionally one key inside it.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretRef {
+    pub name: String,
+    /// Empty means the whole Secret; builders that project one value default
+    /// the key per call site.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key: String,
+}
+
+// ---------------------------------------------------------------- bitcoin ---
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BitcoinNetwork {
+    #[default]
+    Mainnet,
+    Testnet,
+    Regtest,
+    Signet,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BitcoinIndexerKind {
+    #[default]
+    Electrs,
+    Esplora,
+    Fulcrum,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BitcoinP2PSpec {
+    #[serde(default)]
+    pub listen_port: i32,
+    #[serde(default)]
+    pub max_connections: i32,
+    #[serde(default)]
+    pub add_nodes: Vec<String>,
+}
+
+/// An Electrum-protocol sidecar. Absent means no indexer.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BitcoinIndexerSpec {
+    pub kind: BitcoinIndexerKind,
+    pub image: ImageSpec,
+    #[serde(default)]
+    pub rpc_port: i32,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "bootno.de",
+    version = "v1",
+    kind = "BitcoinRuntime",
+    plural = "bitcoinruntimes",
+    namespaced,
+    status = "BitcoinRuntimeStatus",
+    shortname = "btcrt"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct BitcoinRuntimeSpec {
+    /// The bitcoind image.
+    #[serde(default)]
+    pub node_image: ImageSpec,
+    pub network: BitcoinNetwork,
+    /// `prune=` target in MiB. 0 keeps a full archive. Mutually exclusive with
+    /// `txIndex` — an index cannot be built over blocks that were discarded.
+    #[serde(default)]
+    pub pruning: i32,
+    /// `txindex=1`. An Electrum indexer needs it to backfill from genesis.
+    #[serde(default)]
+    pub tx_index: bool,
+    /// RPC credentials. Absent means bitcoind's own cookie file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpc_auth: Option<SecretRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p: Option<BitcoinP2PSpec>,
+    /// PVC template for the data dir.
+    pub storage: StorageSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indexer: Option<BitcoinIndexerSpec>,
+    /// JSON-RPC port. Zero resolves from the network: 8332 / 18332 / 18443 / 38332.
+    #[serde(default)]
+    pub rpc_port: i32,
+    #[serde(default)]
+    pub image_pull_secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BitcoinRuntimeStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub block_height: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sync_progress: String,
+    #[serde(default)]
+    pub peer_count: i32,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+}
+
+// --------------------------------------------------------------- ethereum ---
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EthereumNetwork {
+    #[default]
+    Mainnet,
+    Sepolia,
+    Holesky,
+    Custom,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionKind {
+    #[default]
+    Geth,
+    Reth,
+    Erigon,
+    Nethermind,
+    Besu,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsensusKind {
+    #[default]
+    Lighthouse,
+    Prysm,
+    Teku,
+    Nimbus,
+    Lodestar,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EthereumExecutionSpec {
+    pub kind: ExecutionKind,
+    pub image: ImageSpec,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sync_mode: String,
+    pub storage: StorageSpec,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EthereumConsensusSpec {
+    pub kind: ConsensusKind,
+    pub image: ImageSpec,
+    /// URL to sync the beacon state from instead of walking the chain.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub checkpoint_sync: String,
+    pub storage: StorageSpec,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+}
+
+/// A post-merge Ethereum node: an execution client and a consensus client,
+/// side by side, authenticating to each other over a shared JWT. Neither half
+/// syncs alone, which is why they are one CR and not two.
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "bootno.de",
+    version = "v1",
+    kind = "EthereumRuntime",
+    plural = "ethereumruntimes",
+    namespaced,
+    status = "EthereumRuntimeStatus",
+    shortname = "ethrt"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct EthereumRuntimeSpec {
+    pub network: EthereumNetwork,
+    pub execution: EthereumExecutionSpec,
+    pub consensus: EthereumConsensusSpec,
+    /// The shared secret the two halves authenticate the Engine API with.
+    pub jwt_secret: SecretRef,
+    /// Address credited with block-proposal fees.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub fee_recipient: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default, rename = "authRpcPort")]
+    pub auth_rpc_port: i32,
+    #[serde(default, rename = "elRpcPort")]
+    pub el_rpc_port: i32,
+    #[serde(default, rename = "clRpcPort")]
+    pub cl_rpc_port: i32,
+    #[serde(default)]
+    pub image_pull_secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct EthereumRuntimeStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    /// Both halves report separately: an execution client can be synced while
+    /// the beacon node is still backfilling, and the node serves neither.
+    #[serde(default, rename = "elReady")]
+    pub el_ready: bool,
+    #[serde(default, rename = "clReady")]
+    pub cl_ready: bool,
+    #[serde(default)]
+    pub slot_height: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sync_progress: String,
+    #[serde(default)]
+    pub peer_count: i32,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
+}
+
+// ----------------------------------------------------------------- solana ---
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SolanaCluster {
+    #[default]
+    MainnetBeta,
+    Testnet,
+    Devnet,
+    Custom,
+}
+
+/// How the validator catches up. Replaying every slot from genesis takes
+/// longer than the chain takes to produce them, so a new validator fetches a
+/// snapshot instead.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SolanaSnapshotSpec {
+    #[serde(default)]
+    pub fetch: bool,
+    #[serde(default)]
+    pub interval_slots: i64,
+    #[serde(default)]
+    pub minimum_download_speed_mbps: i32,
+}
+
+#[derive(CustomResource, Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[kube(
+    group = "bootno.de",
+    version = "v1",
+    kind = "SolanaRuntime",
+    plural = "solanaruntimes",
+    namespaced,
+    status = "SolanaRuntimeStatus",
+    shortname = "solrt"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct SolanaRuntimeSpec {
+    pub node_image: ImageSpec,
+    pub cluster: SolanaCluster,
+    /// The validator's own identity.
+    pub identity_keypair: SecretRef,
+    /// Absent means the node follows the cluster without voting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vote_account: Option<SecretRef>,
+    #[serde(default)]
+    pub rpc_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<SolanaSnapshotSpec>,
+    /// PVC template for the ledger.
+    pub ledger: StorageSpec,
+    #[serde(default)]
+    pub entry_points: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceRequirements>,
+    #[serde(default)]
+    pub extra_args: Vec<String>,
+    #[serde(default)]
+    pub rpc_port: i32,
+    #[serde(default)]
+    pub gossip_port: i32,
+    #[serde(default)]
+    pub image_pull_secrets: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SolanaRuntimeStatus {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub slot_height: i64,
+    #[serde(default)]
+    pub root_slot: i64,
+    #[serde(default)]
+    pub vote_slot: i64,
+    /// Following the cluster is not the same as voting on it.
+    #[serde(default)]
+    pub is_voting: bool,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub observed_generation: i64,
 }
