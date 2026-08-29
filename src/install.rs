@@ -671,6 +671,47 @@ mod tests {
     /// BESIDE the universe rather than inside it: a lux install serves
     /// `kms.lux.cloud` while that same universe's own Kinds serve `lux.cloud`.
     /// The operator's internals stay `hanzo.ai` — only the rendered CRDs move.
+    /// A runtime says WHICH node software it runs, and saying nothing still
+    /// means luxd. The Kind is named for luxd for historical reasons, but the
+    /// spec describes any chain node — so the engine has to be a value the CR
+    /// carries rather than a fact the type asserts, and adding it must not
+    /// invalidate a single CR written before it existed.
+    #[test]
+    fn a_runtime_names_its_engine_and_defaults_to_luxd() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        let rt = crds
+            .iter()
+            .find(|c| c.spec.names.kind == "LuxRuntime")
+            .expect("LuxRuntime is in the bundle");
+        let schema = rt.spec.versions[0]
+            .schema
+            .as_ref()
+            .and_then(|s| s.open_api_v3_schema.as_ref())
+            .expect("the CRD carries a schema");
+        let spec = schema
+            .properties
+            .as_ref()
+            .and_then(|p| p.get("spec"))
+            .expect("spec is described");
+        let props = spec.properties.as_ref().expect("spec has properties");
+
+        assert!(props.contains_key("engine"), "a runtime must be able to name its engine");
+        assert!(
+            props.contains_key("engineConfig"),
+            "an engine needs somewhere to put settings this type was never taught to name"
+        );
+        // Additive: neither may be required, or every existing CR becomes invalid
+        // the moment the new schema lands.
+        if let Some(req) = spec.required.as_ref() {
+            for f in ["engine", "engineConfig"] {
+                assert!(
+                    !req.iter().any(|r| r == f),
+                    "{f} must stay optional — requiring it rejects every CR written before it"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_blockchain_family_is_fixed_across_universes() {
         let mut seen = Vec::new();

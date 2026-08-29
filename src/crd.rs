@@ -2237,6 +2237,29 @@ pub struct ChainStatus {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct LuxRuntimeSpec {
+    /// Which node software this runtime runs.
+    ///
+    /// The Kind is named for luxd because luxd was the only thing it ran, but
+    /// nothing in this spec is Avalanche-family: networkName, validators,
+    /// image, storage, ports and bootstrap peers describe ANY chain node.
+    /// luxd, hanzod and zood are the same shape under three brands; bitcoind,
+    /// geth and a Solana validator are different shapes that still want a
+    /// network, an image, storage and peers.
+    ///
+    /// So the engine is a VALUE the CR carries, not a fact welded into the
+    /// type. A reconciler dispatches on it to pick a pod shape; everything
+    /// above the dispatch stays common. Empty means `luxd`, so every CR
+    /// written before this field keeps its meaning.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub engine: String,
+    /// Engine-specific configuration, carried whole.
+    ///
+    /// Typed-opaque on purpose: a runtime that can only forward settings it
+    /// was taught to name drops everything a new engine needs, and the set of
+    /// chains is open. bitcoind's `txindex`, geth's `--syncmode`, a Solana
+    /// validator's vote account all live here without this type learning them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_config: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub network_name: String,
     #[serde(rename = "networkID", default)]
