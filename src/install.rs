@@ -34,7 +34,7 @@ use kube::{Client, CustomResourceExt};
 use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
-    AgentDeployment, App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway, ImageUpdate,
+    App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway,
     Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue,
     Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL, KMSSecret,
     BitcoinRuntime, EthereumRuntime, SolanaRuntime,
@@ -80,17 +80,10 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         Function::crd(),
         LuxRuntime::crd(),
         NodeFleet::crd(),
-        AgentDeployment::crd(),
         // The 29th Kind — the App-collapse super-facade. Emitted LAST so the
-        // canonical Kind order (Service … AgentDeployment) is unchanged and App is
+        // canonical Kind order (Service … NodeFleet) is unchanged and App is
         // the additive tail.
         App::crd(),
-        // Registry→git image automation Kind (delivery is the cloud deploy engine):
-        // automation (ImageUpdate). Appended after App so they extend the tail
-        // without disturbing the canonical order the checked-in bundles assert.
-        ImageUpdate::crd(),
-        // The KMS family. Prefixed group, so rewrite_crd_group carries the
-        // prefix across universes (kms.hanzo.ai -> kms.lux.cloud).
         KMSSecret::crd(),
         // Chains outside the luxd family. Each is its own Kind because each is
         // its own shape; they answer at the fixed blockchain group like the
@@ -338,6 +331,77 @@ const ALL_VERBS: &[&str] = &[
     "get", "list", "watch", "create", "update", "patch", "delete",
 ];
 const READ_VERBS: &[&str] = &["get", "list", "watch"];
+
+/// Who reconciles each published Kind.
+///
+/// Publishing a CRD is a promise that something acts on the objects. Nothing
+/// enforced that, so the estate drifted into 34 published Kinds of which 22 had
+/// a reconciler here, six were reconciled in another repo, four stood aside for
+/// a controller that does not exist, and two had nobody at all — and none of
+/// that was visible without going and counting.
+///
+/// So every Kind names an owner and the test refuses a bundle where one does
+/// not. A Kind may still be published with nothing reconciling it; what it may
+/// not be is published by accident.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// A controller this operator starts.
+    Here(&'static str),
+    /// Reconciled in another repo, named.
+    Elsewhere(&'static str),
+    /// Published and reconciled by nothing. The reason is the point.
+    Unreconciled(&'static str),
+}
+
+/// The owner of every Kind in the bundle.
+pub const OWNERS: &[(&str, Owner)] = &[
+    // The workload surface. charts/app replaced these for the fleet — the
+    // ApplicationSet says so outright — but the reconcilers still run, so a CR
+    // written directly is still honoured.
+    ("Service", Owner::Here("service")),
+    ("LLM", Owner::Here("service")),
+    ("IAM", Owner::Here("service")),
+    ("KMS", Owner::Here("service")),
+    ("Explorer", Owner::Here("service")),
+    ("Function", Owner::Here("service")),
+    ("Indexer", Owner::Here("service")),
+    ("Observability", Owner::Here("service")),
+    ("Queue", Owner::Here("service")),
+    ("SPA", Owner::Here("service")),
+    ("Static", Owner::Here("service")),
+    ("Datastore", Owner::Here("datastore")),
+    ("DocDB", Owner::Here("datastore")),
+    ("S3", Owner::Here("datastore")),
+    ("SQL", Owner::Here("sql")),
+    ("KV", Owner::Here("kv")),
+    ("Ingress", Owner::Here("ingress")),
+    ("App", Owner::Here("app")),
+    ("KMSSecret", Owner::Here("kms_zap")),
+    ("BitcoinRuntime", Owner::Here("bitcoin")),
+    ("EthereumRuntime", Owner::Here("ethereum")),
+    ("SolanaRuntime", Owner::Here("solana")),
+    // The chain surface at bootno.de. luxfi/operator's shim writes these as
+    // children of its own lux.cloud Kinds, and hanzo-go/operator carries the
+    // reconcilers. Published here because this operator installs the CRDs.
+    ("Network", Owner::Elsewhere("hanzo-go/operator")),
+    ("Chain", Owner::Elsewhere("hanzo-go/operator")),
+    ("Validator", Owner::Elsewhere("hanzo-go/operator")),
+    ("LuxRuntime", Owner::Elsewhere("hanzo-go/operator")),
+    ("NodeFleet", Owner::Elsewhere("hanzo-go/operator")),
+    ("MPC", Owner::Elsewhere("hanzo-go/operator")),
+    // App's dispatch stands aside for a dedicated controller on these four, and
+    // there is no dedicated controller. A CR of one is accepted and nothing
+    // happens to it.
+    ("Base", Owner::Unreconciled("App delegates to a controller that does not exist")),
+    ("DNS", Owner::Unreconciled("App delegates to a controller that does not exist")),
+    ("Gateway", Owner::Unreconciled("App delegates to a controller that does not exist")),
+    ("ManagedDatabase", Owner::Unreconciled("App delegates to a controller that does not exist")),
+];
+
+/// The owner of `kind`, if the table names one.
+pub fn owner_of(kind: &str) -> Option<Owner> {
+    OWNERS.iter().find(|(k, _)| *k == kind).map(|(_, o)| *o)
+}
 
 /// Every API group this operator installs CRDs into, for `universe`.
 ///
@@ -725,6 +789,43 @@ mod tests {
     /// last write winning, without saying anything. crd-contract.json is the
     /// agreed shape and each side asserts its own output against its own copy,
     /// so neither can drift without a test going red in its own repo.
+    /// Publishing a CRD promises something acts on the objects. Every Kind
+    /// names who, and a Kind with no entry fails here — so a new one cannot be
+    /// added without someone deciding what reconciles it, and an existing one
+    /// cannot quietly lose its reconciler.
+    #[test]
+    fn every_published_kind_names_who_reconciles_it() {
+        let crds = crd_bundle(DEFAULT_API_GROUP);
+        for crd in &crds {
+            let kind = &crd.spec.names.kind;
+            assert!(
+                owner_of(kind).is_some(),
+                "{kind} is published and the owner table does not say what reconciles it"
+            );
+        }
+        // And the table names nothing that is not published.
+        for (kind, _) in OWNERS {
+            assert!(
+                crds.iter().any(|c| c.spec.names.kind == *kind),
+                "the owner table names {kind}, which is not published"
+            );
+        }
+        // A controller named as owning a Kind has to be one this operator
+        // actually starts, or "Here" is a claim rather than a fact.
+        let started = [
+            "service", "datastore", "sql", "kv", "ingress", "app", "kms_zap",
+            "bitcoin", "ethereum", "solana", "tenant", "upgrade",
+        ];
+        for (kind, owner) in OWNERS {
+            if let Owner::Here(c) = owner {
+                assert!(
+                    started.contains(c),
+                    "{kind} claims controller {c:?}, which this operator does not start"
+                );
+            }
+        }
+    }
+
     #[test]
     fn the_published_crds_match_the_contract() {
         let raw = include_str!("../crd-contract.json");
@@ -974,18 +1075,16 @@ mod tests {
     }
 
     #[test]
-    fn bundle_is_the_canonical_34_kind_set() {
+    fn bundle_is_the_canonical_32_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            34,
-            "managed Kind count is 34 (28 canonical + App + ImageUpdate + KMSSecret + the three foreign chain runtimes; GitSource retired — delivery is the cloud deploy engine)"
+            32,
+            "managed Kind count is 32 (28 canonical + App + KMSSecret + the three foreign chain runtimes, less AgentDeployment and ImageUpdate, which nothing reconciles)"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
-        assert!(kinds.contains(&"AgentDeployment"));
         assert!(kinds.contains(&"App"));
-        assert!(kinds.contains(&"ImageUpdate"));
         assert!(kinds.contains(&"KMSSecret"));
         for crd in &crds {
             let expected = family_of(&crd.spec.names.kind).group(DEFAULT_API_GROUP);

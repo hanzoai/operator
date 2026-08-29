@@ -13,25 +13,6 @@
   "version": 1,
   "goSchemaPending": [],
   "kinds": {
-    "AgentDeployment": {
-      "family": "universe",
-      "plural": "agentdeployments",
-      "singular": "agentdeployment",
-      "shortNames": [
-        "agentdeploy",
-        "bot"
-      ],
-      "specFields": [
-        "agentName",
-        "botVersion",
-        "executionMode",
-        "machineId",
-        "org",
-        "provider",
-        "replicas",
-        "schedule"
-      ]
-    },
     "App": {
       "family": "universe",
       "plural": "apps",
@@ -411,24 +392,6 @@
         "upgradePolicy",
         "volumeMounts",
         "volumes"
-      ]
-    },
-    "ImageUpdate": {
-      "family": "universe",
-      "plural": "imageupdates",
-      "singular": "imageupdate",
-      "shortNames": [
-        "imgup"
-      ],
-      "specFields": [
-        "credentialsSecret",
-        "imageRepository",
-        "intervalSeconds",
-        "policy",
-        "registrySecret",
-        "writebackPath",
-        "writebackRef",
-        "writebackRepo"
       ]
     },
     "Indexer": {
