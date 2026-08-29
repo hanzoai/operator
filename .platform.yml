@@ -1,0 +1,25 @@
+# Platform-native CI/CD — the ONE build path for this repo.
+#
+# A v* git tag push → the platform GitHub App webhook → platform BuildKit builds
+# ghcr.io/hanzoai/operator:<semver> in-cluster on our own pool. No GitHub
+# Actions, no ARC runners, no sha-suffix drift.
+#
+# The image name is deliberately ghcr.io/hanzoai/operator and NOT
+# ghcr.io/hanzo-rs/operator. That package is what the fleet controller runs
+# today — universe pins it by digest in operator/deployment.yaml — and 189
+# versions of history live there. Building into it from here moves the SOURCE to
+# its language home without moving the ARTEFACT out from under a running
+# cluster, which is the one part of this that cannot be rolled back.
+#
+# Deploy is not declared: rolling the operator is a universe change to the
+# pinned tag, reviewed like any other, not something a tag push should do on its
+# own. The thing being rolled is the controller that reconciles the fleet.
+#
+# Schema: hanzoai/platform docs/PLATFORM_CI.md (parsed by platform-config.ts).
+build:
+  matrix:
+    - { os: linux, arch: amd64 }   # amd64-only — DOKS has no arm64 pool yet
+  dockerfile: ./Dockerfile
+  context: .
+  image: ghcr.io/hanzoai/operator
+  tag-pattern: "{{git.tag}}"       # vX.Y.Z git tag → X.Y.Z image
