@@ -17,9 +17,13 @@
 //! | absent / `generic` / `service` / `llm` / `iam` / `kms` / `explorer` / `function` / `indexer` / `observability` / `queue` / `spa` / `static` | `service::reconcile_service_inner_pub` |
 //! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
 //! | `ingress`                                                         | `ingress::reconcile_ingress_inner_pub` |
-//! | `gateway` / `base` / `mpc` / `network` / `node` | delegated (dedicated controller; App stands aside) |
+//! | `gateway` / `base` / `mpc` / `network` / `node` / `dns` / `managedDatabase` / `agentDeployment` / `luxRuntime` / `nodeFleet` | delegated (dedicated Kind; App stands aside) |
 //! | `chain` / `validator`                                             | NoOp stub (Network owns them)        |
 //! | anything else                                                     | fail-safe: report + requeue, never materialize/delete |
+//!
+//! The roles and their profiles are one table — [`ROLES`] — and the CRD's
+//! `spec.role` enum is projected from it, so the schema cannot advertise a role
+//! that reaches no arm, nor reject one that does.
 //!
 //! ## Safety invariants (the whole point)
 //!
@@ -66,7 +70,7 @@ pub struct Ctx {
 // ============================================================================
 
 /// The reconcile profile a `spec.role` resolves to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dispatch {
     /// Generic Service profile — `reconcile_service_inner_pub(&spec.service)`.
     Service,
@@ -92,32 +96,66 @@ pub enum Dispatch {
 /// Matches the merged universe App CRD's `role` enum VALUES exactly (including the
 /// camelCase `managedDatabase`) and the
 /// node `classify()` taxonomy (its `Generic` set + `spa`/`static`). Pure over
+/// Every role the App CRD advertises, with the profile it reconciles through,
+/// in the order the CRD's `spec.role` enum carries them.
+///
+/// ONE table. `classify` looks up in it and the CRD enum is projected from it,
+/// so a role cannot be advertised without a profile or handled without being
+/// advertised. It used to be two lists with a comment asking that they be kept
+/// in lockstep, and they drifted both ways: five roles the schema accepted
+/// reached no arm and requeued forever as Unknown, while `node` had an arm the
+/// schema rejected at admission.
+pub const ROLES: &[(&str, Dispatch)] = &[
+    // Generic Service profile — the schema-identical roles the operator owns.
+    ("generic", Dispatch::Service),
+    ("service", Dispatch::Service),
+    ("llm", Dispatch::Service),
+    ("iam", Dispatch::Service),
+    ("kms", Dispatch::Service),
+    ("explorer", Dispatch::Service),
+    ("function", Dispatch::Service),
+    ("indexer", Dispatch::Service),
+    ("observability", Dispatch::Service),
+    ("queue", Dispatch::Service),
+    // Datastore profile — engine is fixed by the role, never by `spec.type`.
+    ("datastore", Dispatch::Datastore(Engine::Datastore)),
+    ("docdb", Dispatch::Datastore(Engine::Docdb)),
+    ("kv", Dispatch::Datastore(Engine::Valkey)),
+    ("s3", Dispatch::Datastore(Engine::S3)),
+    ("sql", Dispatch::Datastore(Engine::Postgres)),
+    ("managedDatabase", Dispatch::Delegated("ManagedDatabase")),
+    // Delegated — dedicated Kind, no owner-taking inner_pub, no live App CR.
+    ("base", Dispatch::Delegated("Base")),
+    ("gateway", Dispatch::Delegated("Gateway")),
+    // Infra controllers with an owner-taking inner entrypoint.
+    ("ingress", Dispatch::Ingress),
+    ("dns", Dispatch::Delegated("DNS")),
+    ("static", Dispatch::Service),
+    ("spa", Dispatch::Service),
+    ("mpc", Dispatch::Delegated("MPC")),
+    // The chain surface lives at bootno.de and is owned there, not here.
+    ("chain", Dispatch::NoOp("Chain")),
+    ("network", Dispatch::Delegated("Network")),
+    ("nodeFleet", Dispatch::Delegated("NodeFleet")),
+    ("luxRuntime", Dispatch::Delegated("LuxRuntime")),
+    ("validator", Dispatch::NoOp("Validator")),
+    ("agentDeployment", Dispatch::Delegated("AgentDeployment")),
+    ("node", Dispatch::Delegated("Node")),
+];
+
 /// `Option<&str>` so the whole dispatch table is a table-driven unit test.
+/// Absent or empty is the generic Service profile.
 pub fn classify(role: Option<&str>) -> Dispatch {
-    match role.map(str::trim).unwrap_or("") {
-        // Generic Service profile — the schema-identical roles the operator owns.
-        "" | "generic" | "service" | "llm" | "iam" | "kms" | "explorer" | "function"
-        | "indexer" | "observability" | "queue" | "spa" | "static" => Dispatch::Service,
-        // Datastore profile — engine is fixed by the role, never by `spec.type`.
-        "sql" => Dispatch::Datastore(Engine::Postgres),
-        "kv" => Dispatch::Datastore(Engine::Valkey),
-        "docdb" => Dispatch::Datastore(Engine::Docdb),
-        "s3" => Dispatch::Datastore(Engine::S3),
-        "datastore" => Dispatch::Datastore(Engine::Datastore),
-        // Infra controllers with an owner-taking inner entrypoint.
-        "ingress" => Dispatch::Ingress,
-        // Delegated — dedicated controller, no owner-taking inner_pub, no live CR.
-        "gateway" => Dispatch::Delegated("Gateway"),
-        "base" => Dispatch::Delegated("Base"),
-        "mpc" => Dispatch::Delegated("MPC"),
-        "network" => Dispatch::Delegated("Network"),
-        "node" => Dispatch::Delegated("Node"),
-        // Network sub-resource stubs.
-        "chain" => Dispatch::NoOp("Chain"),
-        "validator" => Dispatch::NoOp("Validator"),
-        // Fail-safe.
-        _ => Dispatch::Unknown,
+    let role = role.map(str::trim).unwrap_or("");
+    if role.is_empty() {
+        return Dispatch::Service;
     }
+    ROLES
+        .iter()
+        .find(|(name, _)| *name == role)
+        .map(|(_, d)| *d)
+        // Fail-safe: report + requeue, never materialize.
+        .unwrap_or(Dispatch::Unknown)
 }
 
 /// Project the full App spec (generic core + preserved extras) onto a delegate

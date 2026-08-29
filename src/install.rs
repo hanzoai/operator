@@ -120,42 +120,20 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
     crds
 }
 
-/// The `spec.role` enum VALUES, in the exact order the merged universe
-/// `apps.hanzo.ai` CRD carries them. Injected onto the generated App CRD's
-/// `role` property so the emitted schema agrees with the fleet CRD (schemars
-/// models `role` only as an open string). Keep in lockstep with
-/// `controllers::app::classify` — every value here MUST map to a profile there.
-const APP_ROLE_ENUM: &[&str] = &[
-    "generic",
-    "service",
-    "llm",
-    "iam",
-    "kms",
-    "explorer",
-    "function",
-    "indexer",
-    "observability",
-    "queue",
-    "datastore",
-    "docdb",
-    "kv",
-    "s3",
-    "sql",
-    "managedDatabase",
-    "base",
-    "gateway",
-    "ingress",
-    "dns",
-    "static",
-    "spa",
-    "mpc",
-    "chain",
-    "network",
-    "nodeFleet",
-    "luxRuntime",
-    "validator",
-    "agentDeployment",
-];
+/// The `spec.role` enum VALUES, projected from `controllers::app::ROLES`.
+///
+/// Schemars models `role` only as an open string, so the enum is injected onto
+/// the generated App CRD. It is read off the dispatch table rather than listed
+/// again here: the previous copy carried a comment asking that the two be kept
+/// in lockstep, and by the time anyone checked, five of its values reached no
+/// arm at all and one arm was missing from it.
+fn app_role_enum() -> Vec<&'static str> {
+    crate::controllers::app::ROLES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
+}
+
 
 /// The role-specific `AppSpec` fields that live on the wire but not in the Rust
 /// struct: they ride in `AppSpec.extra` (`#[serde(flatten)]` + `#[schemars(skip)]`)
@@ -256,7 +234,7 @@ fn harden_app_crd(crd: &mut CustomResourceDefinition) {
         // (2) constrain role to the known profiles.
         if let Some(role) = spec.properties.as_mut().and_then(|p| p.get_mut("role")) {
             role.enum_ = Some(
-                APP_ROLE_ENUM
+                app_role_enum()
                     .iter()
                     .map(|v| JSON(serde_json::Value::String((*v).to_string())))
                     .collect(),
@@ -724,6 +702,37 @@ mod tests {
     /// nothing. So the ClusterRole must cover every group the bundle installs
     /// into, in every universe — not the universe's own group plus whatever was
     /// remembered by hand.
+    /// Every role the CRD advertises must reach a profile, and every profile the
+    /// controller has must be advertised. Both halves failed before the table
+    /// was made the single source: `dns`, `managedDatabase`, `agentDeployment`,
+    /// `luxRuntime` and `nodeFleet` were accepted at admission and then reached
+    /// no arm, so those Apps requeued forever with nothing built and nothing
+    /// said; `node` had an arm the schema rejected outright.
+    #[test]
+    fn every_advertised_role_reaches_a_profile() {
+        use crate::controllers::app::{classify, Dispatch, ROLES};
+
+        for role in app_role_enum() {
+            assert_ne!(
+                classify(Some(role)),
+                Dispatch::Unknown,
+                "the CRD advertises role {role:?} and nothing reconciles it"
+            );
+        }
+        // And the schema is the table, so a handled role cannot be missing from
+        // it — the direction that made `node` unwritable.
+        let advertised = app_role_enum();
+        for (role, _) in ROLES {
+            assert!(
+                advertised.contains(role),
+                "{role:?} is handled but not advertised; admission would reject it"
+            );
+        }
+        // An unknown role still reaches the fail-safe rather than a panic.
+        assert_eq!(classify(Some("no-such-role")), Dispatch::Unknown);
+        assert_eq!(classify(None), Dispatch::Service);
+    }
+
     #[test]
     fn every_group_the_bundle_publishes_is_granted() {
         for universe in ["hanzo.ai", "lux.cloud", "zoo.cloud"] {

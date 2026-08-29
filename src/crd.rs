@@ -2584,15 +2584,17 @@ pub struct AgentDeploymentStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AppSpec {
     /// The role PROFILE that reconciles this App — the single field that replaced
-    /// the ~28 former hanzo.ai/v1 Kinds (values, not places). Absent/`generic`/
-    /// `service` and the schema-identical `llm`/`iam`/`kms`/`explorer`/`function`/
-    /// `indexer`/`observability`/`queue`/`spa`/`static` select the generic Service
-    /// profile; `sql`/`kv`/`docdb`/`s3`/`datastore`/`managedDatabase` the datastore
-    /// profile; `dns`/`ingress` their controllers. Every other value delegates to
-    /// its dedicated controller (or a NoOp stub). An unrecognized value reconciles
-    /// fail-safe (status marks it, requeue — never a delete, never a panic). It is
-    /// an OPEN string (not the closed enum) so this fail-safe path is reachable at
-    /// runtime rather than rejected at admission; see `controllers::app::classify`.
+    /// the ~28 former hanzo.ai/v1 Kinds (values, not places).
+    ///
+    /// The values and the profile each one resolves to are one table,
+    /// `controllers::app::ROLES`; the enum this CRD publishes is projected from
+    /// it, so what the schema accepts is exactly what something reconciles.
+    ///
+    /// Typed as `String` rather than a Rust enum because the schema is injected
+    /// at install time, and because an App created against an older CRD can
+    /// carry a role this build has since dropped. `classify` answers Unknown for
+    /// anything it does not recognize, and Unknown reconciles fail-safe — status
+    /// marks it and it requeues, never a delete, never a panic.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
 
