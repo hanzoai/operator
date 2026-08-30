@@ -329,6 +329,24 @@ pub fn on_error(_obj: Arc<IngressCR>, err: &OperatorError, _ctx: Arc<Ctx>) -> Ac
     Action::requeue(Duration::from_secs(30))
 }
 
+pub async fn run_ingress_controller(client: Client, namespace: String, api_group: String) {
+    let api: Api<IngressCR> = if namespace.is_empty() {
+        Api::all(client.clone())
+    } else {
+        Api::namespaced(client.clone(), &namespace)
+    };
+    info!(group = %api_group, "Starting Ingress controller");
+    let ctx = Arc::new(Ctx { client, api_group });
+    Controller::new(api, Config::default())
+        .run(reconcile, on_error, ctx)
+        .for_each(|res| async move {
+            if let Err(e) = res {
+                warn!(error = %e, "Ingress reconcile error");
+            }
+        })
+        .await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,22 +706,4 @@ mod tests {
             &desired(),
         ));
     }
-}
-
-pub async fn run_ingress_controller(client: Client, namespace: String, api_group: String) {
-    let api: Api<IngressCR> = if namespace.is_empty() {
-        Api::all(client.clone())
-    } else {
-        Api::namespaced(client.clone(), &namespace)
-    };
-    info!(group = %api_group, "Starting Ingress controller");
-    let ctx = Arc::new(Ctx { client, api_group });
-    Controller::new(api, Config::default())
-        .run(reconcile, on_error, ctx)
-        .for_each(|res| async move {
-            if let Err(e) = res {
-                warn!(error = %e, "Ingress reconcile error");
-            }
-        })
-        .await;
 }

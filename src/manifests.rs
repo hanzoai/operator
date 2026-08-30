@@ -1136,8 +1136,8 @@ pub fn build_configmap(
 /// mounted config file and crashlooping the workload. `apply::apply_configmap`
 /// is the enforcement point.
 pub fn configmap_is_empty(cm: &ConfigMap) -> bool {
-    let data_empty = cm.data.as_ref().map_or(true, |d| d.is_empty());
-    let binary_empty = cm.binary_data.as_ref().map_or(true, |d| d.is_empty());
+    let data_empty = cm.data.as_ref().is_none_or(|d| d.is_empty());
+    let binary_empty = cm.binary_data.as_ref().is_none_or(|d| d.is_empty());
     data_empty && binary_empty
 }
 

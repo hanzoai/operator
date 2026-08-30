@@ -2025,9 +2025,10 @@ mod tests {
         }
     }
 
-    /// Assemble the Deployment exactly as `reconcile_service_inner` does for a
-    /// Service with persistence enabled — the same resolution + helper calls,
-    /// fed into the same `build_deployment` (mirrors `deployment_carries_volumes`).
+    // Assemble the Deployment exactly as `reconcile_service_inner` does for a
+    // Service with persistence enabled — the same resolution + helper calls,
+    // fed into the same `build_deployment` (mirrors `deployment_carries_volumes`).
+    //
     // ---- securityContext + enableServiceLinks passthrough (the port-audit unlock) ----
 
     /// `base_spec` hardened with the exact shapes the port-audit services set:
@@ -2414,9 +2415,9 @@ mod tests {
         );
     }
 
-    /// Surge co-location gate — the fleet-safety property. OPT-IN + RollingUpdate
-    /// + a mounted PVC are ALL required; anything else must NOT get the affinity
-    /// (an exclusive-lock engine on Recreate, a non-opted service, or a
+    /// Surge co-location gate — the fleet-safety property. OPT-IN, RollingUpdate
+    /// and a mounted PVC are ALL required; anything else must NOT get the
+    /// affinity (an exclusive-lock engine on Recreate, a non-opted service, or a
     /// volume-less service would only stall or crashloop under it).
     #[test]
     fn colocate_only_when_opted_in_rolling_and_pvc() {
@@ -2708,13 +2709,14 @@ mod age_optional_tests {
     use super::*;
 
     fn spec(age: &str) -> PersistenceSpec {
-        let mut p = PersistenceSpec::default();
-        p.bucket = "b".into();
-        p.s3_path = "p".into();
-        p.data_dir = "/data".into();
-        p.db_path = "app.db".into();
-        p.age_secret = age.into();
-        p
+        PersistenceSpec {
+            bucket: "b".into(),
+            s3_path: "p".into(),
+            data_dir: "/data".into(),
+            db_path: "app.db".into(),
+            age_secret: age.into(),
+            ..Default::default()
+        }
     }
 
     /// Read the rendered document the way `replicate` does — parse it — and hand
@@ -2892,8 +2894,10 @@ mod age_optional_tests {
     /// stay absent, or every CR silently opts in again.
     #[test]
     fn defaults_do_not_reintroduce_an_age_secret() {
-        let mut p = PersistenceSpec::default();
-        p.bucket = "b".into();
+        let p = PersistenceSpec {
+            bucket: "b".into(),
+            ..Default::default()
+        };
         let d = resolved_persistence(&p);
         assert!(
             d.age_secret.is_empty(),
