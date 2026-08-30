@@ -15,6 +15,15 @@
 # pinned tag, reviewed like any other, not something a tag push should do on its
 # own. The thing being rolled is the controller that reconciles the fleet.
 #
+# The build path reads git.hanzo.ai; the human-facing home is
+# github.com/hanzo-rs/operator. Declared rather than inferred because the two
+# names differ: the forge repo is hanzoai/operator, so inference would look for
+# github.com/hanzoai/operator and find the repo this move is retiring. Every
+# build then asks whether its sha is reachable on the side named here, which is
+# what catches a forge that has stopped following and is quietly serving a
+# frozen tree.
+source: hanzo-rs/operator
+
 # Schema: hanzoai/platform docs/PLATFORM_CI.md (parsed by platform-config.ts).
 build:
   matrix:
