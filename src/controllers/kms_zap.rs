@@ -161,6 +161,25 @@ fn apply_rename(
     Ok(out)
 }
 
+/// What the projector cannot do, stated where someone will look for it.
+///
+/// The legacy `secrets.lux.network` CRs authenticate per-CR: each names a
+/// machine identity, and the identity — not the path — chooses the tenant. The
+/// lux-chat CR says so outright: `lux-chat-iam-creds` mints a token carrying
+/// `billing_account: org:lux`, and `hanzo-chat-iam-creds` would read HANZO's
+/// material through the identical path string.
+///
+/// This projector authenticates once, at the transport, as the identity derived
+/// from the cluster name — `ZapClient::connect(addr, cluster_name)` — and
+/// `OpSecretGet` carries only path, name and env. There is no field for "read as
+/// someone else", so a CR that selects a tenant by identity cannot be expressed
+/// here. Moving one over would not fail; it would read the wrong org's secrets
+/// through a path that looks right.
+///
+/// That is what still holds CRs on the legacy group, not the group name. Closing
+/// it needs an identity on the wire in luxfi/kms, not a change here.
+const _TENANCY: () = ();
+
 /// True iff this CR opts into the ZAP-native path.
 fn is_zap_native(spec: &ZapKmsSpec) -> bool {
     spec.transport == "zap"
