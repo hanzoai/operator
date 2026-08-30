@@ -17,7 +17,7 @@
 //! | absent / `generic` / `service` / `llm` / `iam` / `kms` / `explorer` / `function` / `indexer` / `observability` / `queue` / `spa` / `static` | `service::reconcile_service_inner_pub` |
 //! | `sql`→postgresql, `kv`→valkey, `docdb`, `s3`, `datastore` | `datastore::reconcile_datastore_inner_pub` (engine forced) |
 //! | `ingress`                                                         | `ingress::reconcile_ingress_inner_pub` |
-//! | `gateway` / `base` / `mpc` / `network` / `node` / `dns` / `managedDatabase` / `agentDeployment` / `luxRuntime` / `nodeFleet` | delegated (dedicated Kind; App stands aside) |
+//! | `gateway` / `base` / `mpc` / `network` / `node` / `dns` / `luxRuntime` / `nodeFleet` | delegated (dedicated Kind; App stands aside) |
 //! | `chain` / `validator`                                             | NoOp stub (Network owns them)        |
 //! | anything else                                                     | fail-safe: report + requeue, never materialize/delete |
 //!
@@ -123,7 +123,6 @@ pub const ROLES: &[(&str, Dispatch)] = &[
     ("kv", Dispatch::Datastore(Engine::Valkey)),
     ("s3", Dispatch::Datastore(Engine::S3)),
     ("sql", Dispatch::Datastore(Engine::Postgres)),
-    ("managedDatabase", Dispatch::Delegated("ManagedDatabase")),
     // Delegated — dedicated Kind, no owner-taking inner_pub, no live App CR.
     ("base", Dispatch::Delegated("Base")),
     ("gateway", Dispatch::Delegated("Gateway")),

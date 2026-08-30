@@ -664,41 +664,6 @@
         "threshold"
       ]
     },
-    "ManagedDatabase": {
-      "family": "universe",
-      "plural": "manageddatabases",
-      "singular": "manageddatabase",
-      "shortNames": [
-        "mdb"
-      ],
-      "specFields": [
-        "args",
-        "backup",
-        "command",
-        "containerSecurityContext",
-        "credentialsSecret",
-        "enableServiceLinks",
-        "engine",
-        "env",
-        "envFrom",
-        "fsGroup",
-        "image",
-        "imagePullSecrets",
-        "kmsSecrets",
-        "networkPolicy",
-        "partOf",
-        "ports",
-        "replicas",
-        "resources",
-        "securityContext",
-        "serviceAliases",
-        "serviceMonitor",
-        "sidecars",
-        "storage",
-        "volumeMounts",
-        "volumes"
-      ]
-    },
     "Network": {
       "family": "chain",
       "plural": "networks",

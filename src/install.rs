@@ -35,7 +35,7 @@ use crate::apply::{self, FIELD_MANAGER};
 use crate::core::Result;
 use crate::crd::{
     App, Base, Chain, Datastore, DocDB, Explorer, Function, Gateway,
-    Indexer, Ingress, LuxRuntime, ManagedDatabase, Network, NodeFleet, Observability, Queue,
+    Indexer, Ingress, LuxRuntime, Network, NodeFleet, Observability, Queue,
     Service, Static, Validator, DNS, IAM, KMS, KV, LLM, MPC, S3, SPA, SQL, KMSSecret,
     BitcoinRuntime, EthereumRuntime, SolanaRuntime,
 };
@@ -68,7 +68,6 @@ pub fn crd_bundle(group: &str) -> Vec<CustomResourceDefinition> {
         KMS::crd(),
         LLM::crd(),
         S3::crd(),
-        ManagedDatabase::crd(),
         Chain::crd(),
         Validator::crd(),
         Indexer::crd(),
@@ -335,22 +334,20 @@ const READ_VERBS: &[&str] = &["get", "list", "watch"];
 /// Who reconciles each published Kind.
 ///
 /// Publishing a CRD is a promise that something acts on the objects. Nothing
-/// enforced that, so the estate drifted into 34 published Kinds of which 22 had
-/// a reconciler here, six were reconciled in another repo, four stood aside for
-/// a controller that does not exist, and two had nobody at all — and none of
-/// that was visible without going and counting.
+/// enforced that, and the estate had drifted: of 34 published Kinds, three had
+/// no reconciler in any repo and no CRs anywhere, which was not visible without
+/// going and counting.
 ///
 /// So every Kind names an owner and the test refuses a bundle where one does
-/// not. A Kind may still be published with nothing reconciling it; what it may
-/// not be is published by accident.
+/// not. There is deliberately no variant for "nothing reconciles this": a Kind
+/// with no reconciler is not published, and expressing one would take adding
+/// the variant back — which is the conversation that should happen anyway.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Owner {
     /// A controller this operator starts.
     Here(&'static str),
     /// Reconciled in another repo, named.
     Elsewhere(&'static str),
-    /// Published and reconciled by nothing. The reason is the point.
-    Unreconciled(&'static str),
 }
 
 /// The owner of every Kind in the bundle.
@@ -389,13 +386,11 @@ pub const OWNERS: &[(&str, Owner)] = &[
     ("LuxRuntime", Owner::Elsewhere("hanzo-go/operator")),
     ("NodeFleet", Owner::Elsewhere("hanzo-go/operator")),
     ("MPC", Owner::Elsewhere("hanzo-go/operator")),
-    // App's dispatch stands aside for a dedicated controller on these four, and
-    // there is no dedicated controller. A CR of one is accepted and nothing
-    // happens to it.
-    ("Base", Owner::Unreconciled("App delegates to a controller that does not exist")),
-    ("DNS", Owner::Unreconciled("App delegates to a controller that does not exist")),
-    ("Gateway", Owner::Unreconciled("App delegates to a controller that does not exist")),
-    ("ManagedDatabase", Owner::Unreconciled("App delegates to a controller that does not exist")),
+    // App's dispatch stands aside for these, and the controller it stands aside
+    // for is in hanzo-go/operator, registered in its cmd/operator.
+    ("Base", Owner::Elsewhere("hanzo-go/operator")),
+    ("DNS", Owner::Elsewhere("hanzo-go/operator")),
+    ("Gateway", Owner::Elsewhere("hanzo-go/operator")),
 ];
 
 /// The owner of `kind`, if the table names one.
@@ -1075,12 +1070,12 @@ mod tests {
     }
 
     #[test]
-    fn bundle_is_the_canonical_32_kind_set() {
+    fn bundle_is_the_canonical_31_kind_set() {
         let crds = crd_bundle(DEFAULT_API_GROUP);
         assert_eq!(
             crds.len(),
-            32,
-            "managed Kind count is 32 (28 canonical + App + KMSSecret + the three foreign chain runtimes, less AgentDeployment and ImageUpdate, which nothing reconciles)"
+            31,
+            "managed Kind count is 31 — every one of them reconciled somewhere; AgentDeployment, ImageUpdate and ManagedDatabase were not"
         );
         let kinds: Vec<&str> = crds.iter().map(|c| c.spec.names.kind.as_str()).collect();
         assert!(kinds.contains(&"Service"));
@@ -1155,7 +1150,6 @@ mod tests {
             "DocDB",
             "S3",
             "Datastore",
-            "ManagedDatabase",
         ] {
             let crd = crds
                 .iter()
