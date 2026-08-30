@@ -7,19 +7,7 @@
 //!
 //! See `~/work/hanzo/operator/README.md` for install + CRD reference.
 
-#![allow(dead_code)]
 
-mod api_group;
-mod apply;
-mod controllers;
-mod core;
-mod crd;
-mod crd_types;
-mod gitops;
-mod install;
-mod manifests;
-mod registry;
-mod zapclient;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -30,8 +18,13 @@ use kube::Client;
 use std::net::SocketAddr;
 use tracing::{info, warn};
 
-use crate::api_group::ApiGroup;
-use crate::core::{LeaderConfig, LeaderElection};
+// The binary uses the library rather than re-declaring its modules. Declaring
+// them again compiles every one of them a second time into a separate crate,
+// which is why the dead-code lint here was meaningless — an item used only by
+// the library looks unused from the binary — and why it had to be silenced.
+use operator::{controllers, install};
+use operator::api_group::ApiGroup;
+use operator::core::{LeaderConfig, LeaderElection};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "operator")]
