@@ -163,24 +163,37 @@ fn apply_rename(
     Ok(out)
 }
 
-/// What the projector cannot do, stated where someone will look for it.
+/// What this projector cannot do, stated where someone will look for it.
 ///
-/// The legacy `secrets.lux.network` CRs authenticate per-CR: each names a
-/// machine identity, and the identity — not the path — chooses the tenant. The
-/// lux-chat CR says so outright: `lux-chat-iam-creds` mints a token carrying
-/// `billing_account: org:lux`, and `hanzo-chat-iam-creds` would read HANZO's
-/// material through the identical path string.
+/// It cannot authenticate. The KMS ZAP server requires every secret opcode to
+/// arrive as a signed Envelope — the caller's mnemonic-derived service NodeID,
+/// a 48-byte SHAKE256-384 commitment, and an ML-DSA-65 signature over the
+/// canonical digest — and `verifyAndAuthorize` parses it before any store I/O
+/// with no permissive path. `zapclient::call` sends `[opcode || bare JSON]`
+/// and builds no envelope, so every fetch is rejected at parse.
 ///
-/// This projector authenticates once, at the transport, as the identity derived
-/// from the cluster name — `ZapClient::connect(addr, cluster_name)` — and
-/// `OpSecretGet` carries only path, name and env. There is no field for "read as
-/// someone else", so a CR that selects a tenant by identity cannot be expressed
-/// here. Moving one over would not fail; it would read the wrong org's secrets
-/// through a path that looks right.
+/// Two consequences follow, and they are the same missing piece.
 ///
-/// That is what still holds CRs on the legacy group, not the group name. Closing
-/// it needs an identity on the wire in luxfi/kms, not a change here.
-const _TENANCY: () = ();
+/// The first is that this projector does not work at all today. It is opt-in
+/// and off; turning it on makes it try and fail. Fail-closed, so it cannot
+/// write a wrong secret — but it cannot write a right one either.
+///
+/// The second is the tenancy gap. On the legacy path a per-CR machine identity
+/// chose the TENANT: the org rode the minted token, not the path, so
+/// `/lux-chat` read lux's material under lux-chat-iam-creds and hanzo's under
+/// hanzo-chat-iam-creds. `credentialsRef` is refused here for that reason.
+///
+/// Both close together. `BuildEnvelope(ident: &ServiceIdentity, op, req, nonce,
+/// bind, now)` in luxfi/kms takes the identity as its first argument, and the
+/// server authorizes on the verified NodeID. Signing as the identity a CR names
+/// IS the mechanism — implement envelope signing keyed by `credentialsRef` and
+/// the projector both authenticates and reads as the right tenant.
+///
+/// Note also that `OpSecretGet` carries only `{path, name, env}`. There is no
+/// project field on the wire, so `spec.projectSlug` reaches nothing on this
+/// path; the store is addressed by path, name and env, and the identity is what
+/// scopes it.
+const _WHY_THIS_IS_OFF: () = ();
 
 /// True iff this CR opts into the ZAP-native path.
 fn is_zap_native(spec: &ZapKmsSpec) -> bool {
