@@ -1057,6 +1057,20 @@ pub struct KMSSecretSpec {
     /// Seconds between refetches. Zero means the projector's own cadence.
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub resync_interval: i64,
+    /// The KMS machine identity this CR must read as.
+    ///
+    /// On the legacy path the identity chose the TENANT — the org rode the
+    /// minted token, not the path, so the same path string read different
+    /// material per identity. The ZAP path authenticates once as a peer derived
+    /// from `clusterName`, which identifies the connection and carries no
+    /// principal, so it cannot read as someone else.
+    ///
+    /// A CR that names one is therefore REFUSED rather than served. Serving it
+    /// would return a different org's secrets through a path that looks
+    /// correct, and nothing downstream could tell. Honouring it needs an
+    /// identity on the wire in luxfi/kms.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credentials_ref: String,
 }
 
 fn is_zero_i64(v: &i64) -> bool {

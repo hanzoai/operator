@@ -92,6 +92,8 @@ struct ZapKmsSpec {
     literals: BTreeMap<String, String>,
     #[serde(default, rename = "resyncInterval")]
     resync_interval: i64,
+    #[serde(default, rename = "credentialsRef")]
+    credentials_ref: String,
 }
 
 /// How often to refetch. Zero means the projector's own cadence; anything under
@@ -204,6 +206,15 @@ fn validate_spec(s: &ZapKmsSpec) -> Result<(), String> {
     }
     if s.managed_secret_name.is_empty() || s.managed_secret_name.len() > MAX_NAME {
         return Err("managedSecretName empty or too long".into());
+    }
+    if !s.credentials_ref.is_empty() {
+        // The identity chose the tenant on the legacy path. This path cannot
+        // present one, so serving the CR would read a different org's material
+        // through a path that looks correct — and nothing downstream could tell.
+        return Err(format!(
+            "credentialsRef {:?} selects a KMS identity, and the ZAP path authenticates as a peer derived from clusterName, which carries no principal; refusing rather than reading whichever tenant the operator's own identity resolves to",
+            s.credentials_ref
+        ));
     }
     if s.keys.is_empty() || s.keys.len() > MAX_KEYS {
         return Err("keys empty or too many".into());
@@ -641,5 +652,48 @@ mod literal_tests {
         assert_eq!(resync(&s), Duration::from_secs(30), "floored");
         s.resync_interval = -5;
         assert_eq!(resync(&s), Duration::from_secs(300), "nonsense falls back");
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn spec() -> ZapKmsSpec {
+        ZapKmsSpec {
+            transport: "zap".into(),
+            zap_addr: "cloud.hanzo.svc:9653".into(),
+            project_slug: "hanzo".into(),
+            env_slug: "prod".into(),
+            secrets_path: "/lux-chat".into(),
+            keys: vec!["JWT_SECRET".into()],
+            managed_secret_name: "lux-chat-env".into(),
+            ..Default::default()
+        }
+    }
+
+    /// On the legacy path the identity chose the tenant: the org rode the minted
+    /// token and not the path, so `/lux-chat` read lux's material under
+    /// lux-chat-iam-creds and hanzo's under hanzo-chat-iam-creds. This path
+    /// authenticates as a peer derived from clusterName, which carries no
+    /// principal, so it would read whichever org the operator's own identity
+    /// resolves to — through a path that looks exactly right.
+    ///
+    /// Refusing is the only honest answer available. A wrong secret that applies
+    /// cleanly is worse than one that never arrives.
+    #[test]
+    fn a_cr_that_selects_a_tenant_by_identity_is_refused() {
+        let mut s = spec();
+        s.credentials_ref = "lux-chat-iam-creds".into();
+        let err = validate_spec(&s).expect_err("must refuse");
+        assert!(err.contains("lux-chat-iam-creds"), "{err}");
+        assert!(err.contains("clusterName"), "names why: {err}");
+    }
+
+    /// Everything else still passes — the refusal is scoped to the one thing the
+    /// wire cannot carry.
+    #[test]
+    fn a_cr_without_an_identity_is_served() {
+        assert!(validate_spec(&spec()).is_ok());
     }
 }
