@@ -372,7 +372,7 @@ pub const OWNERS: &[(&str, Owner)] = &[
     ("KV", Owner::Here("kv")),
     ("Ingress", Owner::Here("ingress")),
     ("App", Owner::Here("app")),
-    ("KMSSecret", Owner::Here("kms_zap")),
+    ("KMSSecret", Owner::Here("kms")),
     ("BitcoinRuntime", Owner::Here("bitcoin")),
     ("EthereumRuntime", Owner::Here("ethereum")),
     ("SolanaRuntime", Owner::Here("solana")),
@@ -807,7 +807,7 @@ mod tests {
         // A controller named as owning a Kind has to be one this operator
         // actually starts, or "Here" is a claim rather than a fact.
         let started = [
-            "service", "datastore", "sql", "kv", "ingress", "app", "kms_zap",
+            "service", "datastore", "sql", "kv", "ingress", "app", "kms",
             "bitcoin", "ethereum", "solana", "tenant", "upgrade",
         ];
         for (kind, owner) in OWNERS {

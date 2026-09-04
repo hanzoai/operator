@@ -966,8 +966,8 @@ pub struct AuthPolicy {
 /// A secret this cluster needs, and where in KMS it comes from.
 ///
 /// The operator both WRITES these (from a `kmsSecrets` reference on a Service,
-/// App or LuxRuntime) and READS them (`controllers::kms_zap` projects them into
-/// k8s Secrets over ZAP). Owning the definition is what lets those two agree:
+/// App or LuxRuntime) and READS them (`controllers::kms` projects them into
+/// k8s Secrets). Owning the definition is what lets those two agree:
 /// while the CRD lived in another repo, the writer and the projector drifted to
 /// different groups and versions and nothing said so.
 ///
@@ -985,12 +985,15 @@ pub struct AuthPolicy {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct KMSSecretSpec {
-    /// How the operator reaches KMS. `zap` selects the ZAP-native projector;
-    /// anything else is left to whatever else is watching, so a cluster can be
-    /// migrated one secret at a time rather than all at once.
+    /// How the operator reaches KMS. `iam` reads KMS over HTTP as the
+    /// operator's own IAM client; `zap` selects the ZAP-native path. Anything
+    /// else is left to whatever else is watching, so a cluster can be migrated
+    /// one secret at a time rather than all at once.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub transport: String,
-    /// host:port of the KMS ZAP endpoint.
+    /// host:port of the KMS ZAP endpoint. `zap` only: on `iam` the host is the
+    /// operator's own `KMS_URL`, since a CR naming it would aim the operator's
+    /// bearer at a host of the CR author's choosing.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub zap_addr: String,
     /// The KMS coordinate: which project, which environment, which folder.

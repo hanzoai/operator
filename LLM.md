@@ -227,7 +227,7 @@ This controller can roll the whole fleet, so it NEVER patches until FOUR
 gates open — three configurable, one absolute:
 
 1. **Master enable** `APPS_CONTROLLER=true` (default off → loop never
-   starts; mirrors `KMS_ZAP_CONTROLLER`). First deploy of this binary is
+   starts; mirrors `KMS_PROJECTOR`). First deploy of this binary is
    inert.
 2. **Drive mode** `APPS_DRIVE_MODE` ∈ {`off` (default), `dry-run`, `on`}.
    `off`/`dry-run` NEVER patch — they log + emit a `DriveIntended` Event
@@ -599,7 +599,7 @@ model is now ownership, the list is just an optional throttle.
 ### Fail-safe
 
 Opt-in `GITOPS_RECONCILE_ENABLED=true` (default off — first deploy of this binary
-is inert; mirrors `KMS_ZAP_CONTROLLER`/`APPS_CONTROLLER`). Additive: it runs
+is inert; mirrors `KMS_PROJECTOR`/`APPS_CONTROLLER`). Additive: it runs
 ALONGSIDE the CR→workload controllers and never blocks them. Every fallible op
 inside a sweep returns `Result` and is logged; the loop never `?`-propagates out
 of its body, never `unwrap`s, never panics — a clone/list/YAML/token failure is

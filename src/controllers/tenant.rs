@@ -31,7 +31,7 @@
 //! ## Gate
 //!
 //! Master enable `TENANT_CONTROLLER` (default `true`; set `false` to
-//! disable). Unlike the fleet-mutating apps/kms_zap controllers this one only
+//! disable). Unlike the fleet-mutating apps/kms controllers this one only
 //! ADDS narrowly-scoped objects to namespaces already marked as platform-managed
 //! tenants, so it is safe to run by default and IS the one-click-deploy mechanism.
 
@@ -550,7 +550,7 @@ mod tests {
         let s = build_pull_secret("tenant-acme", "acme", &cfg, b"x".to_vec(), owner());
         assert!(is_operator_managed(&s, PULL_SECRET_MANAGER, ""));
         assert!(!is_operator_managed(&s, "hanzo-operator", ""));
-        assert!(!is_operator_managed(&s, "hanzo-operator-kms-zap", ""));
+        assert!(!is_operator_managed(&s, "hanzo-operator-kms", ""));
     }
 
     #[test]

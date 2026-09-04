@@ -1019,7 +1019,7 @@ async fn reconcile_kms_secret(
 ) -> Result<()> {
     use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
 
-    // The family the projector watches (controllers::kms_zap): this universe's
+    // The family the projector watches (controllers::kms): this universe's
     // group, one version. Writing a different one than the reader watches is how
     // a CR gets created and then reconciled by nobody.
     let kms_group = crate::install::family_of("KMSSecret").group(api_group);

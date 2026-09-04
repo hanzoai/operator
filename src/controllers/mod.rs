@@ -8,7 +8,7 @@ use kube::Resource;
 pub mod datastore;
 // Image automation: registry→git tag bumps (delivery is the cloud deploy engine).
 pub mod ingress;
-pub mod kms_zap;
+pub mod kms;
 pub mod service;
 
 // Managed-upgrade FSM — the deploy discipline (pre-flight → health-gate →
