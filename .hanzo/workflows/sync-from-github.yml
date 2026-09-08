@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   ff-main:
-    runs-on: [hanzo-build-linux-amd64]
+    runs-on: [linux-amd64]
     steps:
       - uses: actions/checkout@v4
         with:
