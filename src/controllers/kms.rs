@@ -99,6 +99,8 @@ struct Spec {
     rename: BTreeMap<String, String>,
     #[serde(default)]
     literals: BTreeMap<String, String>,
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
     #[serde(default, rename = "resyncInterval")]
     resync_interval: i64,
     #[serde(default, rename = "credentialsRef")]
@@ -564,8 +566,10 @@ async fn reconcile(obj: Arc<DynamicObject>, ctx: Arc<Ctx>) -> Result<Action, Rec
         }
     }
 
-    // Project via SSA. managed-by label + ownerRef so only we adopt it.
-    let mut labels = BTreeMap::new();
+    // Project via SSA. managed-by label + ownerRef so only we adopt it. The CR's
+    // own labels go on first and managed-by after, so a CR cannot disown the
+    // Secret it asked us to write.
+    let mut labels: BTreeMap<String, String> = spec.labels.clone();
     labels.insert(MANAGED_BY_LABEL.to_string(), KMS_MANAGER.to_string());
     let owner = owner_ref(
         &format!("{}/{KMS_VERSION}", ctx.group),

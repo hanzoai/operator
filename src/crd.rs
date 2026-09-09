@@ -1057,6 +1057,18 @@ pub struct KMSSecretSpec {
     /// says where a value comes from, the other IS the value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub literals: BTreeMap<String, String>,
+    /// Labels written onto the Secret.
+    ///
+    /// A Secret is often found by label rather than by name, and the finder is
+    /// not this operator: CD selects repository credentials on
+    /// `<group>/secret-type=repository` and simply does not see a Secret without
+    /// it. Projecting one perfectly and leaving it unlabelled is a credential
+    /// that exists and is never consulted — measured as 46 Applications unable to
+    /// pull their chart at all, each reporting a 401 from a registry whose
+    /// credential was sitting right there. `managed-by` is always ours and cannot
+    /// be set from here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
     /// Seconds between refetches. Zero means the projector's own cadence.
     #[serde(default, skip_serializing_if = "is_zero_i64")]
     pub resync_interval: i64,

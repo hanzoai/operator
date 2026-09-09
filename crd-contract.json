@@ -518,6 +518,7 @@
         "credentialsRef",
         "envSlug",
         "keys",
+        "labels",
         "literals",
         "managedSecretName",
         "projectSlug",
