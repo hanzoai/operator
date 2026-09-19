@@ -22,12 +22,6 @@ images:
     repo: ghcr.io/hanzoai/operator
     dockerfile: Dockerfile
     context: .
-    # amd64 only, deliberately. DOKS (do-sfo3-hanzo-k8s, lux-k8s, zoo-k8s) is
-    # amd64, and the arm64 ARC scale-set is offline — an arm64 job queues
-    # forever against a runner label nothing matches, and the multi-arch
-    # manifest then never publishes, which is a build that "passes" while
-    # shipping nothing. Restore linux/amd64,linux/arm64 when that pool is back.
-    platforms: [linux/amd64]
 
 test:
   # cargo test is the gate, and the whole lib — no filter. A filter is how a
