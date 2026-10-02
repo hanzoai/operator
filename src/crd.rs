@@ -298,7 +298,7 @@ pub struct StorageSpec {
     pub volume_name: Option<String>,
 }
 
-/// Durable SeaweedFS-backed SQLite for ANY Service Kind, via the proven
+/// Durable Hanzo S3-backed SQLite for ANY Service Kind, via the proven
 /// `hanzoai/replicate` init-restore + sidecar-stream pattern (the
 /// console-sqlite blueprint, generalized into the operator — the "one way"
 /// to give a service a persistent SQLite DB).
@@ -309,7 +309,7 @@ pub struct StorageSpec {
 /// `<service>-replicate-config` ConfigMap holding `replicate.yml`; a
 /// `replicate-restore` initContainer (single-DB mode only — directory
 /// restore is best-effort via the sidecar); and a `replicate` sidecar that
-/// streams the SQLite WAL to SeaweedFS, age-encrypted client-side.
+/// streams the SQLite WAL to Hanzo S3, age-encrypted client-side.
 ///
 /// This is the Service-Kind analog of `ReplicationSpec` (the ZapDB/ZAP leg);
 /// it mirrors that spec's S3/age field shape.
@@ -333,7 +333,7 @@ pub struct PersistenceSpec {
     /// Glob used in `dir_mode`. Default `**/*.db`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pattern: String,
-    /// SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+    /// Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub bucket: String,
     /// S3 key prefix, e.g. `console/app`.
@@ -347,7 +347,7 @@ pub struct PersistenceSpec {
     /// S3 region. Default `us-east-1`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub s3_region: String,
-    /// SeaweedFS requires path-style addressing (subdomain buckets don't
+    /// Hanzo S3 requires path-style addressing (subdomain buckets don't
     /// resolve in-cluster). Default `true`.
     #[serde(default = "default_true")]
     pub force_path_style: bool,
@@ -615,7 +615,7 @@ pub struct ServiceSpec {
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+    /// Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
     /// auto-wires the restore init + replication sidecar + ConfigMap + PVC.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persistence: Option<PersistenceSpec>,
@@ -646,7 +646,7 @@ pub struct ServiceSpec {
     /// hardening. Opt-in — an omitting CR renders a byte-identical container.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_security_context: Option<SecurityContext>,
-    /// `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+    /// `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
     /// MUST set this `false`: k8s's default-`true` injects a
     /// `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
     /// s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -774,7 +774,7 @@ pub enum Engine {
     Valkey,
     /// FerretDB over Postgres — MongoDB wire protocol (`hanzoai/docdb`).
     Docdb,
-    /// SeaweedFS object store (`hanzoai/s3`).
+    /// Hanzo S3 object store (`hanzoai/s3`).
     S3,
     /// hanzoai/datastore analytics engine (Hanzo Datastore).
     Datastore,
@@ -787,7 +787,7 @@ impl Engine {
     /// (no needless rollout).
     ///
     /// The object store is the one that moved. Its component label now reads
-    /// `s3`, naming what actually runs: SeaweedFS, our own `hanzoai/s3`. The
+    /// `s3`, naming what actually runs: Hanzo S3, our own `hanzoai/s3`. The
     /// move was free — no live resource carried the old label. Keep this
     /// string a description of the engine we run, never of an upstream.
     pub fn as_str(self) -> &'static str {
@@ -878,7 +878,7 @@ pub struct DBSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_security_context: Option<SecurityContext>,
     /// `enableServiceLinks` on the StatefulSet PodSpec. The object store
-    /// (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+    /// (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
     /// `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
     /// s3 flag parser aborts startup on the unexpected vars. This is the field
     /// the datastore path uniquely needs (the object store is a datastore role);

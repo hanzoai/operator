@@ -952,7 +952,7 @@ spec:
         .statefulset
     }
 
-    /// (a) An `s3` (SeaweedFS object store) App that sets `enableServiceLinks:
+    /// (a) An `s3` (Hanzo S3 object store) App that sets `enableServiceLinks:
     /// false` renders it on the StatefulSet PodSpec. This is the crown-jewel
     /// field: k8s's default-`true` injects `*_SERVICE_HOST/PORT` env for every
     /// namespace Service, which aborts the s3 flag parser on restart. Before the
@@ -987,7 +987,7 @@ spec:
         assert_eq!(
             pod.enable_service_links,
             Some(false),
-            "enableServiceLinks:false must reach the StatefulSet PodSpec (the s3/SeaweedFS unlock)"
+            "enableServiceLinks:false must reach the StatefulSet PodSpec (the s3/Hanzo S3 unlock)"
         );
     }
 

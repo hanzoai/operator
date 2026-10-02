@@ -51,7 +51,7 @@ fn upsert_condition(conditions: &mut Vec<Condition>, new_cond: Condition) {
 }
 
 // ============================================================================
-// persistence — durable SeaweedFS-backed SQLite via hanzoai/replicate.
+// persistence — durable Hanzo S3-backed SQLite via hanzoai/replicate.
 //
 // Generalizes the proven console-sqlite wiring (restore initContainer +
 // replicate sidecar + replicate-config ConfigMap + app-db PVC) into ONE
@@ -74,7 +74,7 @@ const REPLICATE_CONFIG_MOUNT: &str = "/etc/replicate";
 /// Apply sane defaults to a user-supplied `PersistenceSpec`. The user only
 /// has to set `enabled` + `data_dir` (+ `db_path` or `dir_mode`); everything
 /// else (endpoint, region, secrets, image) defaults to the in-cluster
-/// SeaweedFS convention.
+/// Hanzo S3 convention.
 fn resolved_persistence(p: &PersistenceSpec) -> PersistenceSpec {
     let mut r = p.clone();
     if r.pattern.is_empty() {
@@ -175,7 +175,7 @@ mod replicate_yml {
 
 /// Names the producer of a file an operator reads in a cluster. serde_yaml emits
 /// no comments, so it is prepended — a header line, never structure.
-const REPLICATE_YML_HEADER: &str = "# hanzoai/replicate -- SQLite WAL -> S3 (SeaweedFS).\n";
+const REPLICATE_YML_HEADER: &str = "# hanzoai/replicate -- SQLite WAL -> S3 (Hanzo S3).\n";
 
 /// Render `replicate.yml`. Single-DB mode sets `path`; `dir_mode` sets
 /// `dir` + `pattern` + `watch` (replicate appends each DB's relative path to the
@@ -772,7 +772,7 @@ async fn reconcile_service_inner(
         .map(crd_types::SecurityContext::to_k8s);
     let mut containers = vec![main];
     containers.extend(spec.sidecars.iter().map(crd_types::Container::to_k8s));
-    // Auto-inject the replicate sidecar (streams the WAL to SeaweedFS).
+    // Auto-inject the replicate sidecar (streams the WAL to Hanzo S3).
     if let Some(p) = &persistence {
         containers.push(replicate_sidecar(p).to_k8s());
     }
@@ -882,7 +882,7 @@ async fn reconcile_service_inner(
                 pod.security_context = Some(sc);
             }
         }
-        // enableServiceLinks passthrough — the object store (s3/SeaweedFS) sets
+        // enableServiceLinks passthrough — the object store (s3/Hanzo S3) sets
         // false so k8s does not inject the *_SERVICE_HOST/PORT env for every
         // namespace Service, which aborts its flag parser on restart. None ⇒ the
         // field is omitted (k8s default true), byte-identical for every other CR.
@@ -2001,7 +2001,7 @@ mod tests {
         assert_eq!(replicas_for_deployment(&spec), Some(1));
     }
 
-    // ---- persistence (SeaweedFS-backed SQLite via hanzoai/replicate) ----
+    // ---- persistence (Hanzo S3-backed SQLite via hanzoai/replicate) ----
 
     use crate::crd::{PersistenceSpec, StorageSpec};
 
@@ -2081,7 +2081,7 @@ mod tests {
             "RuntimeDefault"
         );
 
-        // enableServiceLinks — the s3/SeaweedFS crown-jewel field.
+        // enableServiceLinks — the s3/Hanzo S3 crown-jewel field.
         assert_eq!(
             pod.enable_service_links,
             Some(false),
@@ -2366,7 +2366,7 @@ mod tests {
         assert_eq!(
             r["force-path-style"].as_bool(),
             Some(true),
-            "SeaweedFS needs path-style addressing"
+            "Hanzo S3 needs path-style addressing"
         );
         assert_eq!(
             doc["dbs"][0]["path"].as_str(),

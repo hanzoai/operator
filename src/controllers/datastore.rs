@@ -1,5 +1,5 @@
 //! Datastore reconciler — dispatches by `spec.type` to PostgreSQL, Valkey,
-//! DocDB (FerretDB), S3 (SeaweedFS), or generic datastore engines.
+//! DocDB (FerretDB), S3 (Hanzo S3), or generic datastore engines.
 //!
 //! Each type runs as a StatefulSet with a headless Service for pod DNS plus
 //! a ClusterIP Service for client connections.
@@ -343,7 +343,7 @@ pub(crate) fn build_datastore_workload(
 ///   entrypoint can chown) group-owns its data PVC. Unchanged from the prior
 ///   `apply_fs_group` behavior.
 /// - `enableServiceLinks` absent ⇒ the field is omitted (k8s default `true`);
-///   the object store (`s3`/SeaweedFS) sets it `false` so k8s does not inject the
+///   the object store (`s3`/Hanzo S3) sets it `false` so k8s does not inject the
 ///   `*_SERVICE_HOST/PORT` env that aborts its flag parser on restart.
 fn apply_pod_security(
     sts: &mut StatefulSet,

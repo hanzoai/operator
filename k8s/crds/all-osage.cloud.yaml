@@ -115,7 +115,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -588,7 +588,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -598,7 +598,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -625,7 +625,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -1516,7 +1516,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -3938,7 +3938,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -4677,7 +4677,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -5416,7 +5416,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -6159,7 +6159,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -6632,7 +6632,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -6642,7 +6642,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -6669,7 +6669,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -7560,7 +7560,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -8033,7 +8033,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -8043,7 +8043,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -8070,7 +8070,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -8961,7 +8961,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -9434,7 +9434,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -9444,7 +9444,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -9471,7 +9471,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -10358,7 +10358,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -11099,7 +11099,7 @@ spec:
               enableServiceLinks:
                 description: |-
                   `enableServiceLinks` on the StatefulSet PodSpec. The object store
-                  (`s3`/SeaweedFS) MUST set this `false`: k8s's default-`true` injects a
+                  (`s3`/Hanzo S3) MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. This is the field
                   the datastore path uniquely needs (the object store is a datastore role);
@@ -12223,7 +12223,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -12696,7 +12696,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -12706,7 +12706,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -12733,7 +12733,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -13624,7 +13624,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -14097,7 +14097,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -14107,7 +14107,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -14134,7 +14134,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -15589,7 +15589,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -16062,7 +16062,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -16072,7 +16072,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -16099,7 +16099,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -16990,7 +16990,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -17463,7 +17463,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -17473,7 +17473,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -17500,7 +17500,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -18391,7 +18391,7 @@ spec:
                 type: object
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -18864,7 +18864,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -18874,7 +18874,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -18901,7 +18901,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
@@ -20804,7 +20804,7 @@ spec:
                 type: array
               enableServiceLinks:
                 description: |-
-                  `enableServiceLinks` on the PodSpec. The object store (`s3`/SeaweedFS)
+                  `enableServiceLinks` on the PodSpec. The object store (`s3`/Hanzo S3)
                   MUST set this `false`: k8s's default-`true` injects a
                   `*_SERVICE_HOST/PORT` env var for every Service in the namespace, and the
                   s3 flag parser aborts startup on the unexpected vars. `None` ⇒ the field
@@ -21279,7 +21279,7 @@ spec:
                 type: object
               persistence:
                 description: |-
-                  Durable SeaweedFS-backed SQLite via `hanzoai/replicate`. ONE field
+                  Durable Hanzo S3-backed SQLite via `hanzoai/replicate`. ONE field
                   auto-wires the restore init + replication sidecar + ConfigMap + PVC.
                 nullable: true
                 properties:
@@ -21289,7 +21289,7 @@ spec:
                       `<service-name>-replicate-age`.
                     type: string
                   bucket:
-                    description: SeaweedFS bucket, e.g. `console-db` (or `<org>-db`).
+                    description: Hanzo S3 bucket, e.g. `console-db` (or `<org>-db`).
                     type: string
                   credentialsSecret:
                     description: K8s Secret with `access-key` / `secret-key`. Default `s3-credentials`.
@@ -21316,7 +21316,7 @@ spec:
                   forcePathStyle:
                     default: true
                     description: |-
-                      SeaweedFS requires path-style addressing (subdomain buckets don't
+                      Hanzo S3 requires path-style addressing (subdomain buckets don't
                       resolve in-cluster). Default `true`.
                     type: boolean
                   image:
