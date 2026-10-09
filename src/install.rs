@@ -451,6 +451,8 @@ pub fn operator_cluster_role(group: &str) -> ClusterRole {
         ),
         rule(&[""], &["events"], &["create", "patch"]),
         rule(&[""], &["namespaces"], READ_VERBS),
+        // Node GC deletes the Node of a terminated EC2 instance.
+        rule(&[""], &["nodes"], &["get", "list", "watch", "delete"]),
         // Networking, autoscaling, disruption budgets.
         rule(
             &["networking.k8s.io"],
@@ -1309,6 +1311,14 @@ mod tests {
         // Plus the leader-election lease + the managed CRDs.
         assert!(grants(&["coordination.k8s.io"], "leases", "update"));
         assert!(grants(&[DEFAULT_API_GROUP], "*", "patch"));
+        // Node GC reads Nodes and deletes the one whose instance is gone; it
+        // writes nothing else to them.
+        for verb in ["get", "list", "watch", "delete"] {
+            assert!(grants(&[""], "nodes", verb), "nodes {verb}");
+        }
+        for verb in ["create", "update", "patch"] {
+            assert!(!grants(&[""], "nodes", verb), "nodes {verb}");
+        }
     }
 
     #[test]

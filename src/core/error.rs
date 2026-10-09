@@ -16,6 +16,9 @@ pub enum OperatorError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("AWS error: {0}")]
+    Aws(String),
+
     #[error("Configuration error: {0}")]
     Config(String),
 

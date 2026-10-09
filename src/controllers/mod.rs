@@ -97,3 +97,10 @@ pub mod solana;
 // nowhere else. Cloud's deploy path blocks on it (waitForTenantRBAC). Enabled by
 // default (TENANT_CONTROLLER); see the module docs.
 pub mod tenant;
+
+// Node GC. Not a CRD Kind — its reconcile source is the cluster's Nodes. k3s here
+// runs no cloud controller, so a Node whose EC2 instance has been terminated
+// lingers NotReady and holds its StatefulSet pods; this deletes it once EC2 says
+// the instance is gone. Runs only when AWS credentials are in the environment;
+// see the module docs.
+pub mod node;

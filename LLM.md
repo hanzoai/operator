@@ -99,8 +99,10 @@ src/
   controllers/      One module per Kind.
     service.rs, datastore.rs, gateway.rs, mpc.rs, network.rs,
     ingress.rs, dns.rs, base.rs, luxruntime.rs, nodefleet.rs, …
+    node.rs         Not a Kind: Node GC (below).
   core/             Absorbed from former hanzoai/operator-core repo.
     error.rs, leader.rs, iam_admin.rs, secret.rs, status.rs, reconciler.rs
+    ec2.rs          EC2 DescribeInstances, SigV4-signed (Node GC's one AWS call).
   bin/
     generate_crd_yaml.rs  CRD YAML generator with --api-group rewriter.
 k8s/crds/           Pre-rendered CRD YAML per universe.
@@ -1110,3 +1112,118 @@ Two follow-ons this does not touch:
   decrypts unconditionally whenever identities are set. Restore onto an EMPTY
   PVC still fails on `age decrypt: unexpected intro "LTX1"`. Correct YAML does
   not fix that; it is a `hanzoai/replicate` change or a bucket cleanup.
+
+## Node GC — a Node whose EC2 instance is gone is deleted
+
+k3s on AWS runs no cloud controller, so when an autoscaling group terminates an
+instance nothing deletes its Node. The Node lingers `NotReady`, and a StatefulSet
+pod that was on it stays bound to a node that will never return until a person
+deletes the Node. Five were, by hand, on 2026-10-08. Deleting the Node is the
+whole fix: kube-controller-manager's pod GC removes the pods bound to a node that
+no longer exists, and their controllers reschedule them.
+
+`src/controllers/node.rs` watches Nodes (cluster-wide, a leader-gated controller
+like the rest) and deletes a Node only when all four hold:
+
+1. it is not Ready (`False` or `Unknown`; no Ready condition counts as not Ready);
+2. it has been not Ready for `GRACE` (2 minutes): since its Ready condition's
+   `lastTransitionTime`, else since its creation. A Node that has only just
+   registered, or only just gone silent, is requeued for what is left of the grace
+   and not asked about;
+3. its providerID is `aws:///<zone>/<instance id>`. The k3s servers carry
+   `k3s://…` and are never asked about or deleted;
+4. EC2 says the instance is `terminated`, or no longer knows it
+   (`InvalidInstanceID.NotFound`: AWS forgets a terminated instance after about an
+   hour, and a Node that outlived that is the same fact later).
+
+The grace is for `NotFound`. EC2 answers it, for a moment, of an instance launched
+a second ago (its records are eventually consistent), and a Node that has just
+registered has no Ready condition. `terminated` is final (an instance id is never
+reused), but it waits the same grace: one rule, not two. A key of another account
+is told every instance is unknown, so it would delete every NotReady `aws:///` Node
+once the grace passed: the key must belong to the account that runs the instances.
+
+Everything else deletes nothing and asks again in a minute (`RECHECK`): a living
+instance in any other state, a refusal (`UnauthorizedOperation`, `AuthFailure`),
+throttling, a 5xx, a timeout, an answer that does not parse or is about another
+instance. From the instance's death to its Node's deletion: about a minute for
+kube-controller-manager to mark the kubelet silent, `GRACE`, and at most one
+`RECHECK` for an instance still `shutting-down`; under five minutes. The delete
+carries a `uid` precondition, so a Node registered again under the name is not the
+one deleted; a 404 is success. The deletion is logged at `info`:
+`deleted Node: its EC2 instance is terminated`, with node, instance and region.
+
+`src/core/ec2.rs` is the AWS side: `DescribeInstances` over the EC2 query API,
+Signature Version 4 by `hmac` + `sha2`, one instance a call. The AWS SDK is not
+used (its dependency tree is larger than this operator's, for one call). The region
+is the Node's own zone minus its letter, so there is no region setting; a zone that
+does not reduce to `<area>-<place>-<n><letter>` (a local zone) names no instance.
+`Instance` parses only a well-formed providerID, so a region and a hex id are all
+that reach a request. Neither `Credentials` nor `Ec2` implements `Debug`.
+
+### Gate and deployment
+
+No flag. The controller runs when `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
+are in the environment (`AWS_SESSION_TOKEN` too, for a temporary key). With neither
+it logs `Node GC disabled: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY not set` at
+`info` and stops; with one it logs `Node GC disabled: the AWS key is set in part`
+at `warn`, naming the missing variable (never a value) and stops. Either way this
+release is inert until the Deployment is given the key. The instance metadata
+service is not a source: the nodes set hop limit 1 so a pod cannot reach the
+node's credentials. The key comes from a KMS-synced Secret mapped into the
+Deployment's env, as `KMS_CLIENT_ID` already is; its policy is
+`ec2:DescribeInstances` and nothing else.
+
+**This release is not Node GC in production until `hanzoai/universe` has all
+three of these**, and merging the operator image does not finish the work. The live
+`operator-manager-role` has no rule for `nodes`, and the Deployment has no AWS
+variable:
+
+1. the key: a Terraform IAM user with an `ec2:DescribeInstances`-only policy, its
+   access key in KMS;
+2. the env mapping in `infra/k8s/operator/deployment.yaml`: the KMS-synced Secret
+   to `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for a
+   temporary key);
+3. a `nodes` rule (`get`, `list`, `watch`, `delete`) on the ClusterRole in
+   `infra/k8s/rbac/operator-role.yaml` (`install.rs` renders the same rule for
+   `operator install`, which is not the role a running cluster has).
+
+Without the rule the watch fails at list; without the key the controller does not
+start. The operator exposes no metrics registry, so "enabled" is read from its log:
+`Starting Node GC` is logged once the key is accepted, and `deleted Node` per
+deletion.
+
+### Tests
+
+`core::ec2`: the signer reproduces AWS's documented Signature Version 4 example
+(canonical request hash and signature, IAM `ListUsers` at 2015-08-30T12:36:00Z);
+only `terminated` and `NotFound` are gone; every refusal, throttle, 5xx, unparseable
+body and answer about another instance is an error; malformed providerIDs, ids
+carrying form syntax and local zones parse to nothing; the request over HTTP asks
+for exactly one instance, is signed, and carries the session token when there is
+one.
+
+`core::ec2` also reads the key pair through a lookup closure (`Credentials::read`),
+so the gate is tested without touching the process environment: both halves, a
+token, empty as unset, and one half naming the other as missing.
+
+`controllers::node`: `reconcile` against a stand-in apiserver and a stand-in EC2
+(`Ec2::at`, which exists only under `cfg(test)`: production always asks the
+region's own endpoint). A terminated or forgotten instance's Node is deleted with
+its uid, and the deletion is asserted in a captured `tracing` log; a living
+instance's Node is kept and looked at again within `RECHECK`; a Node not Ready for
+less than `GRACE` (a young transition, or a registered Node with no status) costs
+no AWS call and no delete, whatever EC2 would say, and is deleted once the grace
+has passed; `remaining` is checked at the edges (just now, half, exactly, long ago,
+a clock behind, no age); a Ready Node costs no AWS call; a k3s server is never
+asked about; no verdict from AWS (six failure shapes) deletes nothing; a 404 delete
+is success and a 409 is retried; `key` logs `info` for no key, `warn` naming the
+missing variable for half a key, and nothing for a whole one, with no value in any
+line. `the_controller_deletes_the_dead_node_and_only_that` runs the controller
+itself over a list/watch of five Nodes (a live worker, a dead worker, a NotReady
+worker whose instance runs, two k3s servers): one DELETE, for the dead worker, and
+EC2 asked about the two NotReady workers only.
+
+Not testable here, and the live check for the release: a terminated spot node's
+Node is gone within five minutes, and a StatefulSet pod that was on it reschedules
+with no human step (the pod GC and the StatefulSet controller are the cluster's).

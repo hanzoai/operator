@@ -19,12 +19,14 @@
 //!
 //! | Module         | What it owns                                                            |
 //! |----------------|-------------------------------------------------------------------------|
+//! | [`ec2`]        | `DescribeInstances`, signed with Signature Version 4: does an instance exist. |
 //! | [`error`]      | `OperatorError` — single canonical error type for the operator.         |
 //! | [`leader`]     | `LeaderElection` — `coordination.k8s.io/v1` lease loop.                 |
 //! | [`secret`]     | Strict hijack guard + `\0` rejection for KMS-projected K8s Secrets.     |
 //! | [`status`]     | Standard `status.conditions` mint helpers.                              |
 //! | [`reconciler`] | `Action` requeue cadence + `clamp_resync`.                             |
 
+pub mod ec2;
 pub mod error;
 pub mod health;
 pub mod leader;

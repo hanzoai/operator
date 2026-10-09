@@ -54,6 +54,8 @@ byteorder = "1"
 base64 = "0.22"
 rand = "0.9"
 sha2 = "0.10"
+# HMAC-SHA256 for the AWS Signature Version 4 request `core::ec2` signs.
+hmac = "0.12"
 
 # Native GitOps image automation. `semver` selects the newest matching image
 # tag (range + `*`); `regex` backs the `regex:<pat>` policy. Both are already in

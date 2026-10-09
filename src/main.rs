@@ -383,6 +383,11 @@ async fn run_all_controllers(
                 .map(|v| v != "false")
                 .unwrap_or(true),
         ),
+        // Node GC — deletes the Node object of an EC2 instance that has been
+        // terminated (k3s runs no cloud controller to do it), so the StatefulSet
+        // pods bound to it reschedule. Runs only when AWS_ACCESS_KEY_ID and
+        // AWS_SECRET_ACCESS_KEY are set; the key's policy is ec2:DescribeInstances.
+        controllers::node::run_node_controller(client.clone()),
     );
 }
 
